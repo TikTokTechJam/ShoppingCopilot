@@ -2,6 +2,8 @@
 
 Build an AI shopping agent that asks useful follow-up questions and recommends the customer's hidden target product within at most 10 turns.
 
+For a chronological record of agent changes, the reasons behind them, and their measured impact, see the [Improvement Log](IMPROVEMENT_LOG.md).
+
 ## What You Receive
 
 - A frozen catalog of 50,000 products from the `Clothing_Shoes_and_Jewelry` category of Amazon Reviews 2023.
