@@ -6,6 +6,15 @@ import urllib.request
 from typing import Any, Protocol
 
 
+def completion_url(endpoint: str) -> str:
+    value = endpoint.strip().rstrip("/")
+    if not value:
+        raise ValueError("endpoint must be non-empty")
+    if value.endswith("/chat/completions"):
+        return value
+    return value + "/chat/completions"
+
+
 class AnnotationClient(Protocol):
     def annotate(self, prompt: str) -> Any:
         """Return the model's structured JSON object or its JSON text."""
@@ -21,6 +30,8 @@ class HostedLLMClient:
         api_key: str | None = None,
         model: str,
         timeout: float = 60.0,
+        max_tokens: int = 4096,
+        json_mode: bool = True,
     ) -> None:
         if not endpoint.strip():
             raise ValueError("endpoint must be non-empty")
@@ -28,16 +39,20 @@ class HostedLLMClient:
             raise ValueError("model must be non-empty")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
         self.endpoint = endpoint
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.max_tokens = max_tokens
+        self.json_mode = json_mode
 
     def annotate(self, prompt: str) -> str:
         payload = {
             "model": self.model,
             "temperature": 0,
-            "response_format": {"type": "json_object"},
+            "max_tokens": self.max_tokens,
             "messages": [
                 {
                     "role": "system",
@@ -46,11 +61,13 @@ class HostedLLMClient:
                 {"role": "user", "content": prompt},
             ],
         }
+        if self.json_mode:
+            payload["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(
-            self.endpoint,
+            completion_url(self.endpoint),
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers=headers,
             method="POST",
@@ -71,7 +88,11 @@ class HostedLLMClient:
             raise RuntimeError("annotation endpoint response has no chat content") from exc
 
         if isinstance(content, str):
-            return content
+            if content.strip():
+                return content
+            raise RuntimeError(
+                "annotation endpoint returned empty content; increase max_tokens"
+            )
         if isinstance(content, list):
             text_parts = [
                 part["text"]

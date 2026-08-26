@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .client import AnnotationClient, HostedLLMClient
+from .config import load_env_file
 from .prompt import PROMPT_VERSION, build_annotation_prompt
 from .schema import parse_and_validate_json, normalize_price, validate_annotation_record
 
@@ -268,9 +269,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Resume-safe catalog annotation runner.")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--output-dir", default="data/derived/annotations/v1")
-    parser.add_argument("--endpoint", help="OpenAI-compatible chat-completions endpoint.")
+    parser.add_argument(
+        "--env-file",
+        help="Optional local KEY=VALUE file; never commit this file.",
+    )
+    parser.add_argument(
+        "--endpoint",
+        default=None,
+        help="Base URL ending in /v1 or full /chat/completions URL.",
+    )
     parser.add_argument("--api-key-env", default="ANNOTATION_API_KEY")
-    parser.add_argument("--model", default=os.environ.get("ANNOTATION_MODEL", "catalog-annotator-v1"))
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument(
+        "--no-json-mode",
+        action="store_true",
+        help="Omit response_format for endpoints that do not support JSON mode.",
+    )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--retries", type=int, default=2)
@@ -279,23 +294,41 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    if args.env_file:
+        try:
+            load_env_file(args.env_file)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+
+    endpoint = (
+        args.endpoint
+        or os.environ.get("ANNOTATION_BASE_URL")
+        or os.environ.get("ANNOTATION_ENDPOINT")
+    )
+    model = args.model or os.environ.get("ANNOTATION_MODEL", "catalog-annotator-v1")
+
     if args.dry_run:
         client = None
     else:
-        if not args.endpoint:
-            parser.error("--endpoint is required unless --dry-run is used")
+        if not endpoint:
+            parser.error(
+                "--endpoint, ANNOTATION_BASE_URL, or ANNOTATION_ENDPOINT "
+                "is required unless --dry-run is used"
+            )
         client = HostedLLMClient(
-            args.endpoint,
+            endpoint,
             api_key=os.environ.get(args.api_key_env),
-            model=args.model,
+            model=model,
             timeout=args.timeout,
+            max_tokens=args.max_tokens,
+            json_mode=not args.no_json_mode,
         )
 
     summary = run_annotation(
         args.catalog,
         args.output_dir,
         client,
-        model=args.model,
+        model=model,
         start=args.start,
         limit=args.limit,
         concurrency=args.concurrency,

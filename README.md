@@ -60,21 +60,38 @@ catalog.jsonl
     -> data/derived/catalog_facts/catalog_facts.jsonl
 ```
 
-The annotation runner is resumable: successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. It makes no network call unless `--endpoint` is supplied. Hosted endpoint URL, API key environment variable, model, timeout, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
+The annotation runner is resumable: successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. It makes no network call unless a local endpoint is configured. Hosted endpoint URL, API key environment variable, model, timeout, token limit, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
+
+Create a local environment file from the ignored template, then fill in your own endpoint, model, and key:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+`.env` is ignored by Git. Never paste the real API key into tracked files, README text, a commit, or a pull request. `ANNOTATION_BASE_URL` may be either an OpenAI-compatible `/v1` base URL or a full `/chat/completions` URL; the client adds the path when needed.
 
 Preview the work without calling a model:
 
-```bash
+```powershell
 python -m scripts.annotate_catalog --dry-run --limit 100
 ```
 
-Run annotation against an OpenAI-compatible hosted endpoint, then build and validate the canonical facts:
+First, make one local test request. The command below reads the ignored `.env`, uses a long timeout for a remote/local model, and keeps concurrency at one so the setup is easy to diagnose:
 
-```bash
-python -m scripts.annotate_catalog --endpoint "$ANNOTATION_ENDPOINT" --output-dir data/derived/annotations/v1
+```powershell
+python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 4096 --concurrency 1
+```
+
+After that succeeds, annotation can be parallelized. Adjust concurrency to the capacity of the endpoint:
+
+```powershell
+python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v1 --timeout 180 --max-tokens 4096 --concurrency 64 --retries 2
 python -m scripts.build_catalog_facts --annotations data/derived/annotations/v1/annotations.jsonl
 python -m scripts.validate_catalog_facts
 ```
+
+Use `--no-json-mode` if the endpoint does not support the OpenAI `response_format` option. The runner sends the API key only as an in-memory `Authorization` header and never writes it to output or the manifest.
 
 The model receives only useful product source fields and must return the versioned v1 schema for `category`, `brand`, `color`, `material`, `size`, `style`, `feature`, and `use_case`. Precision is preferred over coverage: accessories, warnings, negations, seller metadata, and unrelated examples must not become main-product facts. `parent_asin` and `price` are copied from the source catalog, and the original catalog remains unchanged.
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
 from annotation.build import build_catalog_facts
+from annotation.client import HostedLLMClient, completion_url
+from annotation.config import load_env_file
 from annotation.prompt import build_annotation_prompt
 from annotation.runner import run_annotation
 from annotation.schema import parse_and_validate_json
@@ -160,6 +164,66 @@ class AnnotationPipelineTests(unittest.TestCase):
             self.assertEqual(client.calls, 2)
             self.assertEqual(summary["successful"], 1)
             self.assertEqual(summary["failed"], 0)
+
+    def test_local_endpoint_configuration_is_safe_and_openai_compatible(self) -> None:
+        self.assertEqual(
+            completion_url("https://example.test/v1/"),
+            "https://example.test/v1/chat/completions",
+        )
+        self.assertEqual(
+            completion_url("https://example.test/v1/chat/completions"),
+            "https://example.test/v1/chat/completions",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text(
+                "ANNOTATION_TEST_EXISTING=from-file\n"
+                "ANNOTATION_TEST_FILE_ONLY=loaded\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"ANNOTATION_TEST_EXISTING": "process"}, clear=False):
+                loaded = load_env_file(env_file)
+                self.assertEqual(loaded, 1)
+                self.assertEqual(os.environ["ANNOTATION_TEST_EXISTING"], "process")
+                self.assertEqual(os.environ["ANNOTATION_TEST_FILE_ONLY"], "loaded")
+
+        response_body = json.dumps({
+            "choices": [{
+                "message": {"content": json.dumps({"category": ["shirts"]})},
+            }],
+        }).encode("utf-8")
+
+        class Response:
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return response_body
+
+        with patch("annotation.client.urllib.request.urlopen", return_value=Response()) as request:
+            client = HostedLLMClient(
+                "https://example.test/v1/",
+                api_key="local-test-key",
+                model="qwen-test",
+                timeout=180,
+                max_tokens=300,
+                json_mode=False,
+            )
+            self.assertEqual(client.annotate("prompt"), '{"category": ["shirts"]}')
+            sent_request = request.call_args.args[0]
+            payload = json.loads(sent_request.data.decode("utf-8"))
+            self.assertEqual(sent_request.full_url, "https://example.test/v1/chat/completions")
+            self.assertEqual(payload["model"], "qwen-test")
+            self.assertEqual(payload["max_tokens"], 300)
+            self.assertNotIn("response_format", payload)
+            self.assertEqual(
+                sent_request.get_header("Authorization"),
+                "Bearer local-test-key",
+            )
 
     def test_dry_run_does_not_create_output_or_call_client(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
