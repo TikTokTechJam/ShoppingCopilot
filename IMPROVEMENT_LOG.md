@@ -27,26 +27,6 @@ These values are the published starter reference from the challenge README and w
 
 ## Improvement entries
 
-### 2026-08-26 — Fixed Manual400 benchmark source of truth
-
-- **Commit:** this PR (manual400 benchmark)
-- **Change:** Treat the already curated Manual400 files under `data/derived/manual400/` as immutable benchmark data. The evaluator reads fixed sessions, labels, audits, debug records, and the report; the full catalog is used only for target-ASIN validation and Agent retrieval.
-- **Why:** Judges need a stable, inspectable benchmark whose labels and hidden cards do not change when evaluation runs. Static validation checks cross-file consistency, evidence, scenario counts, and customer-facing text safety.
-- **Expected impact:** Make failures actionable without rewarding raw metadata leakage or noisy n-grams. The evaluator preserves the ten-turn limit, strict Agent schema, exact `parent_asin` equality, and the official `HitRate@10`, `MRR`, `MTTC`, `Efficiency`, and `TechnicalScore` metrics.
-- **Evaluation:** `python -m scripts.validate_manual400` validates the committed artifacts, `python -m unittest discover -s tests -p "test*.py"` runs the repository tests, and `python -m evaluator.manual400_evaluator --output results_manual400.json` evaluates the starter Agent against all 400 fixed sessions.
-
-| Metric | Final manual400 result |
-| --- | ---: |
-| Hit Rate@10 | 0.707500 |
-| MRR | 0.333712 |
-| MTTC | 5.135 |
-| Efficiency | 0.586500 |
-| TechnicalScore | 0.571164 |
-
-- **Dataset evidence:** The committed report records 400 unique targets, 400/400 passing label audits, and hidden cards of 2/3/4 facts in 123/143/134 sessions. The benchmark artifacts remain separate from the unchanged catalog and public set, and this PR removes the former builder path.
-- **Scenario evidence:** Boundary `0.450 / 0.157222222 / 7.150`, Browsing `0.68125 / 0.312539683 / 5.300`, Buying `0.78125 / 0.357368552 / 4.294`, and Intent Override `0.666667 / 0.385919312 / 6.267` for Hit Rate@10 / MRR / MTTC.
-- **Result and next step:** The benchmark is now reproducible by reading fixed files rather than rebuilding them. After the validation and evaluation rerun, the next agent iteration should improve stale-constraint replacement and ranking after an override.
-
 ### 2026-08-25 — Expected-utility adaptive search
 
 - **Commit:** [`50d010d`](https://github.com/TikTokTechJam/ShoppingCopilot/commit/50d010d7a6c2d5fe07957e55502f920a8c743e62)

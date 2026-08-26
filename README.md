@@ -48,21 +48,6 @@ The command writes per-session results and aggregate metrics to `results.json`.
 The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
 MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
 
-## Evidence-Backed Manual400 Stress Benchmark
-
-The quality-first stress set uses exactly 400 deterministic catalog products selected with seed `20260826`. Each target has curated, evidence-backed facts, an audited hidden card capped at four facts, and one of four scenarios: Buying (160), Browsing (160), Intent Override (60), or Boundary (20). The 200 public sessions are used only to sample realistic profile distributions; profile tags never invent target facts.
-
-The committed files under `data/derived/manual400/` are the immutable Manual400 benchmark source of truth: selected products, validated labels, sessions, debug records, label audits, and the report. Do not regenerate or overwrite them.
-
-Validate the fixed benchmark and run the evaluator:
-
-```bash
-python -m scripts.validate_manual400
-python -m evaluator.manual400_evaluator
-```
-
-The evaluator reads the committed sessions, simulates replies from their hidden facts, and uses the full catalog only as the Agent retrieval universe and target-ASIN validation set. It keeps `MAX_TURNS = 10`, `TOP_K = 10`, strict response validation, exact `parent_asin` scoring, and the TechnicalScore formula documented below.
-
 ## Agent Interface
 
 ```python
@@ -112,10 +97,6 @@ docs/evaluation_config.json       scoring configuration
 docs/baseline_results.json        reproducible weak-starter reference score
 starter/agent.py                  editable weak starter
 evaluator/local_evaluator.py      public-set simulator and scorer
-scripts/validate_manual400.py    read-only fixed Manual400 artifact validation
-evaluator/manual400_evaluator.py  manual400 runtime and exact scorer
-data/derived/manual400/           committed labels, sessions, audits, and report
-IMPROVEMENT_LOG.md                chronological change and evaluation record
 ```
 
 ## Judging and Submission Policy
