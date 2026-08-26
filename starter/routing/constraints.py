@@ -438,3 +438,253 @@ _TOPIC_FIELD = {
     "fit": "style", "brand": "brand", "feature": "feature",
     "budget": "price", "price": "price",
 }
+
+# Issue #7/#8 integration.  The original extractor remains available as an
+# offline compatibility fallback until Issue #5 facts have produced a
+# dictionary artifact.
+from dataclasses import dataclass as _dataclass, field as _field
+from pathlib import Path as _Path
+from typing import Callable as _Callable, Iterable as _Iterable, Mapping as _Mapping
+
+from dictionary.registry import AttributeDictionary as _AttributeDictionary
+from dictionary.registry import LookupMatch as _LookupMatch
+
+
+@_dataclass(frozen=True)
+class ConstraintEvidence:
+    """Internal provenance for one resolved constraint."""
+
+    canonical_id: str
+    attribute: str
+    raw_text: str
+    match_method: str
+    confidence: float
+
+
+@_dataclass(frozen=True)
+class CanonicalShoppingConstraints(ShoppingConstraints):
+    """Issue #7 output with optional resolver provenance."""
+
+    evidence: tuple[ConstraintEvidence, ...] = _field(default=())
+
+    def evidence_dict(self) -> list[dict[str, object]]:
+        return [
+            {
+                "canonical_id": item.canonical_id,
+                "attribute": item.attribute,
+                "raw_text": item.raw_text,
+                "match_method": item.match_method,
+                "confidence": item.confidence,
+            }
+            for item in self.evidence
+        ]
+
+
+@_dataclass(frozen=True)
+class _SpanMatch:
+    start: int
+    end: int
+    raw_text: str
+    canonical_ids: tuple[str, ...]
+
+
+@_dataclass(frozen=True)
+class _SemanticCandidate:
+    canonical_id: str
+    score: float
+
+
+SemanticMatcher = _Callable[[str], _Iterable[object]]
+
+
+_RESIDUAL_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for",
+        "from", "i", "in", "is", "it", "me", "my", "of", "on", "or", "please",
+        "some", "that", "the", "this", "to", "want", "with", "would", "you",
+        "looking", "need", "like", "something", "show", "find", "under", "below",
+        "less", "than", "more", "over", "between", "around", "about", "within",
+    }
+)
+
+
+def _load_default_dictionary() -> _AttributeDictionary | None:
+    directory = _Path("data/derived/dictionary")
+    if not (directory / "canonical_values.json").exists():
+        return None
+    if not (directory / "normalized_lookup.json").exists():
+        return None
+    return _AttributeDictionary.load(directory)
+
+
+def _dictionary_surface_matches(
+    dictionary: _AttributeDictionary,
+    text: str,
+) -> tuple[_SpanMatch, ...]:
+    found: dict[tuple[int, int], set[str]] = {}
+    for value in dictionary.values:
+        parts = [re.escape(part) for part in value.normalized.split()]
+        if not parts:
+            continue
+        pattern = r"(?<![A-Za-z0-9])" + r"[ _-]+".join(parts) + r"(?![A-Za-z0-9])"
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            found.setdefault((match.start(), match.end()), set()).add(
+                value.canonical_id
+            )
+    return tuple(
+        _SpanMatch(start, end, text[start:end], tuple(sorted(ids)))
+        for (start, end), ids in sorted(
+            found.items(), key=lambda item: (item[0][0], -(item[0][1] - item[0][0]))
+        )
+    )
+
+
+def _residual_phrase(text: str, claimed: list[tuple[int, int]]) -> str:
+    remaining = list(text)
+    for start, end in claimed:
+        for index in range(max(0, start), min(len(remaining), end)):
+            remaining[index] = " "
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9']*", "".join(remaining).lower())
+    return " ".join(token for token in tokens if token not in _RESIDUAL_STOPWORDS)
+
+
+def _semantic_items(
+    matcher: SemanticMatcher,
+    phrase: str,
+) -> tuple[_SemanticCandidate, ...]:
+    result = matcher(phrase)
+    if isinstance(result, (_LookupMatch, _Mapping)):
+        result = (result,)
+    items: list[_SemanticCandidate] = []
+    for item in result or ():
+        if isinstance(item, _LookupMatch):
+            items.append(_SemanticCandidate(item.canonical_id, item.similarity))
+        elif isinstance(item, _Mapping):
+            canonical_id = str(item.get("canonical_id", "")).strip()
+            if canonical_id:
+                score = item.get("score", item.get("similarity", 0.0))
+                items.append(_SemanticCandidate(canonical_id, float(score)))
+    return tuple(sorted(items, key=lambda item: (-item.score, item.canonical_id)))
+
+
+_legacy_extract_constraints = extract_constraints
+
+
+def _extract_dictionary_constraints(
+    message: str,
+    dictionary: _AttributeDictionary,
+    *,
+    semantic_matcher: SemanticMatcher | None = None,
+    semantic_threshold: float = 0.70,
+) -> CanonicalShoppingConstraints:
+    text = message or ""
+    values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
+    evidence: list[ConstraintEvidence] = []
+    unmapped: set[str] = set()
+    claimed: list[tuple[int, int]] = []
+
+    price_min, price_max = _extract_prices(text)
+    if price_min is not None or price_max is not None:
+        claimed.extend(
+            (match.start(), match.end())
+            for match in PRICE_EXPRESSION.finditer(text)
+        )
+        if price_min is not None:
+            evidence.append(ConstraintEvidence("price_min", "price", "", "structured", 1.0))
+        if price_max is not None:
+            evidence.append(ConstraintEvidence("price_max", "price", "", "structured", 1.0))
+
+    for match in SIZE_NUMERIC.finditer(text):
+        if any(match.start() < end and match.end() > start for start, end in claimed):
+            continue
+        claimed.append((match.start(), match.end()))
+        value = match.group(1)
+        if value not in values["size"]:
+            values["size"].append(value)
+            evidence.append(
+                ConstraintEvidence(
+                    f"size:{value}", "size", match.group(0), "structured", 1.0
+                )
+            )
+
+    for match in _dictionary_surface_matches(dictionary, text):
+        if any(match.start < end and match.end > start for start, end in claimed):
+            continue
+        claimed.append((match.start, match.end))
+        if len(match.canonical_ids) != 1:
+            unmapped.add(match.raw_text.strip().lower())
+            continue
+        entry = dictionary.get(match.canonical_ids[0])
+        if entry is None:
+            continue
+        if entry.value not in values[entry.attribute]:
+            values[entry.attribute].append(entry.value)
+            evidence.append(
+                ConstraintEvidence(
+                    entry.canonical_id, entry.attribute, match.raw_text, "exact", 1.0
+                )
+            )
+
+    residual = _residual_phrase(text, claimed)
+    if residual and semantic_matcher is not None:
+        semantic_matches = _semantic_items(semantic_matcher, residual)
+        if semantic_matches and semantic_matches[0].score >= semantic_threshold:
+            best = semantic_matches[0]
+            entry = dictionary.get(best.canonical_id)
+            if entry is not None and entry.attribute in CATEGORICAL_FIELDS:
+                if entry.value not in values[entry.attribute]:
+                    values[entry.attribute].append(entry.value)
+                    evidence.append(
+                        ConstraintEvidence(
+                            entry.canonical_id,
+                            entry.attribute,
+                            residual,
+                            "semantic",
+                            best.score,
+                        )
+                    )
+            else:
+                unmapped.add(residual)
+        else:
+            unmapped.add(residual)
+    elif residual:
+        unmapped.add(residual)
+
+    for word in ATTRIBUTE_TOPIC.findall(text):
+        field_name = _TOPIC_FIELD.get(word.lower(), "")
+        if field_name in CATEGORICAL_FIELDS and not values[field_name]:
+            unmapped.add(word.lower())
+
+    return CanonicalShoppingConstraints(
+        price_min=price_min,
+        price_max=price_max,
+        unmapped=tuple(sorted(unmapped)),
+        evidence=tuple(evidence),
+        **{name: tuple(found) for name, found in values.items()},
+    )
+
+
+def extract_constraints(
+    message: str,
+    *,
+    dictionary: _AttributeDictionary | None = None,
+    semantic_matcher: SemanticMatcher | None = None,
+    semantic_threshold: float = 0.70,
+) -> ShoppingConstraints:
+    """Extract constraints using #8 exact lookup and optional semantic fallback.
+
+    Structured price/size parsing runs first. Exact dictionary values are then
+    matched longest-first, and only the unmatched meaningful phrase reaches the
+    injected semantic matcher. Results below the threshold remain unresolved.
+    Until a generated dictionary artifact exists, the legacy offline vocabulary
+    is used so the starter remains runnable without Issue #5 data.
+    """
+    active_dictionary = dictionary if dictionary is not None else _load_default_dictionary()
+    if active_dictionary is None:
+        return _legacy_extract_constraints(message)
+    return _extract_dictionary_constraints(
+        message,
+        active_dictionary,
+        semantic_matcher=semantic_matcher,
+        semantic_threshold=semantic_threshold,
+    )
