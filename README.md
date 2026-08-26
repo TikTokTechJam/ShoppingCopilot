@@ -48,6 +48,36 @@ The command writes per-session results and aggregate metrics to `results.json`.
 The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
 MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
 
+## Canonical Catalog Facts (Issue #5)
+
+Issue #5 provides a reusable product-facts layer without modifying the frozen `data/catalog.jsonl`. The file-based pipeline separates the hosted-model annotation/audit artifacts from the deterministic Agent-facing `catalog_facts.jsonl` output:
+
+```text
+catalog.jsonl
+    -> scripts.annotate_catalog
+    -> data/derived/annotations/v1/annotations.jsonl + failures.jsonl + manifest.json
+    -> scripts.build_catalog_facts
+    -> data/derived/catalog_facts/catalog_facts.jsonl
+```
+
+The annotation runner is resumable: successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. It makes no network call unless `--endpoint` is supplied. Hosted endpoint URL, API key environment variable, model, timeout, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
+
+Preview the work without calling a model:
+
+```bash
+python -m scripts.annotate_catalog --dry-run --limit 100
+```
+
+Run annotation against an OpenAI-compatible hosted endpoint, then build and validate the canonical facts:
+
+```bash
+python -m scripts.annotate_catalog --endpoint "$ANNOTATION_ENDPOINT" --output-dir data/derived/annotations/v1
+python -m scripts.build_catalog_facts --annotations data/derived/annotations/v1/annotations.jsonl
+python -m scripts.validate_catalog_facts
+```
+
+The model receives only useful product source fields and must return the versioned v1 schema for `category`, `brand`, `color`, `material`, `size`, `style`, `feature`, and `use_case`. Precision is preferred over coverage: accessories, warnings, negations, seller metadata, and unrelated examples must not become main-product facts. `parent_asin` and `price` are copied from the source catalog, and the original catalog remains unchanged.
+
 ## Hard Evaluator and Expected-Utility Search Benchmark
 
 The repository also includes a fixed hard benchmark for the expected-utility adaptive search policy. It contains 400 GPTAnnotation sessions in `data/derived/gptannotation/sessions.jsonl`: 160 Buying, 160 Browsing, 60 Intent Override, and 20 Boundary sessions. Each session has a catalog target and evidence-backed hidden facts used only by the simulator.
@@ -111,6 +141,10 @@ docs/evaluation_config.json       scoring configuration
 docs/baseline_results.json        reproducible weak-starter reference score
 starter/agent.py                  editable weak starter
 evaluator/local_evaluator.py      public-set simulator and scorer
+annotation/                       annotation prompt, schema, client, and runner
+scripts/annotate_catalog.py      resumable hosted-model annotation CLI
+scripts/build_catalog_facts.py   deterministic canonical-facts builder
+scripts/validate_catalog_facts.py read-only canonical-facts validator
 evaluator/hard_evaluator.py       fixed GPTAnnotation hard benchmark evaluator
 data/derived/gptannotation/       400-session hard benchmark input
 IMPROVEMENT_LOG.md                chronological change and evaluation record
