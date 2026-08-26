@@ -83,41 +83,6 @@ class Agent:
 
 `ask_attribute` is one of `category`, `material`, `color`, `size`, `style`, `brand`, `budget`, `feature`, `use_case`, `other`, or `null`. See `docs/agent_api_contract.json`.
 
-## Buying vs Browsing Intent Router
-
-`starter/routing/` contains the intent-routing component from issue #6. It
-classifies one customer message as `BUYING` or `BROWSING` with a confidence,
-and is independent of retrieval and recommendation.
-
-```python
-from starter.routing import build_default_router
-
-router = build_default_router()
-router.classify("I need black waterproof hiking boots under $100.").as_dict()
-# {'intent': 'BUYING', 'confidence': 0.99, ..., 'tier': 'rules'}
-```
-
-It runs in two phases. Phase 1 extracts canonical shopping constraints from
-the message and routes `BUYING` when two or more distinct constraint fields
-are filled — a colour and a price, a brand and a size. Phase 2 handles what
-Phase 1 cannot settle with a deterministic signal scorer, optionally escalating
-messages it is unsure about to Qwen3-Reranker-0.6B running locally on CPU.
-Anything still undecided is routed `BROWSING`, because that is the recoverable
-error: broad retrieval plus a clarifying question converges, whereas a wrong
-`BUYING` narrows onto constraints nobody gave.
-
-The model is optional:
-
-```bash
-pip install -r requirements-reranker.txt
-python -m tools.fetch_reranker          # ~1.2 GB, git-ignored
-python -m tools.eval_intent_router --model
-```
-
-Without it the router runs rules-only and still meets its contract. No network
-access or API credentials are needed at run time, and routing consumes no
-model tokens. See `docs/adr/0001-buying-vs-browsing-intent-router.md`.
-
 ## Technical Metrics
 
 - **Hit Rate@10:** fraction of sessions that find the target within 10 turns.
