@@ -280,7 +280,7 @@ def main() -> None:
     )
     parser.add_argument("--api-key-env", default="ANNOTATION_API_KEY")
     parser.add_argument("--model", default=None)
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=6000)
     parser.add_argument(
         "--no-json-mode",
         action="store_true",

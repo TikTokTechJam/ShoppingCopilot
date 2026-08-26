@@ -30,7 +30,7 @@ class HostedLLMClient:
         api_key: str | None = None,
         model: str,
         timeout: float = 60.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 6000,
         json_mode: bool = True,
     ) -> None:
         if not endpoint.strip():
@@ -87,6 +87,10 @@ class HostedLLMClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("annotation endpoint response has no chat content") from exc
 
+        if content is None:
+            raise RuntimeError(
+                "annotation endpoint returned empty content; increase max_tokens"
+            )
         if isinstance(content, str):
             if content.strip():
                 return content
@@ -94,6 +98,10 @@ class HostedLLMClient:
                 "annotation endpoint returned empty content; increase max_tokens"
             )
         if isinstance(content, list):
+            if not content:
+                raise RuntimeError(
+                    "annotation endpoint returned empty content; increase max_tokens"
+                )
             text_parts = [
                 part["text"]
                 for part in content

@@ -80,13 +80,13 @@ python -m scripts.annotate_catalog --dry-run --limit 100
 First, make one local test request. The command below reads the ignored `.env`, uses a long timeout for a remote/local model, and keeps concurrency at one so the setup is easy to diagnose:
 
 ```powershell
-python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 4096 --concurrency 1
+python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 6000 --concurrency 1
 ```
 
 After that succeeds, annotation can be parallelized. Adjust concurrency to the capacity of the endpoint:
 
 ```powershell
-python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v1 --timeout 180 --max-tokens 4096 --concurrency 64 --retries 2
+python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v1 --timeout 180 --max-tokens 6000 --concurrency 64 --retries 2
 python -m scripts.build_catalog_facts --annotations data/derived/annotations/v1/annotations.jsonl
 python -m scripts.validate_catalog_facts
 ```
