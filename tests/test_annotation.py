@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 from pathlib import Path
 from typing import Any
@@ -164,6 +166,31 @@ class AnnotationPipelineTests(unittest.TestCase):
             self.assertEqual(client.calls, 2)
             self.assertEqual(summary["successful"], 1)
             self.assertEqual(summary["failed"], 0)
+
+    def test_runner_emits_flushed_progress_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            catalog.write_text(json.dumps({"parent_asin": "A1"}) + "\n", encoding="utf-8")
+            logs = io.StringIO()
+
+            with redirect_stderr(logs):
+                summary = run_annotation(
+                    catalog,
+                    root / "annotations",
+                    StaticClient(),
+                    model="test-model",
+                    progress=True,
+                )
+
+            self.assertEqual(summary["successful"], 1)
+            output = logs.getvalue()
+            self.assertIn("[annotate_catalog] start ", output)
+            self.assertIn("queued parent_asin=A1", output)
+            self.assertIn("request parent_asin=A1", output)
+            self.assertIn("success parent_asin=A1", output)
+            self.assertIn("batch_complete", output)
+            self.assertIn("complete selected=1", output)
 
     def test_local_endpoint_configuration_is_safe_and_openai_compatible(self) -> None:
         self.assertEqual(

@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -99,6 +102,20 @@ def _annotation_record(
     }
 
 
+def _emit_progress(message: str, *, enabled: bool, lock: threading.Lock) -> None:
+    if not enabled:
+        return
+    with lock:
+        print(f"[annotate_catalog] {message}", file=sys.stderr, flush=True)
+
+
+def _compact_error(exc: Exception) -> str:
+    detail = " ".join(str(exc).split())
+    if not detail:
+        detail = type(exc).__name__
+    return detail[:240]
+
+
 def _process_product(
     product: Mapping[str, Any],
     attempt: int,
@@ -107,13 +124,31 @@ def _process_product(
     model: str,
     prompt_version: str,
     retries: int,
+    progress: bool,
+    progress_lock: threading.Lock,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     parent_asin = str(product["parent_asin"])
     last_error: Exception | None = None
-    for _ in range(retries + 1):
+    product_started = time.perf_counter()
+    total_attempts = retries + 1
+    for retry_index in range(total_attempts):
+        current_attempt = attempt + retry_index
+        _emit_progress(
+            f"request parent_asin={parent_asin} attempt={current_attempt} "
+            f"of={attempt + retries}",
+            enabled=progress,
+            lock=progress_lock,
+        )
         try:
             raw_response = client.annotate(build_annotation_prompt(product))
             facts = parse_and_validate_json(raw_response)
+            elapsed = time.perf_counter() - product_started
+            _emit_progress(
+                f"success parent_asin={parent_asin} attempt={current_attempt} "
+                f"elapsed={elapsed:.1f}s",
+                enabled=progress,
+                lock=progress_lock,
+            )
             return _annotation_record(
                 product,
                 facts,
@@ -122,9 +157,23 @@ def _process_product(
             ), None
         except Exception as exc:
             last_error = exc
+            if retry_index + 1 < total_attempts:
+                _emit_progress(
+                    f"retry parent_asin={parent_asin} after_attempt={current_attempt} "
+                    f"next_attempt={current_attempt + 1} error={_compact_error(exc)}",
+                    enabled=progress,
+                    lock=progress_lock,
+                )
 
     assert last_error is not None
     error = f"{type(last_error).__name__}: {str(last_error).strip()}".strip()
+    elapsed = time.perf_counter() - product_started
+    _emit_progress(
+        f"failed parent_asin={parent_asin} attempt={attempt + retries} "
+        f"elapsed={elapsed:.1f}s error={_compact_error(last_error)}",
+        enabled=progress,
+        lock=progress_lock,
+    )
     return None, {
         "parent_asin": parent_asin,
         "error": error[:500],
@@ -148,6 +197,8 @@ def run_annotation(
     concurrency: int = 1,
     retries: int = 2,
     dry_run: bool = False,
+    progress: bool = False,
+    log_every: int = 1,
 ) -> dict[str, Any]:
     if start < 0:
         raise ValueError("start must be non-negative")
@@ -157,6 +208,8 @@ def run_annotation(
         raise ValueError("concurrency must be positive")
     if retries < 0:
         raise ValueError("retries must be non-negative")
+    if log_every < 1:
+        raise ValueError("log_every must be positive")
     if not dry_run and client is None:
         raise ValueError("client is required unless dry_run is enabled")
 
@@ -175,6 +228,16 @@ def run_annotation(
     pending_count = 0
     new_successes = 0
     new_failures = 0
+    progress_lock = threading.Lock()
+    run_started = time.perf_counter()
+
+    _emit_progress(
+        f"start catalog={catalog_path} output_dir={output_path} "
+        f"start={start} limit={limit if limit is not None else 'all'} "
+        f"concurrency={concurrency} retries={retries} dry_run={dry_run}",
+        enabled=progress,
+        lock=progress_lock,
+    )
 
     def pending_items() -> Iterable[tuple[dict[str, Any], int]]:
         nonlocal source_count, selected_count, pending_count
@@ -187,11 +250,23 @@ def run_annotation(
             if parent_asin in completed:
                 continue
             pending_count += 1
+            if pending_count <= 5 or pending_count % log_every == 0:
+                _emit_progress(
+                    f"queued parent_asin={parent_asin} pending={pending_count}",
+                    enabled=progress,
+                    lock=progress_lock,
+                )
             yield product, failure_attempts.get(parent_asin, 0) + 1
 
     if dry_run:
         for _ in pending_items():
             pass
+        _emit_progress(
+            f"dry_run_complete scanned={source_count} selected={selected_count} "
+            f"pending={pending_count} elapsed={time.perf_counter() - run_started:.1f}s",
+            enabled=progress,
+            lock=progress_lock,
+        )
         return {
             "dry_run": True,
             "source_product_count": source_count,
@@ -213,6 +288,12 @@ def run_annotation(
             nonlocal new_successes, new_failures
             if not batch:
                 return
+            batch_size = len(batch)
+            _emit_progress(
+                f"batch_start size={batch_size}",
+                enabled=progress,
+                lock=progress_lock,
+            )
 
             def process(item: tuple[dict[str, Any], int]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
                 product, attempt = item
@@ -223,6 +304,8 @@ def run_annotation(
                     model=model,
                     prompt_version=prompt_version,
                     retries=retries,
+                    progress=progress,
+                    progress_lock=progress_lock,
                 )
 
             for record, failure in executor.map(process, batch):
@@ -235,6 +318,12 @@ def run_annotation(
                     _write_line(failure_handle, failure)
                     failure_attempts[failure["parent_asin"]] = failure["attempt"]
                     new_failures += 1
+            _emit_progress(
+                f"batch_complete size={batch_size} new_successes={new_successes} "
+                f"new_failures={new_failures}",
+                enabled=progress,
+                lock=progress_lock,
+            )
             batch.clear()
 
         for item in pending_items():
@@ -262,6 +351,13 @@ def run_annotation(
         encoding="utf-8",
     )
     temporary_manifest.replace(manifest_path)
+    _emit_progress(
+        f"complete selected={selected_count} processed={new_successes + new_failures} "
+        f"successful={len(completed)} failed={len(set(failure_attempts) - completed)} "
+        f"elapsed={time.perf_counter() - run_started:.1f}s",
+        enabled=progress,
+        lock=progress_lock,
+    )
     return manifest
 
 
@@ -291,8 +387,21 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=1,
+        help="Log every N queued products; request/retry results are always logged.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress progress logs; final JSON summary is still printed.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.log_every < 1:
+        parser.error("--log-every must be positive")
 
     if args.env_file:
         try:
@@ -334,6 +443,8 @@ def main() -> None:
         concurrency=args.concurrency,
         retries=args.retries,
         dry_run=args.dry_run,
+        progress=not args.quiet,
+        log_every=args.log_every,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

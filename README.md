@@ -83,10 +83,12 @@ First, make one local test request. The command below reads the ignored `.env`, 
 python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 6000 --concurrency 1
 ```
 
+Progress is printed immediately to stderr, including the selected product, request attempt, retry reason, success/failure, elapsed time, and batch totals. The final JSON summary remains on stdout. Use `--log-every 100` for a large run, or `--quiet` to suppress progress logs.
+
 After that succeeds, annotation can be parallelized. Adjust concurrency to the capacity of the endpoint:
 
 ```powershell
-python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v1 --timeout 180 --max-tokens 6000 --concurrency 64 --retries 2
+python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v1 --timeout 180 --max-tokens 6000 --concurrency 64 --retries 2 --log-every 100
 python -m scripts.build_catalog_facts --annotations data/derived/annotations/v1/annotations.jsonl
 python -m scripts.validate_catalog_facts
 ```

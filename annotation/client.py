@@ -20,6 +20,19 @@ class AnnotationClient(Protocol):
         """Return the model's structured JSON object or its JSON text."""
 
 
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = json.loads(exc.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return f"annotation endpoint returned HTTP {exc.code}"
+    error = body.get("error", body) if isinstance(body, dict) else {}
+    message = error.get("message") if isinstance(error, dict) else None
+    if isinstance(message, str) and message.strip():
+        compact = " ".join(message.split())
+        return f"annotation endpoint returned HTTP {exc.code}: {compact[:400]}"
+    return f"annotation endpoint returned HTTP {exc.code}"
+
+
 class HostedLLMClient:
     """Small OpenAI-compatible HTTP client with no hardcoded credentials."""
 
@@ -76,31 +89,40 @@ class HostedLLMClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 response_payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"annotation endpoint returned HTTP {exc.code}") from exc
+            raise RuntimeError(_http_error_detail(exc)) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"annotation endpoint request failed: {exc.reason}") from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError("annotation endpoint returned invalid JSON") from exc
 
         try:
-            content = response_payload["choices"][0]["message"]["content"]
+            choice = response_payload["choices"][0]
+            message = choice["message"]
+            content = message["content"]
+            finish_reason = choice.get("finish_reason")
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("annotation endpoint response has no chat content") from exc
 
         if content is None:
+            detail = f"; finish_reason={finish_reason}" if finish_reason else ""
             raise RuntimeError(
-                "annotation endpoint returned empty content; increase max_tokens"
+                "annotation endpoint returned empty content"
+                f"{detail}; increase max_tokens"
             )
         if isinstance(content, str):
             if content.strip():
                 return content
+            detail = f"; finish_reason={finish_reason}" if finish_reason else ""
             raise RuntimeError(
-                "annotation endpoint returned empty content; increase max_tokens"
+                "annotation endpoint returned empty content"
+                f"{detail}; increase max_tokens"
             )
         if isinstance(content, list):
             if not content:
+                detail = f"; finish_reason={finish_reason}" if finish_reason else ""
                 raise RuntimeError(
-                    "annotation endpoint returned empty content; increase max_tokens"
+                    "annotation endpoint returned empty content"
+                    f"{detail}; increase max_tokens"
                 )
             text_parts = [
                 part["text"]
