@@ -33,7 +33,25 @@ These values are the published starter reference from the challenge README and w
 - **Change:** Added a fixed GPTAnnotation hard benchmark with 400 sessions across Buying (160), Browsing (160), Intent Override (60), and Boundary (20). The evaluator simulates replies from committed hidden facts, validates Agent responses strictly, and scores exact catalog `parent_asin` recommendations under the ten-turn protocol.
 - **Why:** The public-set score alone does not show whether an adaptive question policy can acquire useful evidence, handle no-preference branches, or replace stale constraints after an intent override. A fixed hard benchmark makes those behaviors reproducible and inspectable.
 - **Expected impact:** Measure whether expected-utility query selection improves Top-10 identification and time-to-correctness across different conversational conditions without rebuilding or semantically relabeling the benchmark at evaluation time.
-- **Evaluation:** `python -m evaluator.hard_evaluator` reads `data/derived/gptannotation/sessions.jsonl` and `data/catalog.jsonl`, runs the Agent for at most 10 turns, and reports Hit Rate@10, MRR, MTTC, Efficiency, TechnicalScore, and per-scenario metrics. A 20-session smoke run on the current Agent (five evenly spaced sessions per scenario) produced Hit Rate@10 `0.600`, MRR `0.250198`, MTTC `6.950`, and TechnicalScore `0.456060`.
+- **Evaluation:** `python -m evaluator.hard_evaluator` reads `data/derived/gptannotation/sessions.jsonl` and `data/catalog.jsonl`, runs the Agent for at most 10 turns, and reports Hit Rate@10, MRR, MTTC, Efficiency, TechnicalScore, and per-scenario metrics. The fast smoke run used 20 real sessions, five evenly spaced from each scenario.
+
+| Metric | Hard smoke result |
+| --- | ---: |
+| Sessions | 20 |
+| Hit Rate@10 | 0.600 |
+| MRR | 0.250198 |
+| MTTC | 6.950 |
+| Efficiency | 0.405000 |
+| TechnicalScore | 0.456060 |
+
+Scenario results from the hard-evaluator smoke run:
+
+| Scenario | Sessions | Hit Rate@10 | MRR | MTTC | TechnicalScore |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Buying | 5 | 1.000 | 0.290000 | 3.200 | 0.743000 |
+| Browsing | 5 | 0.600 | 0.268571 | 6.800 | 0.464571 |
+| Intent Override | 5 | 0.800 | 0.442222 | 6.800 | 0.616667 |
+| Boundary | 5 | 0.000 | 0.000000 | 11.000 | 0.000000 |
 - **Evidence:** The benchmark has 400 unique catalog targets and the required scenario counts. The evaluator uses attribute-scoped fact IDs, fixed evidence fields, exact ASIN equality, and process-local simulation state; it does not reconstruct ontology facts from the catalog.
 - **Result and next step:** The smoke result is encouraging for Buying and Intent Override but exposed a Boundary weakness (`0/5` in the smoke sample). Run the full 400-session benchmark after the next Agent iteration and focus on boundary/no-preference handling while preserving override behavior.
 
@@ -43,7 +61,7 @@ These values are the published starter reference from the challenge README and w
 - **Change:** Replaced stateless BM25 retrieval with a bounded adaptive-search policy. The agent maintains the active conversation constraints, retrieves an 800-product lexical posterior, estimates expected Top-10 concentration and information gain for each unused attribute, and asks the highest-utility question. It also handles explicit no-preference answers and resets stale constraints after an intent override.
 - **Why:** The starter agent returned recommendations without asking questions and lost earlier context after each customer reply. That made it unable to use the evaluator's simulated clarification branches.
 - **Expected impact:** Improve Hit Rate@10 and MRR by acquiring material, feature, color, style, size, use-case, budget, or brand evidence while reducing the number of turns needed to identify the target.
-- **Evaluation:** `python -m evaluator.local_evaluator` on all 200 public sessions, using the same catalog and dataset as the baseline.
+- **Historical evaluation:** `python -m evaluator.local_evaluator` on all 200 public sessions, using the same catalog and dataset as the baseline. These public-set numbers are retained as historical context; current benchmark reporting uses `python -m evaluator.hard_evaluator` and the fixed GPTAnnotation sessions above.
 
 | Metric | Before | After | Change |
 | --- | ---: | ---: | ---: |
