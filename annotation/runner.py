@@ -175,7 +175,8 @@ def _process_product(
     total_elapsed = time.perf_counter() - product_started
     _emit_progress(
         f"failed parent_asin={parent_asin} attempt={attempt + retries} "
-        f"total_elapsed={total_elapsed:.1f}s error={_compact_error(last_error)}",
+        f"request_elapsed={request_elapsed:.1f}s total_elapsed={total_elapsed:.1f}s "
+        f"error={_compact_error(last_error)}",
         enabled=progress,
         lock=progress_lock,
     )
