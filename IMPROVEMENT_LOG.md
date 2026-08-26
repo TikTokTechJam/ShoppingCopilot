@@ -33,27 +33,27 @@ These values are the published starter reference from the challenge README and w
 - **Change:** Added a fixed GPTAnnotation hard benchmark with 400 sessions across Buying (160), Browsing (160), Intent Override (60), and Boundary (20). The evaluator simulates replies from committed hidden facts, validates Agent responses strictly, and scores exact catalog `parent_asin` recommendations under the ten-turn protocol.
 - **Why:** The public-set score alone does not show whether an adaptive question policy can acquire useful evidence, handle no-preference branches, or replace stale constraints after an intent override. A fixed hard benchmark makes those behaviors reproducible and inspectable.
 - **Expected impact:** Measure whether expected-utility query selection improves Top-10 identification and time-to-correctness across different conversational conditions without rebuilding or semantically relabeling the benchmark at evaluation time.
-- **Evaluation:** `python -m evaluator.hard_evaluator` reads `data/derived/gptannotation/sessions.jsonl` and `data/catalog.jsonl`, runs the Agent for at most 10 turns, and reports Hit Rate@10, MRR, MTTC, Efficiency, TechnicalScore, and per-scenario metrics. The fast smoke run used 20 real sessions, five evenly spaced from each scenario.
+- **Evaluation:** `python -m evaluator.hard_evaluator` on all 400 fixed GPTAnnotation sessions, using `data/catalog.jsonl` as the Agent retrieval universe and exact target-ASIN validation source. The evaluator runs the Agent for at most 10 turns and reports Hit Rate@10, MRR, MTTC, Efficiency, TechnicalScore, and per-scenario metrics.
 
-| Metric | Hard smoke result |
+| Metric | Full hard-benchmark result |
 | --- | ---: |
-| Sessions | 20 |
-| Hit Rate@10 | 0.600 |
-| MRR | 0.250198 |
-| MTTC | 6.950 |
-| Efficiency | 0.405000 |
-| TechnicalScore | 0.456060 |
+| Sessions | 400 |
+| Hit Rate@10 | 0.507500 |
+| MRR | 0.163393 |
+| MTTC | 7.5425 |
+| Efficiency | 0.345750 |
+| TechnicalScore | 0.371918 |
 
-Scenario results from the hard-evaluator smoke run:
+Scenario results from the full hard-evaluator run:
 
-| Scenario | Sessions | Hit Rate@10 | MRR | MTTC | TechnicalScore |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Buying | 5 | 1.000 | 0.290000 | 3.200 | 0.743000 |
-| Browsing | 5 | 0.600 | 0.268571 | 6.800 | 0.464571 |
-| Intent Override | 5 | 0.800 | 0.442222 | 6.800 | 0.616667 |
-| Boundary | 5 | 0.000 | 0.000000 | 11.000 | 0.000000 |
+| Scenario | Sessions | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Buying | 160 | 0.568750 | 0.179975 | 6.7000 | 0.430000 | 0.424368 |
+| Browsing | 160 | 0.487500 | 0.163177 | 8.08125 | 0.291875 | 0.351078 |
+| Intent Override | 60 | 0.416667 | 0.129213 | 8.166667 | 0.283333 | 0.303764 |
+| Boundary | 20 | 0.450000 | 0.135000 | 8.1000 | 0.290000 | 0.323500 |
 - **Evidence:** The benchmark has 400 unique catalog targets and the required scenario counts. The evaluator uses attribute-scoped fact IDs, fixed evidence fields, exact ASIN equality, and process-local simulation state; it does not reconstruct ontology facts from the catalog.
-- **Result and next step:** The smoke result is encouraging for Buying and Intent Override but exposed a Boundary weakness (`0/5` in the smoke sample). Run the full 400-session benchmark after the next Agent iteration and focus on boundary/no-preference handling while preserving override behavior.
+- **Result and next step:** The full benchmark confirms that Buying is the strongest scenario, while Intent Override is currently weakest by Hit Rate@10, MRR, MTTC, and TechnicalScore. The next Agent iteration should focus on stale-constraint replacement and boundary/no-preference handling, then rerun all 400 sessions.
 
 ### 2026-08-25 — Expected-utility adaptive search
 
