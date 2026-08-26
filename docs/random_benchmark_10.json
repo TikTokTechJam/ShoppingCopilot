@@ -1,0 +1,489 @@
+{
+  "benchmark": "independent random catalog free-form benchmark",
+  "seed": 20260825,
+  "sample_count": 10,
+  "selection": {
+    "method": "uniform random sample from sorted eligible catalog products",
+    "eligible_products": 49798,
+    "excluded_public_targets": 200,
+    "scenario_mix": {
+      "buying": 4,
+      "browsing": 4,
+      "intent_override": 1,
+      "boundary": 1
+    },
+    "uses_public_session_targets": false,
+    "clue_generation": "fixed-seed shuffle of raw features, detail values, descriptions, and price",
+    "reconstructs_evaluator_intent_card": false
+  },
+  "metrics": {
+    "hit_rate_at_10": 1.0,
+    "mrr": 0.883333,
+    "mttc": 1.9,
+    "efficiency": 0.91,
+    "technical_score": 0.947
+  },
+  "timing": {
+    "index_build_seconds": 20.689812,
+    "response_count": 19,
+    "mean_response_ms": 150.069,
+    "p95_response_ms": 377.79,
+    "max_response_ms": 377.79,
+    "total_benchmark_seconds": 24.117523
+  },
+  "sessions": [
+    {
+      "sample_id": "random_20260825_01",
+      "scenario_type": "browsing",
+      "target_parent_asin": "B008KAAKWA",
+      "target_title": "Vivobarefoot Men's Dharma Shoe",
+      "target_category": "Shoes Fashion Sneakers",
+      "hit": true,
+      "first_hit_turn": 2,
+      "target_rank": 2,
+      "reciprocal_rank": 0.5,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "Help me explore Shoes Fashion Sneakers; I am open to ideas.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B07CVH5Y1T",
+            "B071XPZJWK",
+            "B071R7V5MF",
+            "B08929W3MW",
+            "B00B630DSY",
+            "B00NCV5XD8",
+            "B00NCV2WMS",
+            "B0829X6XTY",
+            "B07S2Y3THP",
+            "B07BSJ1FPQ"
+          ]
+        },
+        {
+          "turn": 2,
+          "customer": "I care about 13.3 x 7.5 x 4.9 inches; 12 Ounces and 100% manmade.",
+          "ask_attribute": "material",
+          "top_10": [
+            "B00ISSOVB0",
+            "B008KAAKWA",
+            "B00KBSV3QG",
+            "B0016CFLDM",
+            "B01K11IZHW",
+            "B01NA9O1GV",
+            "B07FPVFW3Q",
+            "B00KYCF81A",
+            "B00L33ODK6",
+            "B06VWVWQ4L"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_02",
+      "scenario_type": "browsing",
+      "target_parent_asin": "B01I48CMJG",
+      "target_title": "Irish Setter Work Women's Crosby Nano Toe Waterproof 8\" Boot",
+      "target_category": "Boots Ankle & Bootie",
+      "hit": true,
+      "first_hit_turn": 2,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "Help me explore Boots Ankle & Bootie; I am open to ideas.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B09PJQPDHS",
+            "B08P2RN1ST",
+            "B072QCBBDS",
+            "B07VQH6L7M",
+            "B072C8T9M5",
+            "B07BMJ77FR",
+            "B06XSPLDCF",
+            "B01HJA0W24",
+            "B08WJNJXK6",
+            "B00ZSPI8RY"
+          ]
+        },
+        {
+          "turn": 2,
+          "customer": "I care about Style No. 83210 and In 1950, Red Wing introduced the 854 boot style. Designed for hunting, it was crafted from a distinctive red russet leather that later went .",
+          "ask_attribute": "material",
+          "top_10": [
+            "B01I48CMJG",
+            "B002C4JRW4",
+            "B00CE8UJRK",
+            "B001B78AH6",
+            "B004BZK5O6",
+            "B00YM2X2AW",
+            "B009OL2L94",
+            "B01L37BM1Y",
+            "B00DPGRQ3K",
+            "B073X9SVPT"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_03",
+      "scenario_type": "buying",
+      "target_parent_asin": "B08PYYF29M",
+      "target_title": "50pcs Different Shoe Charms for boys with 2 Bracelets,Hero Cartoon Shoe Charms for Crocs,Shoe Decoration Charms for Shoes,Shoe Charms for teens birthday party gifts",
+      "target_category": "Shoe Care & Accessories Shoe Decoration Charms",
+      "hit": true,
+      "first_hit_turn": 1,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "I need Shoe Care & Accessories Shoe Decoration Charms. The key requirement is 25 years and up.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B08PYYF29M",
+            "B09NFDD3GR",
+            "B09YXYKB24",
+            "B0BKYY65TG",
+            "B09CG7FZTP",
+            "B09PBC3TF1",
+            "B0B2QKGJWT",
+            "B009Y8VJD6",
+            "B07DBLWSH2",
+            "B09PZXZH2L"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_04",
+      "scenario_type": "browsing",
+      "target_parent_asin": "B00TSQY6JS",
+      "target_title": "RAB Expedition 8000 Mitt - Men's",
+      "target_category": "Gloves & Mittens Mittens",
+      "hit": true,
+      "first_hit_turn": 2,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "Help me explore Gloves & Mittens Mittens; I am open to ideas.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B088PDMFPW",
+            "B0897XTRK5",
+            "B07BTRNMTH",
+            "B015YYARPE",
+            "B0957LZPJF",
+            "B08BPZL61R",
+            "B00DW2GEZ8",
+            "B00HNXLZYW",
+            "B077NSMZ5X",
+            "B01LZ11WKY"
+          ]
+        },
+        {
+          "turn": 2,
+          "customer": "I care about August 20, 2009 and 850FP European Goose Down on back of hand/thumb.",
+          "ask_attribute": "material",
+          "top_10": [
+            "B00TSQY6JS",
+            "B0030W8PL6",
+            "B005K7Z6SY",
+            "B01ALGSAUO",
+            "B07CNJMCMF",
+            "B002Y2UMXW",
+            "B002Y2UMXC",
+            "B0BY8NS7K2",
+            "B0B8DX189T",
+            "B01MZ4UZL0"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_05",
+      "scenario_type": "intent_override",
+      "target_parent_asin": "B072TV23SJ",
+      "target_title": "Anysize Linen Cotton Soft Loose Spring Summer Dress Plus Size Clothing F126A,Dark Blue,3X Plus",
+      "target_category": "Shoes & Jewelry Plus-Size Fashion",
+      "hit": true,
+      "first_hit_turn": 3,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "I am browsing Shoes & Jewelry Plus-Size Fashion, and initially I like F126A-140-DarkBlue.",
+          "ask_attribute": "material",
+          "top_10": [
+            "B072TV23SJ",
+            "B07BWHH2QB",
+            "B01LYJ32VK",
+            "B072YPN3WN",
+            "B01M701GWG",
+            "B07RFGB3C6",
+            "B07G6Z4KQ8",
+            "B01MYPC13R",
+            "B07YDQPV4N",
+            "B06XHY42HB"
+          ]
+        },
+        {
+          "turn": 2,
+          "customer": "I don't have an additional preference; show me more options.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B0746JDSB8",
+            "B01C5PBLTG",
+            "B07D7B7VZK",
+            "B07HYF6FD7",
+            "B01E5IWAY6",
+            "B071P9XR1H",
+            "B07KFX413W",
+            "B07D4C782L",
+            "B0861XNYMW",
+            "B07PBV3MCK"
+          ]
+        },
+        {
+          "turn": 3,
+          "customer": "Actually, ignore that and switch to Shoes & Jewelry Plus-Size Fashion with 9.06 x 7.09 x 0.79 inches; 14.08 Ounces and No instead.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B072TV23SJ",
+            "B01MYPC13R",
+            "B0746JDSB8",
+            "B07BWHH2QB",
+            "B07KFX413W",
+            "B01LYJ32VK",
+            "B07RFGB3C6",
+            "B07HYF6FD7",
+            "B01M701GWG",
+            "B07G6Z4KQ8"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_06",
+      "scenario_type": "boundary",
+      "target_parent_asin": "B07F84CKNC",
+      "target_title": "Wantdo mens Puffer Vest",
+      "target_category": "Jackets & Coats Vests",
+      "hit": true,
+      "first_hit_turn": 4,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "Help me browse Jackets & Coats Vests.",
+          "ask_attribute": "material",
+          "top_10": [
+            "B07F8NKWG3",
+            "B08DNVCJW4",
+            "B01DIZM72M",
+            "B0B8227GB9",
+            "B08BF53L68",
+            "B07Z2KSZR3",
+            "B07H5SZS1W",
+            "B0B1DRXCCK",
+            "B00DJ1XQ26",
+            "B07FNNZTP9"
+          ]
+        },
+        {
+          "turn": 2,
+          "customer": "I don't have a preference for material; please use your judgment.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B07XGN5PJ8",
+            "B08JGM7V56",
+            "B01IG5D3UY",
+            "B0BHCVFKG1",
+            "B07XZFVBG6",
+            "B0741RZYMP",
+            "B00GSTR88O",
+            "B07F8KYGBC",
+            "B09HXN7ZJ5",
+            "B076VNB41N"
+          ]
+        },
+        {
+          "turn": 3,
+          "customer": "What matters after all is mens and Ready for Warm or Cold Climate - Pull up the warm cotton vest's hoodie to keep your head and ears warm during gusty conditions. Remove the h.",
+          "ask_attribute": "style",
+          "top_10": [
+            "B09KCGL2XJ",
+            "B00K0TZFR4",
+            "B07X7MWWQ7",
+            "B09G6LDJXM",
+            "B07VMCLJHZ",
+            "B08L8JF923",
+            "B0B3JBJB9W",
+            "B00GWM5HHG",
+            "B081ZTLFRQ",
+            "B0BXJ86YZQ"
+          ]
+        },
+        {
+          "turn": 4,
+          "customer": "You can also prioritize Outerwear That Keeps You Dry - Don't let a slight drizzle ruin your day out. This softshell vest has a DWR finish that keeps your body warm  and 8 x 8 x 8 inches; 1.1 Pounds.",
+          "ask_attribute": "use_case",
+          "top_10": [
+            "B07F84CKNC",
+            "B0BBQ9TTHK",
+            "B0772F99JH",
+            "B015ZB9TJG",
+            "B07P2Z7GP4",
+            "B07KGMVKL4",
+            "B07ZG1FHBL",
+            "B0058YYAT0",
+            "B0721X787V",
+            "B07Y9T7R11"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_07",
+      "scenario_type": "buying",
+      "target_parent_asin": "B009A5211W",
+      "target_title": "eYourlife2012 Unisex Athletic High Knee Stripes Sports Running Football Soccer Tube Socks Sock",
+      "target_category": "American Football Men",
+      "hit": true,
+      "first_hit_turn": 1,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "I need American Football Men. The key requirement is Machine Wash.",
+          "ask_attribute": "material",
+          "top_10": [
+            "B009A5211W",
+            "B09KMKWRN6",
+            "B007HQEOHU",
+            "B005K0VQD0",
+            "B07XHQDJWN",
+            "B07KW1SC9J",
+            "B09M9L25SH",
+            "B07NVG1HMW",
+            "B07FPV75NF",
+            "B081G766B1"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_08",
+      "scenario_type": "buying",
+      "target_parent_asin": "B000MUY8YW",
+      "target_title": "NINE WEST Women's Jendavi T-Strap Sandal",
+      "target_category": "Shoes Sandals",
+      "hit": true,
+      "first_hit_turn": 2,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "I need Shoes Sandals. The key requirement is Heel measures approximately 3 1/4\".",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B09P8N1RB5",
+            "B099DMTCXV",
+            "B003WSZXPO",
+            "B08SHFRD7K",
+            "B07CP2L2JZ",
+            "B0885DSYYH",
+            "B07H5278M9",
+            "B0124EHZV6",
+            "B014GN2OWS",
+            "B0036FU2WW"
+          ]
+        },
+        {
+          "turn": 2,
+          "customer": "Please also prioritize March 15, 2007 and 12 x 6 x 4 inches; 2 Pounds.",
+          "ask_attribute": "material",
+          "top_10": [
+            "B000MUY8YW",
+            "B000JJL5R4",
+            "B07R77D2HG",
+            "B00F0R67MI",
+            "B00E41WFZY",
+            "B008MC047W",
+            "B002SB9RZS",
+            "B006Z6QJ44",
+            "B005KPLK7W",
+            "B005KPLJ9G"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_09",
+      "scenario_type": "buying",
+      "target_parent_asin": "B00WONICM4",
+      "target_title": "STARKMA Baby Anna Princess Black Royal Blue Bodysuit Tutu Costume Cosplay",
+      "target_category": "Baby Baby Boys",
+      "hit": true,
+      "first_hit_turn": 1,
+      "target_rank": 1,
+      "reciprocal_rank": 1.0,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "I need Baby Baby Boys. The key requirement is S(0-3Month) M(3-6 Month) L(6-12 Month ) XL (12-18 Month).",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B00WONICM4",
+            "B07TCB9YF5",
+            "B0058BKXP8",
+            "B0B6VM2W89",
+            "B0824LXBVJ",
+            "B08NJBHDXG",
+            "B00946F8HQ",
+            "B075QKRWKF",
+            "B01LZKEJR1",
+            "B01C7LYZ96"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_id": "random_20260825_10",
+      "scenario_type": "browsing",
+      "target_parent_asin": "B01KAFOAZK",
+      "target_title": "Oakley Men's Oo9336 Straightlink Low Bridge Fit Rectangular Sunglasses",
+      "target_category": "Sunglasses & Eyewear Accessories Sunglasses",
+      "hit": true,
+      "first_hit_turn": 1,
+      "target_rank": 3,
+      "reciprocal_rank": 0.3333333333333333,
+      "transcript": [
+        {
+          "turn": 1,
+          "customer": "Help me explore Sunglasses & Eyewear Accessories Sunglasses; I am open to ideas.",
+          "ask_attribute": "feature",
+          "top_10": [
+            "B085S67VBB",
+            "B08L4FHHBL",
+            "B01KAFOAZK",
+            "B0B58LS4R3",
+            "B007VQR0H2",
+            "B01DKJVWR2",
+            "B084BYD9KR",
+            "B089G6Q6TB",
+            "B07BNHRLDW",
+            "B096B6CXWG"
+          ]
+        }
+      ]
+    }
+  ]
+}
