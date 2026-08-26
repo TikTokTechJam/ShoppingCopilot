@@ -3,8 +3,8 @@
     python -m tools.eval_intent_router              # rules tier only
     python -m tools.eval_intent_router --model      # rules + reranker cascade
 
-Reports macro-F1 with a per-stratum breakdown, because a single accuracy
-number hides exactly the ambiguity cases issue #6 cares about.
+Reports accuracy, macro-F1 and a confidence-band calibration table, plus a
+per-tier breakdown when the reranker is enabled.
 
 This tool deliberately does not read the generated benchmark sessions. Any
 labelled set built from templated sessions teaches a classifier the template;
@@ -55,7 +55,6 @@ def report(name: str, rows: list[dict], router) -> list[tuple[str, str, float]]:
 
     pairs: list[tuple[str, str]] = []
     scored: list[tuple[str, str, float]] = []
-    by_stratum: dict[str, list[bool]] = defaultdict(list)
     by_tier: dict[str, list[bool]] = defaultdict(list)
     misses = []
 
@@ -65,7 +64,6 @@ def report(name: str, rows: list[dict], router) -> list[tuple[str, str, float]]:
         gold = row["intent"]
         pairs.append((gold, result.intent))
         scored.append((gold, result.intent, result.confidence))
-        by_stratum[row.get("stratum", "-")].append(gold == result.intent)
         by_tier[result.tier].append(gold == result.intent)
         if gold != result.intent:
             misses.append((gold, result.intent, result.confidence, result.tier, row["message"]))
@@ -76,8 +74,6 @@ def report(name: str, rows: list[dict], router) -> list[tuple[str, str, float]]:
     print(f"  accuracy   {correct}/{len(pairs)} = {correct / len(pairs):.4f}")
     print(f"  macro-F1   {macro_f1(pairs):.4f}")
     print(f"  wall clock {elapsed * 1000:.1f} ms total, {elapsed / len(rows) * 1000:.2f} ms/message")
-    for stratum, hits in sorted(by_stratum.items()):
-        print(f"    {stratum:28} {sum(hits)}/{len(hits)}")
     if len(by_tier) > 1 or "rules" not in by_tier:
         print("  by tier:")
         for tier, hits in sorted(by_tier.items()):
@@ -127,7 +123,7 @@ def main() -> None:
     print("=" * 72)
 
     scored = report("GOLDEN (issue #6 spec, never tuned against)", load(GOLDEN), router)
-    scored += report("DEV SET (hand-written, stratified)", load(DEV), router)
+    scored += report("DEV SET (hand-written)", load(DEV), router)
     if scored:
         calibration(scored)
 

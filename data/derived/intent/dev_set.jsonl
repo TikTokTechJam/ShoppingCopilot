@@ -1,96 +1,96 @@
-{"message": "I need a pair of black leather ankle boots in size 8.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Looking for a navy wool peacoat under $200.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I want a machine washable cotton dress for the office.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Can you find me waterproof winter gloves with a touchscreen tip?", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I'm after a stainless steel watch band, silver, 20mm.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Show me lightweight running shorts with pockets under $40.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I need a plus size denim jacket, preferably oversized.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Do you have merino wool socks that are non-slip?", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I want a red silk scarf, budget around $60.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Find me insulated snow boots in size 11 wide fit.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I'd like a beige linen blazer, slim fit.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Looking for Carhartt work pants under $70.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I need a hypoallergenic sterling silver necklace.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Show me breathable mesh sneakers in white.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I want a quick-drying swimsuit for swimming laps.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Get me a padded sports bra with adjustable straps.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I'm looking for a charcoal grey hoodie, size XL.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Need a cheap polyester rain jacket, nothing over $35.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I want memory foam slippers with arch support.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Looking for a gold plated bracelet, adjustable, under $50.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "A fleece lined flannel shirt in green, medium please.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I need corduroy trousers with an elastic waist.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Show me suede chelsea boots under $120 in brown.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I want a windproof cycling jacket that is reversible.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "Looking for cashmere gloves, ivory, size small.", "intent": "BUYING", "stratum": "explicit"}
-{"message": "I'm shopping around for winter coats.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Just browsing to see what's out there.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm exploring handbag options, nothing specific in mind.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "What do you have for someone who likes outdoor stuff?", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'd like to compare a few jacket styles before deciding.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Can you give me some suggestions for a birthday present?", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm considering a new pair of shoes but haven't decided anything.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Not sure what I'm after, just seeing what's available.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I want something for a beach holiday, open to ideas.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Looking around for gift ideas for my sister.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I have no idea what I want, help me explore.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Show me some interesting options for autumn.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm still figuring out what style suits me.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Thinking about refreshing my wardrobe, where should I start?", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I need something for a wedding but I'm flexible on the details.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Window shopping for jewellery, nothing serious yet.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "What would you recommend for someone starting to run?", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm open on the specifics, just show me what makes sense.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Give me some inspiration for a new look.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm considering slippers and want to see what options make sense.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "Help me figure out what to wear this season.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'd like to see a range before I narrow anything down.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "No firm plans, just poking around the store.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "What's popular right now?", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm curious what you'd suggest for a gift under no particular brief.", "intent": "BROWSING", "stratum": "exploratory"}
-{"message": "I'm browsing hiking boots but haven't settled on a budget.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Exploring leather jackets, not sure what I want yet.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Just looking at winter coats for now.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I'm considering running shoes, but I'm undecided.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Shopping around for a handbag, no strong preferences.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I've been thinking about a new watch, what's out there?", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Browsing dresses to get a sense of what I like.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I'm exploring sneakers and would like to compare some options.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Looking at cardigans, still deciding on colour.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I'm window shopping for boots this season.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Thinking about sandals, though nothing is decided.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I'm looking at pyjamas but I'm fairly open on the specifics.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Scarves maybe? I haven't worked out what I need.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "Show me belts, I'm just getting a feel for the range.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I might want a raincoat, still weighing it up.", "intent": "BROWSING", "stratum": "category_plus_exploratory"}
-{"message": "I need something for the gym, must be moisture-wicking and under $30.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "Something for travel, but it has to be lightweight and machine washable.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "I want anything comfortable as long as it's cotton and under $25.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "Looking for something for winter, waterproof and insulated please.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "Give me anything in navy blue, size medium, under $45.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "I need something nice for a wedding, ideally silk.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "Something for everyday wear with memory foam and arch support.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "I want something cute in pink, size small.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "Anything decent for hiking, as long as it has good grip.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "Something for the office, navy, no more than $90.", "intent": "BUYING", "stratum": "vague_plus_constraints"}
-{"message": "I'm looking for cardigans.", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "I need running shoes.", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "Show me winter jackets.", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "Do you have any leather belts?", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "I want to buy a swimsuit.", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "I'm looking for hats.", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "Sandals, please.", "intent": "BUYING", "stratum": "bare_category"}
-{"message": "I don't want anything expensive.", "intent": "BUYING", "stratum": "negation"}
-{"message": "Nothing in black, please.", "intent": "BUYING", "stratum": "negation"}
-{"message": "No polyester, I want natural fabrics.", "intent": "BUYING", "stratum": "negation"}
-{"message": "I don't have strong preferences yet.", "intent": "BROWSING", "stratum": "negation"}
-{"message": "I really don't know what I'm looking for.", "intent": "BROWSING", "stratum": "negation"}
-{"message": "Not looking for anything in particular today.", "intent": "BROWSING", "stratum": "negation"}
-{"message": "I wouldn't say I have a specific item in mind.", "intent": "BROWSING", "stratum": "negation"}
-{"message": "hi", "intent": "BROWSING", "stratum": "degenerate"}
-{"message": "help", "intent": "BROWSING", "stratum": "degenerate"}
-{"message": "hmm", "intent": "BROWSING", "stratum": "degenerate"}
-{"message": "ok thanks", "intent": "BROWSING", "stratum": "degenerate"}
-{"message": "boots", "intent": "BUYING", "stratum": "degenerate"}
-{"message": "size 9 please", "intent": "BUYING", "stratum": "degenerate"}
-{"message": "under $40", "intent": "BUYING", "stratum": "degenerate"}
+{"message": "I need a pair of black leather ankle boots in size 8.", "intent": "BUYING"}
+{"message": "Looking for a navy wool peacoat under $200.", "intent": "BUYING"}
+{"message": "I want a machine washable cotton dress for the office.", "intent": "BUYING"}
+{"message": "Can you find me waterproof winter gloves with a touchscreen tip?", "intent": "BUYING"}
+{"message": "I'm after a stainless steel watch band, silver, 20mm.", "intent": "BUYING"}
+{"message": "Show me lightweight running shorts with pockets under $40.", "intent": "BUYING"}
+{"message": "I need a plus size denim jacket, preferably oversized.", "intent": "BUYING"}
+{"message": "Do you have merino wool socks that are non-slip?", "intent": "BUYING"}
+{"message": "I want a red silk scarf, budget around $60.", "intent": "BUYING"}
+{"message": "Find me insulated snow boots in size 11 wide fit.", "intent": "BUYING"}
+{"message": "I'd like a beige linen blazer, slim fit.", "intent": "BUYING"}
+{"message": "Looking for Carhartt work pants under $70.", "intent": "BUYING"}
+{"message": "I need a hypoallergenic sterling silver necklace.", "intent": "BUYING"}
+{"message": "Show me breathable mesh sneakers in white.", "intent": "BUYING"}
+{"message": "I want a quick-drying swimsuit for swimming laps.", "intent": "BUYING"}
+{"message": "Get me a padded sports bra with adjustable straps.", "intent": "BUYING"}
+{"message": "I'm looking for a charcoal grey hoodie, size XL.", "intent": "BUYING"}
+{"message": "Need a cheap polyester rain jacket, nothing over $35.", "intent": "BUYING"}
+{"message": "I want memory foam slippers with arch support.", "intent": "BUYING"}
+{"message": "Looking for a gold plated bracelet, adjustable, under $50.", "intent": "BUYING"}
+{"message": "A fleece lined flannel shirt in green, medium please.", "intent": "BUYING"}
+{"message": "I need corduroy trousers with an elastic waist.", "intent": "BUYING"}
+{"message": "Show me suede chelsea boots under $120 in brown.", "intent": "BUYING"}
+{"message": "I want a windproof cycling jacket that is reversible.", "intent": "BUYING"}
+{"message": "Looking for cashmere gloves, ivory, size small.", "intent": "BUYING"}
+{"message": "I'm shopping around for winter coats.", "intent": "BROWSING"}
+{"message": "Just browsing to see what's out there.", "intent": "BROWSING"}
+{"message": "I'm exploring handbag options, nothing specific in mind.", "intent": "BROWSING"}
+{"message": "What do you have for someone who likes outdoor stuff?", "intent": "BROWSING"}
+{"message": "I'd like to compare a few jacket styles before deciding.", "intent": "BROWSING"}
+{"message": "Can you give me some suggestions for a birthday present?", "intent": "BROWSING"}
+{"message": "I'm considering a new pair of shoes but haven't decided anything.", "intent": "BROWSING"}
+{"message": "Not sure what I'm after, just seeing what's available.", "intent": "BROWSING"}
+{"message": "I want something for a beach holiday, open to ideas.", "intent": "BROWSING"}
+{"message": "Looking around for gift ideas for my sister.", "intent": "BROWSING"}
+{"message": "I have no idea what I want, help me explore.", "intent": "BROWSING"}
+{"message": "Show me some interesting options for autumn.", "intent": "BROWSING"}
+{"message": "I'm still figuring out what style suits me.", "intent": "BROWSING"}
+{"message": "Thinking about refreshing my wardrobe, where should I start?", "intent": "BROWSING"}
+{"message": "I need something for a wedding but I'm flexible on the details.", "intent": "BROWSING"}
+{"message": "Window shopping for jewellery, nothing serious yet.", "intent": "BROWSING"}
+{"message": "What would you recommend for someone starting to run?", "intent": "BROWSING"}
+{"message": "I'm open on the specifics, just show me what makes sense.", "intent": "BROWSING"}
+{"message": "Give me some inspiration for a new look.", "intent": "BROWSING"}
+{"message": "I'm considering slippers and want to see what options make sense.", "intent": "BROWSING"}
+{"message": "Help me figure out what to wear this season.", "intent": "BROWSING"}
+{"message": "I'd like to see a range before I narrow anything down.", "intent": "BROWSING"}
+{"message": "No firm plans, just poking around the store.", "intent": "BROWSING"}
+{"message": "What's popular right now?", "intent": "BROWSING"}
+{"message": "I'm curious what you'd suggest for a gift under no particular brief.", "intent": "BROWSING"}
+{"message": "I'm browsing hiking boots but haven't settled on a budget.", "intent": "BROWSING"}
+{"message": "Exploring leather jackets, not sure what I want yet.", "intent": "BROWSING"}
+{"message": "Just looking at winter coats for now.", "intent": "BROWSING"}
+{"message": "I'm considering running shoes, but I'm undecided.", "intent": "BROWSING"}
+{"message": "Shopping around for a handbag, no strong preferences.", "intent": "BROWSING"}
+{"message": "I've been thinking about a new watch, what's out there?", "intent": "BROWSING"}
+{"message": "Browsing dresses to get a sense of what I like.", "intent": "BROWSING"}
+{"message": "I'm exploring sneakers and would like to compare some options.", "intent": "BROWSING"}
+{"message": "Looking at cardigans, still deciding on colour.", "intent": "BROWSING"}
+{"message": "I'm window shopping for boots this season.", "intent": "BROWSING"}
+{"message": "Thinking about sandals, though nothing is decided.", "intent": "BROWSING"}
+{"message": "I'm looking at pyjamas but I'm fairly open on the specifics.", "intent": "BROWSING"}
+{"message": "Scarves maybe? I haven't worked out what I need.", "intent": "BROWSING"}
+{"message": "Show me belts, I'm just getting a feel for the range.", "intent": "BROWSING"}
+{"message": "I might want a raincoat, still weighing it up.", "intent": "BROWSING"}
+{"message": "I need something for the gym, must be moisture-wicking and under $30.", "intent": "BUYING"}
+{"message": "Something for travel, but it has to be lightweight and machine washable.", "intent": "BUYING"}
+{"message": "I want anything comfortable as long as it's cotton and under $25.", "intent": "BUYING"}
+{"message": "Looking for something for winter, waterproof and insulated please.", "intent": "BUYING"}
+{"message": "Give me anything in navy blue, size medium, under $45.", "intent": "BUYING"}
+{"message": "I need something nice for a wedding, ideally silk.", "intent": "BUYING"}
+{"message": "Something for everyday wear with memory foam and arch support.", "intent": "BUYING"}
+{"message": "I want something cute in pink, size small.", "intent": "BUYING"}
+{"message": "Anything decent for hiking, as long as it has good grip.", "intent": "BUYING"}
+{"message": "Something for the office, navy, no more than $90.", "intent": "BUYING"}
+{"message": "I'm looking for cardigans.", "intent": "BUYING"}
+{"message": "I need running shoes.", "intent": "BUYING"}
+{"message": "Show me winter jackets.", "intent": "BUYING"}
+{"message": "Do you have any leather belts?", "intent": "BUYING"}
+{"message": "I want to buy a swimsuit.", "intent": "BUYING"}
+{"message": "I'm looking for hats.", "intent": "BUYING"}
+{"message": "Sandals, please.", "intent": "BUYING"}
+{"message": "I don't want anything expensive.", "intent": "BUYING"}
+{"message": "Nothing in black, please.", "intent": "BUYING"}
+{"message": "No polyester, I want natural fabrics.", "intent": "BUYING"}
+{"message": "I don't have strong preferences yet.", "intent": "BROWSING"}
+{"message": "I really don't know what I'm looking for.", "intent": "BROWSING"}
+{"message": "Not looking for anything in particular today.", "intent": "BROWSING"}
+{"message": "I wouldn't say I have a specific item in mind.", "intent": "BROWSING"}
+{"message": "hi", "intent": "BROWSING"}
+{"message": "help", "intent": "BROWSING"}
+{"message": "hmm", "intent": "BROWSING"}
+{"message": "ok thanks", "intent": "BROWSING"}
+{"message": "boots", "intent": "BUYING"}
+{"message": "size 9 please", "intent": "BUYING"}
+{"message": "under $40", "intent": "BUYING"}

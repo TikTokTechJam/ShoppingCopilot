@@ -94,8 +94,9 @@ Two labelled sets, neither derived from generated sessions:
 - **Golden** (`tests/data/intent_golden.jsonl`) — the thirteen issue examples.
   The spec. Never tuned against.
 - **Dev** (`data/derived/intent/dev_set.jsonl`) — 96 hand-written examples
-  across seven strata (explicit, exploratory, category-plus-exploratory,
-  vague-plus-constraints, bare category, negation, degenerate).
+  covering explicit constraints, plainly exploratory language, category with
+  exploratory framing, vague requests carrying hard constraints, bare
+  categories, negations, and degenerate input.
 
 | Configuration | Golden | Dev | Dev macro-F1 |
 | --- | ---: | ---: | ---: |
