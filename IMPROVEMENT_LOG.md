@@ -27,6 +27,26 @@ These values are the published starter reference from the challenge README and w
 
 ## Improvement entries
 
+### 2026-08-26 — Quality-first evidence-backed manual400 benchmark
+
+- **Commit:** this PR (manual400 benchmark)
+- **Change:** Added a separate, resume-safe benchmark built from exactly 400 deterministic catalog products using seed `20260826`. The builder uses a constrained customer-shopping vocabulary, direct source-field/source-text evidence, confidence thresholds, full-catalog approximate match counts for hidden-card clues, category-facet filtering, and a second audit pass. It generates 160 Buying, 160 Browsing, 60 Intent Override, and 20 Boundary sessions, plus developer-only debug records and a quality report.
+- **Why:** The benchmark prioritizes label quality and judge-readable explanations: uncertain facts are omitted, hidden cards contain at most four validated facts, and public profiles remain a weak prior only.
+- **Expected impact:** Make failures actionable without rewarding raw metadata leakage or noisy n-grams. The evaluator preserves the ten-turn limit, strict Agent schema, exact `parent_asin` equality, and the official `HitRate@10`, `MRR`, `MTTC`, `Efficiency`, and `TechnicalScore` metrics.
+- **Evaluation:** `python -m unittest tests.test_manual400 -v` passed 11 tests. `python -m evaluator.manual400_evaluator --output results_manual400.json` ran the starter Agent against all 400 sessions.
+
+| Metric | Final manual400 result |
+| --- | ---: |
+| Hit Rate@10 | 0.707500 |
+| MRR | 0.333712 |
+| MTTC | 5.135 |
+| Efficiency | 0.586500 |
+| TechnicalScore | 0.571164 |
+
+- **Dataset evidence:** 400 unique targets across 400 eligible leaf categories; 6.090 audited facts per product on average; hidden cards of 2/3/4 facts in 123/143/134 sessions; 400/400 label audits passed; 9,641 catalog products were skipped during eligibility filtering. The generated files are under `data/derived/manual400/` and are kept separate from the unchanged catalog and public set.
+- **Scenario evidence:** Boundary `0.450 / 0.157222222 / 7.150`, Browsing `0.68125 / 0.312539683 / 5.300`, Buying `0.78125 / 0.357368552 / 4.294`, and Intent Override `0.666667 / 0.385919312 / 6.267` for Hit Rate@10 / MRR / MTTC.
+- **Result and next step:** The quality-first benchmark is reproducible and inspectable by judges. The starter performs best on Buying/Browsing and remains weakest on Intent Override, so the next agent iteration should improve stale-constraint replacement and ranking after an override.
+
 ### 2026-08-25 — Expected-utility adaptive search
 
 - **Commit:** [`50d010d`](https://github.com/TikTokTechJam/ShoppingCopilot/commit/50d010d7a6c2d5fe07957e55502f920a8c743e62)
