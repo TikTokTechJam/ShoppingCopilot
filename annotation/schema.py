@@ -7,8 +7,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 MODEL_FACT_FIELDS = (
-    "category",
-    "brand",
     "color",
     "material",
     "size",
@@ -16,7 +14,20 @@ MODEL_FACT_FIELDS = (
     "feature",
     "use_case",
 )
-LIST_FACT_FIELDS = tuple(field for field in MODEL_FACT_FIELDS if field != "brand")
+CANONICAL_FACT_FIELDS = (
+    "category",
+    "brand",
+    *MODEL_FACT_FIELDS,
+)
+FACT_LIMITS = {
+    "color": 3,
+    "material": 4,
+    "size": 4,
+    "style": 4,
+    "feature": 6,
+    "use_case": 3,
+    "category": 4,
+}
 CANONICAL_RECORD_FIELDS = (
     "parent_asin",
     "category",
@@ -57,43 +68,97 @@ def _require_exact_keys(value: Mapping[str, Any], expected: set[str], context: s
         raise ValueError(f"{context} keys mismatch; missing={missing}, unknown={unknown}")
 
 
+def _normalize_list_value(field: str, value: Any) -> list[str]:
+    if not isinstance(value, list):
+        raise TypeError(f"{field} must be an array of strings")
+    normalized_values: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise TypeError(f"{field} must contain non-empty strings")
+        normalized = canonicalize_value(item)
+        if not normalized:
+            raise ValueError(f"{field} contains a value with no usable characters")
+        if normalized in seen:
+            raise ValueError(f"{field} contains duplicate value {normalized!r}")
+        seen.add(normalized)
+        normalized_values.append(normalized)
+    return normalized_values[: FACT_LIMITS[field]]
+
+
+def _normalize_brand(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError("brand must be a non-empty string or null")
+    normalized = canonicalize_value(value)
+    if not normalized:
+        raise ValueError("brand must contain a usable value")
+    return normalized
+
+
 def normalize_model_facts(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         raise TypeError("model facts must be an object")
     _require_exact_keys(payload, set(MODEL_FACT_FIELDS), "model facts")
+    return {
+        field: _normalize_list_value(field, payload[field])
+        for field in MODEL_FACT_FIELDS
+    }
 
-    result: dict[str, Any] = {}
-    for field in MODEL_FACT_FIELDS:
-        value = payload[field]
-        if field == "brand":
-            if value is None:
-                result[field] = None
-                continue
-            if not isinstance(value, str) or not value.strip():
-                raise TypeError("brand must be a non-empty string or null")
-            normalized = canonicalize_value(value)
-            if not normalized:
-                raise ValueError("brand must contain a usable value")
-            result[field] = normalized
-            continue
 
-        if not isinstance(value, list):
-            raise TypeError(f"{field} must be an array of strings")
-        normalized_values: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            if not isinstance(item, str) or not item.strip():
-                raise TypeError(f"{field} must contain non-empty strings")
-            normalized = canonicalize_value(item)
-            if not normalized:
-                raise ValueError(f"{field} contains a value with no usable characters")
-            if normalized in seen:
-                raise ValueError(f"{field} contains duplicate value {normalized!r}")
-            seen.add(normalized)
-            normalized_values.append(normalized)
-        result[field] = normalized_values
-
+def normalize_canonical_facts(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("canonical facts must be an object")
+    _require_exact_keys(payload, set(CANONICAL_FACT_FIELDS), "canonical facts")
+    result = {
+        "category": _normalize_list_value("category", payload["category"]),
+        "brand": _normalize_brand(payload["brand"]),
+    }
+    result.update(
+        normalize_model_facts(
+            {field: payload[field] for field in MODEL_FACT_FIELDS}
+        )
+    )
     return result
+
+
+def normalize_catalog_categories(value: Any) -> list[str]:
+    """Copy raw category hierarchy levels using lexical normalization only."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError("catalog categories must be an array")
+    levels: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError("catalog categories must contain strings")
+        for raw_level in item.split(">"):
+            normalized = canonicalize_value(raw_level)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                levels.append(normalized)
+    return levels[-FACT_LIMITS["category"] :]
+
+
+def deterministic_catalog_brand(product: Mapping[str, Any]) -> str | None:
+    """Read brand/manufacturer fields only; never use seller/store text."""
+    candidates: list[Any] = [
+        product.get("brand"),
+        product.get("manufacturer"),
+    ]
+    details = product.get("details")
+    if isinstance(details, Mapping):
+        for key, value in details.items():
+            if str(key).strip().lower() in {"brand", "manufacturer"}:
+                candidates.append(value)
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            normalized = canonicalize_value(value)
+            if normalized:
+                return normalized
+    return None
 
 
 def parse_and_validate_json(raw_response: Any) -> dict[str, Any]:
@@ -155,9 +220,9 @@ def validate_annotation_record(record: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"annotation.{field} must be a non-empty string")
 
     return {
-        "parent_asin": parent_asin,
+        "parent_asin": parent_asin.strip(),
         "price": normalize_price(record["price"]),
-        "facts": normalize_model_facts(record["facts"]),
+        "facts": normalize_canonical_facts(record["facts"]),
         "annotation": {
             "status": "success",
             "model": metadata["model"].strip(),

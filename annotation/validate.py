@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .runner import iter_catalog
-from .schema import CANONICAL_RECORD_FIELDS, MODEL_FACT_FIELDS, normalize_model_facts, normalize_price
+from .schema import (
+    CANONICAL_FACT_FIELDS,
+    CANONICAL_RECORD_FIELDS,
+    normalize_canonical_facts,
+    normalize_price,
+)
 
 
 def validate_catalog_facts(
@@ -49,8 +54,8 @@ def validate_catalog_facts(
             ):
                 raise ValueError(f"{facts_path}:{line_number}: price must be numeric or null")
 
-            model_facts = {field: record[field] for field in MODEL_FACT_FIELDS}
-            if normalize_model_facts(model_facts) != model_facts:
+            canonical = {field: record[field] for field in CANONICAL_FACT_FIELDS}
+            if normalize_canonical_facts(canonical) != canonical:
                 raise ValueError(f"{facts_path}:{line_number}: facts are not normalized")
             if normalize_price(price) != price:
                 raise ValueError(f"{facts_path}:{line_number}: invalid normalized price")

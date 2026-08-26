@@ -43,8 +43,9 @@ class HostedLLMClient:
         api_key: str | None = None,
         model: str,
         timeout: float = 60.0,
-        max_tokens: int = 6000,
+        max_tokens: int = 2048,
         json_mode: bool = True,
+        thinking: bool = False,
     ) -> None:
         if not endpoint.strip():
             raise ValueError("endpoint must be non-empty")
@@ -60,9 +61,10 @@ class HostedLLMClient:
         self.timeout = timeout
         self.max_tokens = max_tokens
         self.json_mode = json_mode
+        self.thinking = thinking
 
     def annotate(self, prompt: str) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "temperature": 0,
             "max_tokens": self.max_tokens,
@@ -76,6 +78,8 @@ class HostedLLMClient:
         }
         if self.json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if not self.thinking:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

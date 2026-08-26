@@ -13,7 +13,13 @@ from typing import Any, Iterable, Mapping
 from .client import AnnotationClient, HostedLLMClient
 from .config import load_env_file
 from .prompt import PROMPT_VERSION, build_annotation_prompt
-from .schema import parse_and_validate_json, normalize_price, validate_annotation_record
+from .schema import (
+    deterministic_catalog_brand,
+    normalize_catalog_categories,
+    normalize_price,
+    parse_and_validate_json,
+    validate_annotation_record,
+)
 
 
 def iter_catalog(path: str | Path) -> Iterable[dict[str, Any]]:
@@ -90,16 +96,21 @@ def _annotation_record(
     model: str,
     prompt_version: str,
 ) -> dict[str, Any]:
-    return {
+    combined_facts = {
+        "category": normalize_catalog_categories(product.get("categories")),
+        "brand": deterministic_catalog_brand(product),
+        **dict(facts),
+    }
+    return validate_annotation_record({
         "parent_asin": str(product["parent_asin"]),
         "price": normalize_price(product.get("price")),
-        "facts": dict(facts),
+        "facts": combined_facts,
         "annotation": {
             "status": "success",
             "model": model,
             "prompt_version": prompt_version,
         },
-    }
+    })
 
 
 def _emit_progress(message: str, *, enabled: bool, lock: threading.Lock) -> None:
@@ -116,6 +127,30 @@ def _compact_error(exc: Exception) -> str:
     return detail[:240]
 
 
+def _retry_kind(exc: Exception, retry_index: int) -> str | None:
+    detail = str(exc).lower()
+    if (
+        "finish_reason=length" in detail
+        or "maximum context length" in detail
+        or "context length" in detail
+    ):
+        return None
+    if isinstance(exc, (ValueError, TypeError)):
+        return "schema" if retry_index == 0 else None
+    if isinstance(exc, RuntimeError) and (
+        "http 429" in detail
+        or "http 500" in detail
+        or "http 502" in detail
+        or "http 503" in detail
+        or "http 504" in detail
+        or "request failed" in detail
+        or "timed out" in detail
+        or "temporarily" in detail
+    ):
+        return "transient"
+    return None
+
+
 def _process_product(
     product: Mapping[str, Any],
     attempt: int,
@@ -129,10 +164,13 @@ def _process_product(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     parent_asin = str(product["parent_asin"])
     last_error: Exception | None = None
+    request_elapsed = 0.0
+    final_attempt = attempt
     product_started = time.perf_counter()
     total_attempts = retries + 1
     for retry_index in range(total_attempts):
         current_attempt = attempt + retry_index
+        final_attempt = current_attempt
         attempt_started = time.perf_counter()
         _emit_progress(
             f"request parent_asin={parent_asin} attempt={current_attempt} "
@@ -141,7 +179,15 @@ def _process_product(
             lock=progress_lock,
         )
         try:
-            raw_response = client.annotate(build_annotation_prompt(product))
+            retry_instruction = None
+            if retry_index == 1:
+                retry_instruction = (
+                    "The previous response failed schema validation. Return exactly "
+                    "the six requested arrays, with no extra keys or prose."
+                )
+            raw_response = client.annotate(
+                build_annotation_prompt(product, retry_instruction=retry_instruction)
+            )
             facts = parse_and_validate_json(raw_response)
             request_elapsed = time.perf_counter() - attempt_started
             product_elapsed = time.perf_counter() - product_started
@@ -161,20 +207,37 @@ def _process_product(
             last_error = exc
             request_elapsed = time.perf_counter() - attempt_started
             product_elapsed = time.perf_counter() - product_started
-            if retry_index + 1 < total_attempts:
+            retry_kind = _retry_kind(exc, retry_index)
+            can_retry = retry_index + 1 < total_attempts and retry_kind is not None
+            if can_retry:
                 _emit_progress(
                     f"retry parent_asin={parent_asin} after_attempt={current_attempt} "
-                    f"next_attempt={current_attempt + 1} request_elapsed={request_elapsed:.1f}s "
+                    f"next_attempt={current_attempt + 1} kind={retry_kind} "
+                    f"request_elapsed={request_elapsed:.1f}s "
                     f"total_elapsed={product_elapsed:.1f}s error={_compact_error(exc)}",
                     enabled=progress,
                     lock=progress_lock,
                 )
+                if retry_kind == "transient":
+                    time.sleep(min(0.25 * (2 ** retry_index), 2.0))
+            else:
+                reason = retry_kind or "non_retryable"
+                if retry_index + 1 >= total_attempts:
+                    reason = "retry_budget_exhausted"
+                _emit_progress(
+                    f"no_retry parent_asin={parent_asin} attempt={current_attempt} "
+                    f"reason={reason} request_elapsed={request_elapsed:.1f}s "
+                    f"total_elapsed={product_elapsed:.1f}s error={_compact_error(exc)}",
+                    enabled=progress,
+                    lock=progress_lock,
+                )
+                break
 
     assert last_error is not None
     error = f"{type(last_error).__name__}: {str(last_error).strip()}".strip()
     total_elapsed = time.perf_counter() - product_started
     _emit_progress(
-        f"failed parent_asin={parent_asin} attempt={attempt + retries} "
+        f"failed parent_asin={parent_asin} attempt={final_attempt} "
         f"request_elapsed={request_elapsed:.1f}s total_elapsed={total_elapsed:.1f}s "
         f"error={_compact_error(last_error)}",
         enabled=progress,
@@ -183,7 +246,7 @@ def _process_product(
     return None, {
         "parent_asin": parent_asin,
         "error": error[:500],
-        "attempt": attempt + retries,
+        "attempt": final_attempt,
     }
 
 
@@ -205,6 +268,8 @@ def run_annotation(
     dry_run: bool = False,
     progress: bool = False,
     log_every: int = 1,
+    max_tokens: int | None = None,
+    thinking: bool | None = None,
 ) -> dict[str, Any]:
     if start < 0:
         raise ValueError("start must be non-negative")
@@ -344,6 +409,8 @@ def run_annotation(
         "source_product_count": source_count,
         "model": model,
         "prompt_version": prompt_version,
+        "max_tokens": max_tokens,
+        "thinking": thinking,
         "retries": retries,
         "selected_product_count": selected_count,
         "processed_this_run": new_successes + new_failures,
@@ -370,7 +437,7 @@ def run_annotation(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Resume-safe catalog annotation runner.")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
-    parser.add_argument("--output-dir", default="data/derived/annotations/v1")
+    parser.add_argument("--output-dir", default="data/derived/annotations/v2")
     parser.add_argument(
         "--env-file",
         help="Optional local KEY=VALUE file; never commit this file.",
@@ -382,7 +449,12 @@ def main() -> None:
     )
     parser.add_argument("--api-key-env", default="ANNOTATION_API_KEY")
     parser.add_argument("--model", default=None)
-    parser.add_argument("--max-tokens", type=int, default=6000)
+    parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--thinking",
+        action="store_true",
+        help="Enable model reasoning; disabled by default for extraction throughput.",
+    )
     parser.add_argument(
         "--no-json-mode",
         action="store_true",
@@ -420,7 +492,7 @@ def main() -> None:
         or os.environ.get("ANNOTATION_BASE_URL")
         or os.environ.get("ANNOTATION_ENDPOINT")
     )
-    model = args.model or os.environ.get("ANNOTATION_MODEL", "catalog-annotator-v1")
+    model = args.model or os.environ.get("ANNOTATION_MODEL", "catalog-annotator-v2")
 
     if args.dry_run:
         client = None
@@ -437,6 +509,7 @@ def main() -> None:
             timeout=args.timeout,
             max_tokens=args.max_tokens,
             json_mode=not args.no_json_mode,
+            thinking=args.thinking,
         )
 
     summary = run_annotation(
@@ -444,6 +517,7 @@ def main() -> None:
         args.output_dir,
         client,
         model=model,
+        prompt_version=PROMPT_VERSION,
         start=args.start,
         limit=args.limit,
         concurrency=args.concurrency,
@@ -451,6 +525,8 @@ def main() -> None:
         dry_run=args.dry_run,
         progress=not args.quiet,
         log_every=args.log_every,
+        max_tokens=args.max_tokens,
+        thinking=args.thinking,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
