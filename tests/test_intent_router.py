@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from starter.routing import (
     extract_constraints,
     lexicon,
 )
-from starter.routing.constraints import CATEGORICAL_FIELDS
+from starter.routing.constraints import CANONICAL_VOCAB, CATEGORICAL_FIELDS
 from starter.routing.local_model import LABEL_QUERIES, QwenRerankerBackend
 
 
@@ -487,6 +488,75 @@ class DevSetTest(unittest.TestCase):
             if (r := router.classify(row["message"])).intent != row["intent"] and not r.weak
         ]
         self.assertEqual(confident_misses, [], f"confident misses: {confident_misses}")
+
+
+class VocabularyOwnershipTest(unittest.TestCase):
+    """One source of attribute vocabulary, shared by both components.
+
+    The ledger used to restate the brand / budget / size / colour / material /
+    feature / use-case / style value lists that the extractor already owned.
+    Two copies could disagree about what "navy" or "water resistant" means;
+    these tests fail if a second copy ever reappears.
+    """
+
+    LEDGER_SIGNAL = {
+        "brand": "brand",
+        "color": "color",
+        "material": "material",
+        "feature": "feature",
+        "size": "size",
+        "style": "style",
+    }
+
+    @staticmethod
+    def _signal(name: str):
+        return next(spec for spec in lexicon.SIGNALS if spec.name == name)
+
+    def test_ledger_patterns_are_built_from_the_canonical_dictionary(self) -> None:
+        """Every canonical alias must appear verbatim in the ledger pattern.
+
+        Structural rather than behavioural on purpose: it fails if someone
+        hand-writes a value list instead of deriving it, even if the two
+        happen to agree today.
+        """
+        missing = []
+        for field_name, signal_name in self.LEDGER_SIGNAL.items():
+            source = self._signal(signal_name).pattern.pattern
+            for canonical, alias in CANONICAL_VOCAB[field_name]:
+                if alias not in source:
+                    missing.append(f"{field_name}:{canonical}")
+        self.assertEqual(missing, [], f"not derived from the dictionary: {missing[:10]}")
+
+    def test_use_case_signal_is_built_from_the_dictionary_too(self) -> None:
+        """Anchored on "for", but the values still come from one place."""
+        source = self._signal("use_case").pattern.pattern
+        for canonical, alias in CANONICAL_VOCAB["use_case"]:
+            self.assertIn(alias, source, canonical)
+
+    def test_extractor_and_ledger_agree_on_an_alias(self) -> None:
+        """A canonical mapping and a ledger signal, from the same string."""
+        message = "I want a dark blue water resistant coat."
+        self.assertIn("navy", extract_constraints(message).color)
+        self.assertIn("waterproof", extract_constraints(message).feature)
+        fired = {s.name for s in LexicalIntentRouter().classify(message).signals}
+        self.assertIn("color", fired)
+        self.assertIn("feature", fired)
+
+    def test_no_attribute_values_are_hardcoded_in_the_lexicon(self) -> None:
+        """A tripwire against pasting a value list back into the ledger."""
+        source = (Path(lexicon.__file__)).read_text()
+        code = "\n".join(
+            line for line in source.splitlines() if not line.strip().startswith("#")
+        )
+        for value in ("cotton", "polyester", "waterproof", "nike", "casual", "beige"):
+            self.assertNotIn(
+                value, code.lower(), f"{value!r} is hardcoded in lexicon.py again"
+            )
+
+    def test_budget_signal_uses_the_extractor_price_expression(self) -> None:
+        pattern = self._signal("budget").pattern
+        for phrase in ("under $80", "less than 80 bucks", "between $50 and $100"):
+            self.assertTrue(pattern.search(phrase), phrase)
 
 
 class LexiconHygieneTest(unittest.TestCase):

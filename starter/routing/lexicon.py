@@ -8,17 +8,38 @@ product says which shelf the customer is standing at, not whether they have
 decided. What separates the two intents is whether the message commits to
 anything.
 
-Vocabulary note: the value lists are a deliberately small starting point.
-Issue #5 (canonical catalog facts) and issue #8 (canonical attribute
-dictionary) are the intended owners of the `color`, `material`, `brand`,
-`size` and `feature` vocabularies; `SignalSpec.sourced_from` records that so
-the swap is mechanical rather than archaeological.
+Vocabulary ownership: the attribute vocabularies -- brand, budget, size,
+colour, material, feature, use case and style -- are **not** defined here.
+They come from `constraints.CANONICAL_VOCAB`, the canonical dictionary issue
+#7 produces, via `constraints.alias_pattern()`. Keeping a second copy in this
+file meant two lists that could disagree about what "navy" or "water
+resistant" means; now there is one, and replacing it with the generated
+dictionary from issues #5 and #8 updates both components at once.
+
+What this file still owns is everything that is *not* a product attribute:
+the hesitation signals, the request verbs, the weights, and the rules for how
+attribute evidence is combined. It also adds two things the extractor
+deliberately omits, because they are evidence of intent rather than
+extractable constraints:
+
+- **topic words.** "What material do you have?" names no material, so the
+  extractor records nothing. The ledger still treats naming the subject as
+  weak evidence of a shopper who is narrowing down.
+- **qualitative price talk.** "nothing expensive" sets no numeric bound, so it
+  is not a price constraint, but it is plainly budget-aware.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+from starter.routing.constraints import (
+    ATTRIBUTE_TOPIC,
+    PRICE_EXPRESSION,
+    SIZE_NUMERIC,
+    alias_pattern,
+)
 
 
 BUYING = "BUYING"
@@ -47,89 +68,41 @@ def _compile(*alternatives: str) -> re.Pattern[str]:
 # Evidence of commitment
 # --------------------------------------------------------------------------
 
+# Budget: any written price expression from the extractor, plus qualitative
+# price talk that sets no numeric bound.
 _BUDGET = _compile(
-    r"\b(?:under|below|less than|no more than|cheaper than|up to|within|max(?:imum)?|around|about)\s*\$\s?\d[\d,]*(?:\.\d+)?",
-    r"\b(?:under|below|less than|no more than|cheaper than|up to)\s+\d[\d,]*(?:\.\d+)?\s*(?:dollars|usd|bucks)\b",
-    r"\$\s?\d[\d,]*(?:\.\d+)?",
-    r"\bbudget\b",
+    PRICE_EXPRESSION.pattern,
     r"\b(?:cheap|affordable|inexpensive|budget[-\s]friendly|price range)\b",
     r"\b(?:expensive|pricey|premium|high[-\s]end)\b",
+    r"\bbudget\b",
 )
 
-# Placeholder vocabulary; issue #8 should supply the canonical brand list
-# derived from the catalog `store` field.
-_BRAND = _compile(
-    r"\bbrands?\b",
-    r"\b(?:nike|adidas|puma|reebok|new balance|under armour|columbia|carhartt|"
-    r"levi'?s|wrangler|hanes|gildan|skechers|crocs|timberland|dr\.? martens|"
-    r"clarks|vans|converse|asics|brooks|merrell|patagonia|north face|uniqlo)\b",
-)
+_BRAND = alias_pattern("brand", r"\bbrands?\b")
 
-# Bare single-letter size tokens are deliberately absent. An unanchored \bm\b
-# matches the "m" in "I'm" and invents a hard constraint out of a contraction,
-# which flips the label *confidently* wrong. Single letters must follow "size".
-_SIZE = _compile(
-    r"\bsizes?\b",
-    r"\bsize\s*[:\-]?\s*(?:\d+(?:\.\d+)?|x{0,3}[sml]\b)",
-    r"\b(?:xxs|xs|xl|xxl|xxxl)\b",
-    r"\b(?:petite|plus[-\s]size|big and tall)\b",
-    r"\b(?:wide|narrow|tall|regular)\s+(?:fit|width|sizing)\b",
-    r"\bin\s+an?\s+(?:small|medium|large)\b",
-)
+# Sizes: the canonical vocabulary plus numeric sizes, which are values rather
+# than dictionary entries. Note what is *not* here -- bare single letters. An
+# unanchored \bm\b matches the "m" in "I'm" and invents a hard constraint out
+# of a contraction, flipping the label confidently wrong. `SIZE_NUMERIC` and
+# the canonical `size s` / `size m` aliases both require the word "size".
+_SIZE = alias_pattern("size", SIZE_NUMERIC.pattern, r"\bsizes?\b")
 
-_COLOR = _compile(
-    r"\bcolou?rs?\b",
-    r"\b(?:black|white|blue|navy|red|pink|green|brown|gray|grey|purple|violet|"
-    r"yellow|orange|beige|tan|cream|ivory|gold|silver|olive|burgundy|teal|"
-    r"maroon|charcoal|khaki|turquoise)\b",
-)
+_COLOR = alias_pattern("color", r"\bcolou?rs?\b")
 
-# "down" is absent on purpose: "down jacket" is a category, not a material.
-# Same failure shape as the single-letter sizes above.
-_MATERIAL = _compile(
-    r"\b(?:material|fabric)\b",
-    r"\b(?:cotton|leather|polyester|nylon|wool|silk|denim|rayon|spandex|linen|"
-    r"suede|cashmere|fleece|satin|velvet|mesh|canvas|alloy|sterling silver|"
-    r"stainless steel|faux leather|faux fur|microfiber|corduroy|flannel|rubber|"
-    r"bamboo|acrylic|lycra|jersey|chiffon|lace|tweed|sherpa|gore[-\s]?tex|"
-    r"neoprene|nubuck|shearling)\b",
-    r"\b(?:goose|duck)\s+down\b",
-    r"\bdown[-\s](?:filled|insulated|feather)\b",
-)
+_MATERIAL = alias_pattern("material", r"\b(?:material|fabric)\b")
 
-_FEATURE = _compile(
-    r"\b(?:waterproof|water[-\s]resistant|weatherproof|windproof|breathable|"
-    r"insulated|thermal|reversible|adjustable|hypoallergenic|orthopedic|"
-    r"wrinkle[-\s]free|moisture[-\s]wicking|non[-\s]slip|slip[-\s]resistant|"
-    r"anti[-\s]slip|arch support|ankle support|memory foam|machine washable|"
-    r"hand wash|quick[-\s]?dry(?:ing)?|dries quickly|dry quickly|uv protection|"
-    r"lightweight|padded|hooded|sleeveless|pockets?|zipper|drawstring|"
-    r"high[-\s]waisted|stretchy|elastic waist)\b",
-    r"\b(?:long|short)\s+sleeves?\b",
-    r"\b(?:grip|traction|cushioning|breathability|insulation|warmth|compression|"
-    r"odou?r[-\s]resistant|stain[-\s]resistant|water[-\s]repellent|"
-    r"sun protection|moisture management)\b",
-    r"\bhandles?\s+sweat\b",
-    r"\bprotection from\s+(?:wind|rain|sun|the cold)\b",
-)
+_FEATURE = alias_pattern("feature")
 
 # Soft evidence. A stated occasion is as consistent with someone describing a
 # vague situation as with a decided buyer, so it must not suppress vagueness.
+# Anchored on "for" and similar so that "hiking boots" -- a category -- is not
+# read as a stated use case.
 _USE_CASE = _compile(
-    r"\bfor\s+(?:the\s+|a\s+|my\s+)?(?:hiking|running|walking|jogging|the gym|gym|"
-    r"swimming|tennis|golf|yoga|hunting|camping|skiing|snowboarding|climbing|"
-    r"work|the office|office|school|weddings?|parties|a party|formal events?|"
-    r"travel|travelling|traveling|the beach|beach|halloween|christmas|winter|"
-    r"summer|everyday wear|everyday use|daily wear)\b",
+    rf"\b(?:for|with|during|to)\s+(?:the\s+|a\s+|my\s+)?(?:{alias_pattern('use_case').pattern})",
     r"\b(?:mainly|primarily|mostly)\s+(?:use|wear|for)\b",
     r"\b(?:is the )?main use\b",
 )
 
-_STYLE = _compile(
-    r"\bstyle\b",
-    r"\b(?:casual|formal|classic|vintage|retro|boho|bohemian|preppy|sporty|"
-    r"athletic|elegant|minimalist|slim fit|relaxed fit|oversized)\b",
-)
+_STYLE = alias_pattern("style", r"\bstyle\b")
 
 # "I need" / "show me" only count when the customer also said what they need.
 # Without the guard the verb alone pushes every vague request toward BUYING.

@@ -223,9 +223,27 @@ CATEGORICAL_FIELDS: tuple[str, ...] = (
     "category", "brand", "color", "material", "size", "style", "feature", "use_case",
 )
 
+def _bounded(alias: str) -> str:
+    """Wrap one alias so it cannot match inside a longer word."""
+    return rf"(?<![a-z]){alias}(?![a-z])"
+
+
+def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
+    """A compiled union of every alias for `field`, plus any extra fragments.
+
+    This is the single source of attribute vocabulary in the package. The
+    signal ledger in `lexicon.py` builds its brand / budget / size / colour /
+    material / feature / use-case / style patterns from here rather than
+    restating them, so the two components can never disagree about what
+    "navy" or "water resistant" means.
+    """
+    alternatives = [_bounded(alias) for _canonical, alias in CANONICAL_VOCAB[field]]
+    return re.compile("|".join([*extra, *alternatives]), re.IGNORECASE)
+
+
 _COMPILED: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
     name: tuple(
-        (canonical, re.compile(rf"(?<![a-z]){alias}(?![a-z])", re.IGNORECASE))
+        (canonical, re.compile(_bounded(alias), re.IGNORECASE))
         for canonical, alias in entries
     )
     for name, entries in CANONICAL_VOCAB.items()
@@ -233,30 +251,45 @@ _COMPILED: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
 
 _NUMBER = r"\$?\s?(\d[\d,]*(?:\.\d+)?)"
 
-_PRICE_MAX = re.compile(
+PRICE_MAX = re.compile(
     rf"(?:under|below|less than|no more than|cheaper than|up to|within|max(?:imum)?(?:\s+of)?|nothing over|not more than)\s*{_NUMBER}",
     re.IGNORECASE,
 )
-_PRICE_MIN = re.compile(
+PRICE_MIN = re.compile(
     rf"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?|starting (?:at|from)|from)\s*{_NUMBER}",
     re.IGNORECASE,
 )
-_PRICE_RANGE = re.compile(
+PRICE_RANGE = re.compile(
     rf"(?:between\s+)?{_NUMBER}\s*(?:-|–|to|and)\s*{_NUMBER}\s*(?:dollars|usd|bucks)?",
     re.IGNORECASE,
 )
-_PRICE_AROUND = re.compile(rf"(?:around|about|approximately|roughly)\s*{_NUMBER}", re.IGNORECASE)
+PRICE_AROUND = re.compile(rf"(?:around|about|approximately|roughly)\s*{_NUMBER}", re.IGNORECASE)
 # A price only counts as a price when it is written as one.
-_CURRENCY = re.compile(r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost", re.IGNORECASE)
+CURRENCY = re.compile(r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost", re.IGNORECASE)
+
+# Any expression that states a price at all. The ledger uses this as its
+# budget signal; the extractor above uses the individual bounds to normalise.
+PRICE_EXPRESSION = re.compile(
+    "|".join(
+        [
+            PRICE_MAX.pattern,
+            PRICE_MIN.pattern,
+            PRICE_RANGE.pattern,
+            PRICE_AROUND.pattern,
+            r"\$\s?\d[\d,]*(?:\.\d+)?",
+        ]
+    ),
+    re.IGNORECASE,
+)
 
 # Numeric sizes are values, not vocabulary entries, so they are matched
 # separately. Anchored on the word "size" so a bare number is never mistaken
 # for one.
-_SIZE_NUMERIC = re.compile(r"\bsizes?\s*[:\-]?\s*(\d+(?:\.\d)?)\b", re.IGNORECASE)
+SIZE_NUMERIC = re.compile(r"\bsizes?\s*[:\-]?\s*(\d+(?:\.\d)?)\b", re.IGNORECASE)
 
 # Words that look like a commitment but name no value. Recorded as unmapped so
 # a later component can ask about them, never counted as a constraint.
-_TOPIC_ONLY = re.compile(
+ATTRIBUTE_TOPIC = re.compile(
     r"\b(?:colou?r|material|fabric|size|sizing|style|fit|brand|feature|budget|price)\b",
     re.IGNORECASE,
 )
@@ -315,28 +348,28 @@ class ShoppingConstraints:
 
 
 def _extract_prices(text: str) -> tuple[float | None, float | None]:
-    if not _CURRENCY.search(text):
+    if not CURRENCY.search(text):
         # "size 10" and "10 to 12 years" are not prices.
         return None, None
 
     def number(raw: str) -> float:
         return float(raw.replace(",", ""))
 
-    match = _PRICE_RANGE.search(text)
+    match = PRICE_RANGE.search(text)
     if match is not None:
         low, high = sorted((number(match.group(1)), number(match.group(2))))
         return low, high
 
     price_min = price_max = None
-    match = _PRICE_MAX.search(text)
+    match = PRICE_MAX.search(text)
     if match is not None:
         price_max = number(match.group(1))
-    match = _PRICE_MIN.search(text)
+    match = PRICE_MIN.search(text)
     if match is not None:
         price_min = number(match.group(1))
 
     if price_min is None and price_max is None:
-        match = _PRICE_AROUND.search(text)
+        match = PRICE_AROUND.search(text)
         if match is not None:
             # "around $60" is a soft bound in both directions.
             centre = number(match.group(1))
@@ -373,7 +406,7 @@ def extract_constraints(message: str) -> ShoppingConstraints:
             values[name].append(canonical)
     values = {name: tuple(found) for name, found in values.items()}
 
-    numeric_sizes = tuple(dict.fromkeys(_SIZE_NUMERIC.findall(text)))
+    numeric_sizes = tuple(dict.fromkeys(SIZE_NUMERIC.findall(text)))
     if numeric_sizes:
         values["size"] = values["size"] + numeric_sizes
 
@@ -385,7 +418,7 @@ def extract_constraints(message: str) -> ShoppingConstraints:
         sorted(
             {
                 word.lower()
-                for word in _TOPIC_ONLY.findall(text)
+                for word in ATTRIBUTE_TOPIC.findall(text)
                 if not values.get(_TOPIC_FIELD.get(word.lower(), ""), ())
             }
         )

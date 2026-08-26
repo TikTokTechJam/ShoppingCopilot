@@ -52,6 +52,20 @@ word as weak evidence.
 every message whose intent lives in *how* it is phrased rather than in what it
 names.
 
+The ledger does **not** define its own attribute vocabulary. Its brand,
+budget, size, colour, material, feature, use-case and style patterns are built
+from `constraints.CANONICAL_VOCAB` through `constraints.alias_pattern()`, so
+there is one dictionary and the two components cannot disagree about what
+"navy" or "water resistant" means. Replacing that dictionary with the
+generated one from issues #5 and #8 updates both at once.
+
+The ledger adds two things the extractor deliberately omits, because they are
+evidence of intent rather than extractable constraints: **topic words** ("what
+material do you have?" names no material but is a shopper narrowing down) and
+**qualitative price talk** ("nothing expensive" sets no numeric bound but is
+plainly budget-aware). Everything else it owns is non-attribute — the
+hesitation signals, the request verbs, the weights, and the combination rules.
+
 **Terminal rule — undecided means Browsing.** Any message the pipeline cannot
 decide with at least `lexicon.DECISION_CONFIDENCE` (0.70) is routed
 `BROWSING`. The two errors are not symmetric. A Browsing session that was
@@ -224,12 +238,13 @@ Treat edits to those strings as a behaviour change.
 - Confidence is monotone but not statistically calibrated; there is not enough
   labelled data to calibrate it. It is fit for ranking and thresholding, not
   for arithmetic.
-- The attribute vocabularies in `lexicon.py` are a small curated starting
-  point and should migrate to issues #5 and #8 rather than growing here. Two
-  bugs found while building it show why: an unanchored `\bm\b` size pattern
-  matched the "m" in "I'm", and `down` as a material matched "down jacket",
-  which is a category. Both invented a hard constraint and flipped the label
-  confidently.
+- The canonical vocabulary in `constraints.CANONICAL_VOCAB` is a small curated
+  starting point, and is now the single source both components read. It should
+  be replaced by the generated dictionary from issues #5 and #8 rather than
+  grown by hand. Two bugs found while building it show why hand-maintenance is
+  risky: an unanchored `\bm\b` size pattern matched the "m" in "I'm", and
+  `down` as a material matched "down jacket", which is a category. Both
+  invented a hard constraint and flipped the label confidently.
 - onnxruntime has been seen to raise from its thread-pool destructor at
   interpreter shutdown on Python 3.14, after all results are produced but with
   a non-zero exit code, which reads as a failing test run.
