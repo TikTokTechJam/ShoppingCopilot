@@ -27,6 +27,16 @@ These values are the published starter reference from the challenge README and w
 
 ## Improvement entries
 
+### 2026-08-26 — Hard evaluator for expected-utility adaptive search
+
+- **Commit:** this documentation PR; evaluator implementation is in [`evaluator/hard_evaluator.py`](evaluator/hard_evaluator.py)
+- **Change:** Added a fixed GPTAnnotation hard benchmark with 400 sessions across Buying (160), Browsing (160), Intent Override (60), and Boundary (20). The evaluator simulates replies from committed hidden facts, validates Agent responses strictly, and scores exact catalog `parent_asin` recommendations under the ten-turn protocol.
+- **Why:** The public-set score alone does not show whether an adaptive question policy can acquire useful evidence, handle no-preference branches, or replace stale constraints after an intent override. A fixed hard benchmark makes those behaviors reproducible and inspectable.
+- **Expected impact:** Measure whether expected-utility query selection improves Top-10 identification and time-to-correctness across different conversational conditions without rebuilding or semantically relabeling the benchmark at evaluation time.
+- **Evaluation:** `python -m evaluator.hard_evaluator` reads `data/derived/gptannotation/sessions.jsonl` and `data/catalog.jsonl`, runs the Agent for at most 10 turns, and reports Hit Rate@10, MRR, MTTC, Efficiency, TechnicalScore, and per-scenario metrics. A 20-session smoke run on the current Agent (five evenly spaced sessions per scenario) produced Hit Rate@10 `0.600`, MRR `0.250198`, MTTC `6.950`, and TechnicalScore `0.456060`.
+- **Evidence:** The benchmark has 400 unique catalog targets and the required scenario counts. The evaluator uses attribute-scoped fact IDs, fixed evidence fields, exact ASIN equality, and process-local simulation state; it does not reconstruct ontology facts from the catalog.
+- **Result and next step:** The smoke result is encouraging for Buying and Intent Override but exposed a Boundary weakness (`0/5` in the smoke sample). Run the full 400-session benchmark after the next Agent iteration and focus on boundary/no-preference handling while preserving override behavior.
+
 ### 2026-08-25 — Expected-utility adaptive search
 
 - **Commit:** [`50d010d`](https://github.com/TikTokTechJam/ShoppingCopilot/commit/50d010d7a6c2d5fe07957e55502f920a8c743e62)

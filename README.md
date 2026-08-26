@@ -48,6 +48,20 @@ The command writes per-session results and aggregate metrics to `results.json`.
 The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
 MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
 
+## Hard Evaluator and Expected-Utility Search Benchmark
+
+The repository also includes a fixed hard benchmark for the expected-utility adaptive search policy. It contains 400 GPTAnnotation sessions in `data/derived/gptannotation/sessions.jsonl`: 160 Buying, 160 Browsing, 60 Intent Override, and 20 Boundary sessions. Each session has a catalog target and evidence-backed hidden facts used only by the simulator.
+
+Run the hard evaluator with:
+
+```bash
+python -m evaluator.hard_evaluator
+```
+
+The evaluator uses the frozen 50,000-product catalog as the Agent's retrieval universe and for exact `parent_asin` target validation. It does not rebuild facts or alter the benchmark. At each turn, the Agent may ask for one attribute and return up to 10 recommendations; the simulator supplies the corresponding fixed customer reply. The evaluator reports Hit Rate@10, MRR, MTTC, scenario metrics, and TechnicalScore under the ten-turn limit.
+
+This benchmark measures the expected-utility adaptive search idea described in the Improvement Log: maintain a posterior over candidate products, estimate the value of asking each unused attribute, acquire the most useful evidence, and revise stale constraints after an intent override.
+
 ## Agent Interface
 
 ```python
@@ -97,6 +111,9 @@ docs/evaluation_config.json       scoring configuration
 docs/baseline_results.json        reproducible weak-starter reference score
 starter/agent.py                  editable weak starter
 evaluator/local_evaluator.py      public-set simulator and scorer
+evaluator/hard_evaluator.py       fixed GPTAnnotation hard benchmark evaluator
+data/derived/gptannotation/       400-session hard benchmark input
+IMPROVEMENT_LOG.md                chronological change and evaluation record
 ```
 
 ## Judging and Submission Policy
