@@ -189,6 +189,8 @@ class AnnotationPipelineTests(unittest.TestCase):
             self.assertIn("queued parent_asin=A1", output)
             self.assertIn("request parent_asin=A1", output)
             self.assertIn("success parent_asin=A1", output)
+            self.assertIn("request_elapsed=", output)
+            self.assertIn("total_elapsed=", output)
             self.assertIn("batch_complete", output)
             self.assertIn("complete selected=1", output)
 

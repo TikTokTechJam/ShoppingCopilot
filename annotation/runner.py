@@ -133,6 +133,7 @@ def _process_product(
     total_attempts = retries + 1
     for retry_index in range(total_attempts):
         current_attempt = attempt + retry_index
+        attempt_started = time.perf_counter()
         _emit_progress(
             f"request parent_asin={parent_asin} attempt={current_attempt} "
             f"of={attempt + retries}",
@@ -142,10 +143,11 @@ def _process_product(
         try:
             raw_response = client.annotate(build_annotation_prompt(product))
             facts = parse_and_validate_json(raw_response)
-            elapsed = time.perf_counter() - product_started
+            request_elapsed = time.perf_counter() - attempt_started
+            product_elapsed = time.perf_counter() - product_started
             _emit_progress(
                 f"success parent_asin={parent_asin} attempt={current_attempt} "
-                f"elapsed={elapsed:.1f}s",
+                f"request_elapsed={request_elapsed:.1f}s total_elapsed={product_elapsed:.1f}s",
                 enabled=progress,
                 lock=progress_lock,
             )
@@ -157,20 +159,23 @@ def _process_product(
             ), None
         except Exception as exc:
             last_error = exc
+            request_elapsed = time.perf_counter() - attempt_started
+            product_elapsed = time.perf_counter() - product_started
             if retry_index + 1 < total_attempts:
                 _emit_progress(
                     f"retry parent_asin={parent_asin} after_attempt={current_attempt} "
-                    f"next_attempt={current_attempt + 1} error={_compact_error(exc)}",
+                    f"next_attempt={current_attempt + 1} request_elapsed={request_elapsed:.1f}s "
+                    f"total_elapsed={product_elapsed:.1f}s error={_compact_error(exc)}",
                     enabled=progress,
                     lock=progress_lock,
                 )
 
     assert last_error is not None
     error = f"{type(last_error).__name__}: {str(last_error).strip()}".strip()
-    elapsed = time.perf_counter() - product_started
+    total_elapsed = time.perf_counter() - product_started
     _emit_progress(
         f"failed parent_asin={parent_asin} attempt={attempt + retries} "
-        f"elapsed={elapsed:.1f}s error={_compact_error(last_error)}",
+        f"total_elapsed={total_elapsed:.1f}s error={_compact_error(last_error)}",
         enabled=progress,
         lock=progress_lock,
     )
