@@ -52,14 +52,16 @@ MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
 
 The quality-first stress set uses exactly 400 deterministic catalog products selected with seed `20260826`. Each target has curated, evidence-backed facts, an audited hidden card capped at four facts, and one of four scenarios: Buying (160), Browsing (160), Intent Override (60), or Boundary (20). The 200 public sessions are used only to sample realistic profile distributions; profile tags never invent target facts.
 
-Build or resume the benchmark after downloading `data/catalog.jsonl` and `data/public_set.jsonl`:
+The committed files under `data/derived/manual400/` are the immutable Manual400 benchmark source of truth: selected products, validated labels, sessions, debug records, label audits, and the report. Do not regenerate or overwrite them.
+
+Validate the fixed benchmark and run the evaluator:
 
 ```bash
-python -m evaluator.manual400_builder
+python -m scripts.validate_manual400
 python -m evaluator.manual400_evaluator
 ```
 
-The builder writes the selected products, labels, audit records, sessions, developer-only debug records, and report under `data/derived/manual400/`. The evaluator keeps `MAX_TURNS = 10`, `TOP_K = 10`, strict response validation, exact `parent_asin` scoring, and the TechnicalScore formula documented below. It does not modify `starter/agent.py`, the official evaluator, or either input dataset.
+The evaluator reads the committed sessions, simulates replies from their hidden facts, and uses the full catalog only as the Agent retrieval universe and target-ASIN validation set. It keeps `MAX_TURNS = 10`, `TOP_K = 10`, strict response validation, exact `parent_asin` scoring, and the TechnicalScore formula documented below.
 
 ## Agent Interface
 
@@ -110,7 +112,7 @@ docs/evaluation_config.json       scoring configuration
 docs/baseline_results.json        reproducible weak-starter reference score
 starter/agent.py                  editable weak starter
 evaluator/local_evaluator.py      public-set simulator and scorer
-evaluator/manual400_builder.py    evidence-backed 400-product benchmark builder
+scripts/validate_manual400.py    read-only fixed Manual400 artifact validation
 evaluator/manual400_evaluator.py  manual400 runtime and exact scorer
 data/derived/manual400/           committed labels, sessions, audits, and report
 IMPROVEMENT_LOG.md                chronological change and evaluation record

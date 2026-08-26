@@ -83,6 +83,32 @@ def _id_from_field(value: object) -> tuple[str, str] | None:
     return str(value[0]), str(value[1])
 
 
+def fact_visible_in_message(fact: Mapping[str, object], message: str) -> bool:
+    normalized_message = re.sub(r"\s+", " ", message.lower().replace("-", " "))
+    terms = {
+        str(fact.get("display", "")),
+        str(fact.get("canonical", "")).replace("_", " "),
+        FACT_PHRASES.get(str(fact.get("canonical")), ""),
+    }
+    return any(
+        term.strip()
+        and len(term.strip()) >= 3
+        and re.sub(r"\s+", " ", term.lower().replace("-", " ")) in normalized_message
+        for term in terms
+    )
+
+
+def effective_initial_fact_id(session: Mapping[str, object]) -> tuple[str, str] | None:
+    raw_id = _id_from_field(session.get("initial_fact_id"))
+    if raw_id is None or str(session.get("scenario_type", "")) == "browsing":
+        return None
+    initial_message = str(session.get("initial_message", ""))
+    for fact in session.get("hidden_facts", ()):
+        if isinstance(fact, dict) and fact_id(fact) == raw_id and fact_visible_in_message(fact, initial_message):
+            return raw_id
+    return None
+
+
 def validate_sessions(sessions: Iterable[Mapping[str, object]], expected_count: int | None = 400) -> list[dict[str, object]]:
     rows = [dict(session) for session in sessions]
     if expected_count is not None and len(rows) != expected_count:
@@ -97,7 +123,7 @@ def validate_sessions(sessions: Iterable[Mapping[str, object]], expected_count: 
             raise ValueError(f"duplicate or empty target_asin: {target}")
         targets.add(target)
         hidden = row.get("hidden_facts")
-        if not isinstance(hidden, list) or not 0 < len(hidden) <= 4:
+        if not isinstance(hidden, list) or not 2 <= len(hidden) <= 4:
             raise ValueError(f"invalid hidden card for {row.get('sample_id')}")
         hidden_ids = session_fact_ids(row)
         if len(hidden_ids) != len(hidden):
@@ -110,6 +136,11 @@ def validate_sessions(sessions: Iterable[Mapping[str, object]], expected_count: 
         initial_id = _id_from_field(row.get("initial_fact_id"))
         if initial_id is not None and initial_id not in hidden_ids:
             raise ValueError(f"initial fact is outside hidden card for {row.get('sample_id')}")
+        effective_initial_id = effective_initial_fact_id(row)
+        if scenario in {"buying", "intent_override"} and initial_id is not None and effective_initial_id is None:
+            raise ValueError(f"initial fact is not disclosed in the initial message for {row.get('sample_id')}")
+        if scenario == "boundary" and not isinstance(row.get("boundary_first"), bool):
+            raise ValueError(f"boundary_first must be boolean for {row.get('sample_id')}")
         initial_message = str(row.get("initial_message", ""))
         override_message = str(row.get("override_message") or "")
         for visible in (initial_message, override_message):
@@ -143,8 +174,8 @@ def validate_response(response: object) -> dict[str, object]:
     if ask_attribute is not None and (not isinstance(ask_attribute, str) or ask_attribute not in ALLOWED_ATTRIBUTES):
         raise ValueError(f"invalid response.ask_attribute: {ask_attribute}")
     recommendations = response["recommendations"]
-    if not isinstance(recommendations, list) or len(recommendations) > 100:
-        raise TypeError("response.recommendations must be a list with at most 100 items")
+    if not isinstance(recommendations, list) or len(recommendations) > TOP_K:
+        raise TypeError(f"response.recommendations must be a list with at most {TOP_K} items")
     for recommendation in recommendations:
         if not isinstance(recommendation, dict):
             raise TypeError("each recommendation must be an object")
@@ -220,7 +251,11 @@ def simulate_customer_reply(
         return "I don't have a specific preference there; please use your judgment."
     if attribute not in ALLOWED_ATTRIBUTES:
         return "I don't have an additional preference yet."
-    if session.get("scenario_type") == "boundary" and not state.get("boundary_used"):
+    if (
+        session.get("scenario_type") == "boundary"
+        and session.get("boundary_first")
+        and not state.get("boundary_used")
+    ):
         state["boundary_used"] = True
         state.setdefault("no_preference_attributes", set()).add(attribute)
         return f"I don't really have a preference for {attribute} there."
@@ -285,7 +320,7 @@ def evaluate(
         session_id = f"manual400:{sample_id}"
         agent.reset(session_id, dict(session.get("user_profile") or {}))
         rng = random.Random(f"reply:{sample_id}:{target}")
-        initial_id = _id_from_field(session.get("initial_fact_id"))
+        initial_id = effective_initial_fact_id(session)
         state: dict[str, object] = {
             "disclosed": {initial_id} if initial_id else set(),
             "active_constraints": {initial_id} if initial_id else set(),
