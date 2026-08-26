@@ -19,7 +19,13 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from starter.routing import BROWSING, BUYING, CascadingIntentRouter, LexicalIntentRouter
+from starter.routing import (
+    BROWSING,
+    BUYING,
+    CascadingIntentRouter,
+    LexicalIntentRouter,
+    TwoPhaseIntentRouter,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -99,7 +105,15 @@ def calibration(rows: list[tuple[str, str, float]]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="store_true", help="enable the reranker tier")
+    parser.add_argument("--ledger-only", action="store_true",
+                        help="skip Phase 1 and the BROWSING default")
+    parser.add_argument("--sweep", action="store_true",
+                        help="sweep the Phase 1 tag threshold")
     args = parser.parse_args()
+
+    if args.sweep:
+        sweep(args.model)
+        return
 
     if args.model:
         from starter.routing.local_model import QwenRerankerBackend
@@ -112,11 +126,20 @@ def main() -> None:
                 print("   ", item)
             print("  see requirements-reranker.txt and tools/fetch_reranker.py")
             return
-        router = CascadingIntentRouter(backend=backend)
-        label = f"cascade (rules -> {backend.name}, threshold {router.threshold})"
+        backend_obj = backend
     else:
-        router = LexicalIntentRouter()
-        label = "rules tier only"
+        backend_obj = None
+
+    if args.ledger_only:
+        router = CascadingIntentRouter(backend=backend_obj)
+        label = "signal ledger only" + (" + reranker" if backend_obj else "")
+    else:
+        router = TwoPhaseIntentRouter(backend=backend_obj)
+        label = (
+            f"two-phase (tags >= {router.tag_threshold}, "
+            f"default BROWSING below {router.decision_confidence})"
+            + (" + reranker" if backend_obj else "")
+        )
 
     print("=" * 72)
     print(f"Intent router evaluation - {label}")
@@ -127,12 +150,43 @@ def main() -> None:
     if scored:
         calibration(scored)
 
-    if isinstance(router, CascadingIntentRouter):
-        print(
-            f"\nESCALATIONS  {router.escalations} of {len(scored)} messages"
-            f"  ({router.escalations / max(1, len(scored)):.1%})"
-            f"   backend failures: {router.backend_failures}"
-        )
+    total = max(1, len(scored))
+    print(f"\nROUTING  {total} messages")
+    if isinstance(router, TwoPhaseIntentRouter):
+        print(f"  phase 1 (tags)      {router.phase1_decisions:4d}  ({router.phase1_decisions / total:.1%})")
+        print(f"  defaulted BROWSING  {router.defaulted:4d}  ({router.defaulted / total:.1%})")
+    print(f"  escalated to model  {router.escalations:4d}  ({router.escalations / total:.1%})"
+          f"   failures: {router.backend_failures}")
+
+
+def sweep(use_model: bool) -> None:
+    """Tag threshold against accuracy, so the choice of 2 is a measured one."""
+    backend = None
+    if use_model:
+        from starter.routing.local_model import QwenRerankerBackend
+
+        backend = QwenRerankerBackend()
+        if backend.missing_requirements():
+            print("reranker unavailable; sweeping without it")
+            backend = None
+
+    rows = load(GOLDEN) + load(DEV)
+    print(f"{'config':44} {'correct':>9}  {'macro-F1':>8}  {'phase1':>7}  {'default':>8}")
+    print("-" * 84)
+
+    for threshold in (1, 2, 3, 4):
+        for decision in (0.50, 0.70):
+            router = TwoPhaseIntentRouter(
+                backend=backend, tag_threshold=threshold, decision_confidence=decision
+            )
+            pairs = [(r["intent"], router.classify(r["message"]).intent) for r in rows]
+            correct = sum(1 for g, p in pairs if g == p)
+            name = f"tags>={threshold}, default below {decision:.2f}"
+            print(
+                f"{name:44} {correct:4d}/{len(rows):<4} {macro_f1(pairs):8.4f}"
+                f"  {router.phase1_decisions:7d}  {router.defaulted:8d}"
+            )
+    print("\ndefault below 0.50 disables the terminal BROWSING rule")
 
 
 if __name__ == "__main__":

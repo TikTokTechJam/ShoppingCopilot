@@ -97,9 +97,16 @@ router.classify("I need black waterproof hiking boots under $100.").as_dict()
 # {'intent': 'BUYING', 'confidence': 0.99, ..., 'tier': 'rules'}
 ```
 
-It runs as a cascade. A deterministic signal scorer answers most messages in
-microseconds using only the standard library. Messages it is unsure about
-escalate to Qwen3-Reranker-0.6B running locally on CPU. The model is optional:
+It runs in two phases. Phase 1 extracts canonical shopping constraints from
+the message and routes `BUYING` when two or more distinct constraint fields
+are filled — a colour and a price, a brand and a size. Phase 2 handles what
+Phase 1 cannot settle with a deterministic signal scorer, optionally escalating
+messages it is unsure about to Qwen3-Reranker-0.6B running locally on CPU.
+Anything still undecided is routed `BROWSING`, because that is the recoverable
+error: broad retrieval plus a clarifying question converges, whereas a wrong
+`BUYING` narrows onto constraints nobody gave.
+
+The model is optional:
 
 ```bash
 pip install -r requirements-reranker.txt

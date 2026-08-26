@@ -12,8 +12,11 @@ from starter.routing import (
     IntentResult,
     LexicalIntentRouter,
     SessionIntentTracker,
+    TwoPhaseIntentRouter,
+    extract_constraints,
     lexicon,
 )
+from starter.routing.constraints import CATEGORICAL_FIELDS
 from starter.routing.local_model import LABEL_QUERIES, QwenRerankerBackend
 
 
@@ -215,6 +218,129 @@ class CascadeTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Phase 1: constraint extraction (issue #7) and the tag rule
+# ---------------------------------------------------------------------------
+
+
+class ConstraintExtractionTest(unittest.TestCase):
+    def test_produces_the_issue_7_record_shape(self) -> None:
+        payload = extract_constraints("I need dark blue waterproof hiking boots under $100.").as_dict()
+        self.assertEqual(
+            set(payload),
+            {"category", "brand", "price_min", "price_max", "color", "material",
+             "size", "style", "feature", "use_case"},
+        )
+        self.assertEqual(payload["price_max"], 100)
+        self.assertIn("navy", payload["color"])
+        self.assertIn("waterproof", payload["feature"])
+
+    def test_maps_natural_wording_to_canonical_values(self) -> None:
+        cases = [
+            ("dark blue", "color", "navy"),
+            ("water resistant", "feature", "waterproof"),
+            ("a running shoe", "category", "running_shoes"),
+            ("vegan leather", "material", "faux_leather"),
+        ]
+        for phrase, field_name, canonical in cases:
+            values = getattr(extract_constraints(f"I want something {phrase}."), field_name)
+            self.assertIn(canonical, values, phrase)
+
+    def test_normalises_price_bounds(self) -> None:
+        self.assertEqual(extract_constraints("less than 80 bucks").price_max, 80)
+        self.assertEqual(extract_constraints("under $100").price_max, 100)
+        self.assertEqual(extract_constraints("at least $30").price_min, 30)
+        both = extract_constraints("between $50 and $100")
+        self.assertEqual((both.price_min, both.price_max), (50, 100))
+
+    def test_a_size_number_is_not_a_price(self) -> None:
+        constraints = extract_constraints("I need a running shoe in size 10.")
+        self.assertIsNone(constraints.price_max)
+        self.assertIsNone(constraints.price_min)
+        self.assertIn("10", constraints.size)
+
+    def test_does_not_invent_constraints(self) -> None:
+        constraints = extract_constraints("I'm just having a look around today.")
+        for name in CATEGORICAL_FIELDS:
+            self.assertEqual(getattr(constraints, name), (), name)
+        self.assertFalse(constraints.has_price())
+
+    def test_naming_an_attribute_is_not_committing_to_a_value(self) -> None:
+        """"What style?" is a topic. It must not count as a style constraint."""
+        constraints = extract_constraints("I'm not sure what style I want yet.")
+        self.assertEqual(constraints.style, ())
+        self.assertEqual(constraints.tag_count(), 0)
+        self.assertIn("style", constraints.unmapped)
+
+    def test_overlapping_aliases_are_counted_once(self) -> None:
+        """"dark blue" is one colour, not navy plus blue."""
+        self.assertEqual(extract_constraints("a dark blue coat").color, ("navy",))
+
+    def test_a_category_does_not_imply_a_use_case(self) -> None:
+        """"running shoes" names a product; it is not a stated use case."""
+        constraints = extract_constraints("I'm browsing running shoes.")
+        self.assertEqual(constraints.category, ("running_shoes",))
+        self.assertEqual(constraints.use_case, ())
+
+    def test_category_is_excluded_from_the_tag_count(self) -> None:
+        constraints = extract_constraints("I'm looking for cardigans.")
+        self.assertEqual(constraints.category, ("cardigan",))
+        self.assertEqual(constraints.tag_count(exclude=("category",)), 0)
+
+
+class TwoPhaseTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.router = TwoPhaseIntentRouter()
+
+    def test_two_tags_decide_buying_without_consulting_the_ledger(self) -> None:
+        result = self.router.classify("I'm looking for a Nike running shoe in size 10.")
+        self.assertEqual(result.intent, BUYING)
+        self.assertEqual(result.tier, "tags")
+        self.assertEqual(result.signals, ())
+        self.assertGreaterEqual(len(result.tags), 2)
+
+    def test_one_tag_falls_through_to_the_ledger(self) -> None:
+        result = self.router.classify("I'm browsing running shoes and not sure what I want yet.")
+        self.assertEqual(result.intent, BROWSING)
+        self.assertNotEqual(result.tier, "tags")
+
+    def test_the_threshold_is_configurable(self) -> None:
+        message = "I want a black shirt."
+        self.assertEqual(TwoPhaseIntentRouter(tag_threshold=1).classify(message).tier, "tags")
+        self.assertNotEqual(TwoPhaseIntentRouter(tag_threshold=4).classify(message).tier, "tags")
+
+    def test_undecided_messages_default_to_browsing(self) -> None:
+        """The terminal rule: browsing is the recoverable error."""
+        result = self.router.classify("Sandals, please.")
+        self.assertEqual(result.intent, BROWSING)
+        self.assertEqual(result.tier, "default")
+        self.assertTrue(result.weak)
+
+    def test_the_default_never_downgrades_a_confident_verdict(self) -> None:
+        for message, expected in [
+            ("I need black waterproof hiking boots under $100.", BUYING),
+            ("I'm just exploring some options for my vacation.", BROWSING),
+        ]:
+            result = self.router.classify(message)
+            self.assertEqual(result.intent, expected, message)
+            self.assertNotEqual(result.tier, "default", message)
+
+    def test_no_result_is_ever_below_the_decision_confidence(self) -> None:
+        for row in load_jsonl(GOLDEN_PATH) + load_jsonl(DEV_PATH):
+            result = self.router.classify(row["message"])
+            self.assertGreaterEqual(result.confidence, 0.5)
+            if result.intent == BUYING:
+                self.assertGreaterEqual(
+                    result.confidence, self.router.decision_confidence, row["message"]
+                )
+
+    def test_constraints_are_carried_on_the_result(self) -> None:
+        result = self.router.classify("I need a leather handbag under $150.")
+        self.assertIsNotNone(result.constraints)
+        self.assertEqual(result.constraints.price_max, 150)
+        self.assertIn("leather", result.constraints.material)
+
+
+# ---------------------------------------------------------------------------
 # Session behaviour
 # ---------------------------------------------------------------------------
 
@@ -318,12 +444,35 @@ class SessionFlowTest(unittest.TestCase):
 
 
 class DevSetTest(unittest.TestCase):
-    def test_rules_tier_floor(self) -> None:
-        """The rules tier alone must stay usable if the model is never installed."""
-        router = LexicalIntentRouter()
+    def test_pipeline_floor_without_the_model(self) -> None:
+        """The pipeline must stay usable if the reranker is never installed."""
+        router = TwoPhaseIntentRouter()
         rows = load_jsonl(DEV_PATH)
         correct = sum(1 for r in rows if router.classify(r["message"]).intent == r["intent"])
-        self.assertGreaterEqual(correct / len(rows), 0.88, f"{correct}/{len(rows)}")
+        self.assertGreaterEqual(correct / len(rows), 0.90, f"{correct}/{len(rows)}")
+
+    def test_golden_set_holds_without_the_model(self) -> None:
+        router = TwoPhaseIntentRouter()
+        rows = load_jsonl(GOLDEN_PATH)
+        correct = sum(1 for r in rows if router.classify(r["message"]).intent == r["intent"])
+        self.assertEqual(correct, len(rows))
+
+    def test_every_remaining_error_is_a_browsing_error(self) -> None:
+        """The asymmetry the terminal rule buys.
+
+        A message wrongly sent to Browsing still converges through broad
+        retrieval and a clarifying question. A message wrongly sent to Buying
+        narrows onto constraints nobody gave. The pipeline should make only
+        the recoverable mistake.
+        """
+        router = TwoPhaseIntentRouter()
+        wrongly_buying = [
+            row["message"]
+            for row in load_jsonl(DEV_PATH) + load_jsonl(GOLDEN_PATH)
+            if router.classify(row["message"]).intent == BUYING
+            and row["intent"] == BROWSING
+        ]
+        self.assertEqual(wrongly_buying, [], f"unrecoverable errors: {wrongly_buying}")
 
     def test_misses_are_flagged_weak(self) -> None:
         """A wrong answer must at least not be a confident one.

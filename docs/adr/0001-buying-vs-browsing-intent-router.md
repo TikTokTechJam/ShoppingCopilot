@@ -26,9 +26,42 @@ credentials and no network.
 
 ## Decision
 
-A two-tier cascade behind one `IntentRouter` protocol.
+A two-phase pipeline behind one `IntentRouter` protocol, with a deliberate
+terminal bias toward Browsing.
 
-**Tier 1 — `LexicalIntentRouter`.** A weighted signal ledger scoring evidence
+**Phase 1 — canonical constraint tags.** `constraints.extract_constraints()`
+maps the utterance onto the canonical record issue #7 specifies (category,
+brand, price bounds, colour, material, size, style, feature, use case). If the
+customer filled in **two or more** distinct constraint fields, the message is
+routed `BUYING` immediately. This is the cheapest and least arguable evidence
+there is: a colour and a price, or a brand and a size, is commitment that
+needs no interpretation.
+
+Category is excluded from that count, for the same reason category keywords
+carry zero weight in the ledger: naming a product says which shelf the
+customer is at, not that they have decided. The threshold lives in
+`lexicon.BUYING_TAG_THRESHOLD` and is a measured choice — see the sweep below.
+
+Phase 1 records values, not topics. "I'm not sure what style I want yet"
+mentions style and commits to nothing, so it yields no tag; the word is kept
+in `unmapped` for a later component to ask about. This is what separates the
+extractor from the signal ledger, which deliberately treats the bare attribute
+word as weak evidence.
+
+**Phase 2 — the signal ledger.** Everything Phase 1 cannot settle, which is
+every message whose intent lives in *how* it is phrased rather than in what it
+names.
+
+**Terminal rule — undecided means Browsing.** Any message the pipeline cannot
+decide with at least `lexicon.DECISION_CONFIDENCE` (0.70) is routed
+`BROWSING`. The two errors are not symmetric. A Browsing session that was
+really a buyer still converges: broad retrieval plus a clarifying question
+recovers it within a turn or two. A Buying session that was really a browser
+narrows hard onto constraints the customer never gave, and has no natural way
+back. `test_every_remaining_error_is_a_browsing_error` asserts the pipeline
+makes only the recoverable mistake.
+
+**Phase 2's optional refinement — `LexicalIntentRouter`.** A weighted signal ledger scoring evidence
 of commitment (budget, brand, size, colour, material, feature; more weakly use
 case and style) against evidence of hesitation (undecidedness, exploration
 verbs, option-seeking, vague head nouns). Category keywords carry **zero**
@@ -44,13 +77,14 @@ Two conditional rules carry the ambiguity cases the issue names:
 - a request verb **requires an actual request**, so "Can you show me some gift
   ideas?" stays Browsing.
 
-**Tier 2 — `QwenRerankerBackend`.** Qwen3-Reranker-0.6B, ONNX int8, run
-locally on CPU, entered **only** when Tier 1 reports confidence below 0.70.
+**Phase 2's model tier — `QwenRerankerBackend`.** Qwen3-Reranker-0.6B, ONNX
+int8, run locally on CPU, entered **only** when the ledger reports confidence
+below 0.70, and before the terminal rule applies.
 The message is scored against two written label descriptions; normalising the
 two relevance scores under a uniform prior makes the result a posterior, which
 is what the issue's `confidence` field is supposed to mean.
 
-**Tier 3 does not exist.** No API path is shipped. Network access is used once,
+**No API tier exists.** No API path is shipped. Network access is used once,
 by `tools/fetch_reranker.py`, to download weights; the request path never
 touches it.
 
@@ -100,20 +134,52 @@ Two labelled sets, neither derived from generated sessions:
 
 | Configuration | Golden | Dev | Dev macro-F1 |
 | --- | ---: | ---: | ---: |
-| Rules only | 13/13 | 88/96 | 0.9161 |
-| Cascade (rules → reranker) | 13/13 | 93/96 | 0.9687 |
+| Signal ledger alone | 13/13 | 88/96 | 0.9161 |
+| Two-phase, no model | 13/13 | 89/96 | 0.9267 |
+| Two-phase + reranker | 13/13 | **93/96** | **0.9687** |
 
-Escalation rate 19.3% of messages. Rules tier ~0.04 ms; an escalated message
-~310 ms on CPU with the int8 graph. Reproduce with:
+Phase 1 decides 34.9% of messages deterministically. The reranker is consulted
+on 19.3%; 5.5% reach the terminal rule. The ledger costs ~0.04 ms per message,
+an escalated message ~310 ms on CPU with the int8 graph.
+
+Tag-threshold sweep over golden + dev (109 messages), with the reranker:
+
+| Threshold | Correct | macro-F1 | Decided by Phase 1 |
+| ---: | ---: | ---: | ---: |
+| ≥ 1 | 96/109 | 0.8804 | 57 |
+| **≥ 2** | **106/109** | **0.9724** | 38 |
+| ≥ 3 | 106/109 | 0.9724 | 18 |
+| ≥ 4 | 106/109 | 0.9724 | 0 |
+
+Reproduce with:
 
 ```bash
-python -m tools.eval_intent_router            # rules only
-python -m tools.eval_intent_router --model    # cascade
+python -m tools.eval_intent_router            # two-phase, no model
+python -m tools.eval_intent_router --model    # two-phase + reranker
+python -m tools.eval_intent_router --sweep    # threshold sweep
 ```
 
-Two findings worth recording:
+Four findings worth recording:
 
-**Every rules-tier error landed inside the escalation band.** That is the
+**A threshold of 1 is clearly wrong; 2 is the floor of a plateau.** Firing on
+a single tag costs ten points (96/109 against 106/109), because one attribute
+is routinely present in exploratory language — "something in black", "for
+hiking". At 2 and above the accuracy is flat, so 2 is chosen as the cheapest
+point on the plateau.
+
+**Phase 1 does not improve accuracy; it improves cost and auditability.**
+At a threshold of 4, Phase 1 decides nothing and the pipeline still scores
+106/109, because Phase 2 gets those messages right anyway. What Phase 1 buys
+is that 38 of 109 messages are settled by counting named constraints — no
+weights, no model, and a decision a reviewer can check by eye. That is worth
+having, but it should not be sold as an accuracy win.
+
+**The terminal rule is worth one point without the model and none with it**
+(88 → 89 on dev; 93 either way). Its real value is not the score but the shape
+of the remaining errors: with it, the pipeline makes zero unrecoverable
+mistakes.
+
+**Every ledger error landed inside the escalation band.** That is the
 property the cascade depends on, and `test_misses_are_flagged_weak` asserts it
 rather than leaving it to luck.
 
@@ -141,10 +207,17 @@ Treat edits to those strings as a behaviour change.
 
 ## Limitations
 
+- **Every remaining error is one label convention.** All three misses with
+  the reranker, and all seven without it, are bare-category requests ("I'm
+  looking for cardigans", "Sandals, please") that the dev set labels `BUYING`
+  and the pipeline routes `BROWSING`. Under the terminal rule that is arguably
+  correct behaviour rather than a defect: a bare category names a shelf and
+  commits to nothing, which is exactly the undecided case Browsing is for. If
+  the team accepts that convention, the dev set should be relabelled and both
+  configurations score 96/96. **The labels were deliberately left as they are
+  so that this is a decision someone makes, not one buried in a diff.**
 - The dev set was written by us. It is a fair test of generalisation beyond
-  the thirteen examples, but it encodes our own idea of the boundary. The
-  label conventions worth arguing about are **bare category → BUYING** and
-  **contentless greeting → BROWSING**; both are judgment calls, not facts.
+  the thirteen examples, but it encodes our own idea of the boundary.
 - The label descriptions were selected on the dev set, so dev numbers are
   mildly optimistic. The golden thirteen were never tuned against and held at
   13/13 throughout.
@@ -163,8 +236,13 @@ Treat edits to those strings as a behaviour change.
 
 ## Follow-ups
 
-- Issue #7 owns constraint extraction and override handling; the router only
-  notices that a turn is unsolicited.
+- `constraints.py` is a working stand-in for issue #7, not a replacement for
+  it. `CANONICAL_VOCAB` is a curated starting point and is a plain data
+  structure precisely so #5 and #8 can replace it wholesale without touching
+  the extraction code. When #7 ships properly, Phase 1 should consume it and
+  this module should shrink to an adapter.
+- Issue #7 also owns override handling; the router only notices that a turn is
+  unsolicited.
 - Issue #9 consumes `confidence` and the `weak` flag to decide whether to fork
   hard between retrieval tracks or blend them. The 0.70 threshold should be
   revisited once that consumer exists.

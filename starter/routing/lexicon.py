@@ -287,6 +287,22 @@ NO_CONTENT_CONFIDENCE = 0.55
 # and escalation to the reranker.
 WEAK_CONFIDENCE = 0.70
 
+# Phase 1: how many distinct canonical constraint fields a message must fill
+# before it is routed BUYING without consulting the signal ledger. Two is the
+# measured optimum on the labelled sets; see the ADR for the sweep.
+BUYING_TAG_THRESHOLD = 2
+
+# Category is excluded from the Phase 1 count on purpose. Naming a product
+# says which shelf the customer is at, not that they have decided -- the same
+# principle that gives category keywords zero weight in the ledger below.
+TAG_COUNT_EXCLUDE: tuple[str, ...] = ("category",)
+
+# Terminal rule: a message the pipeline cannot decide with at least this much
+# confidence is routed BROWSING. Browsing is the recoverable error -- broad
+# retrieval plus a clarifying question still converges, whereas a wrongly
+# confident BUYING narrows onto constraints the customer never gave.
+DECISION_CONFIDENCE = 0.70
+
 # The reranker only overrides the rules tier when it is this sure. Below it,
 # the rules answer stands: an unsure second opinion is not worth discarding a
 # deterministic first one for.

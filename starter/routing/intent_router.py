@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from starter.routing import lexicon
+from starter.routing.constraints import ShoppingConstraints, extract_constraints
 from starter.routing.lexicon import BROWSING, BUYING
 
 
@@ -46,7 +47,7 @@ Intent = Literal["BUYING", "BROWSING"]
 
 # Which implementation produced a result. Recorded so a regression can be
 # attributed to a tier rather than to "the router".
-Tier = Literal["rules", "reranker", "rules_fallback"]
+Tier = Literal["tags", "rules", "reranker", "rules_fallback", "default"]
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,8 @@ class IntentResult:
     signals: tuple[Signal, ...] = ()
     weak: bool = False
     tier: Tier = "rules"
+    tags: tuple[str, ...] = ()
+    constraints: ShoppingConstraints | None = None
 
     def as_dict(self) -> dict[str, object]:
         """The shape issue #6 asks for, plus the audit trail."""
@@ -77,6 +80,7 @@ class IntentResult:
             "margin": round(self.margin, 4),
             "weak": self.weak,
             "tier": self.tier,
+            "tags": list(self.tags),
             "signals": [signal.name for signal in self.signals],
         }
 
@@ -280,7 +284,7 @@ class _SessionState:
 class SessionIntentTracker:
     """Sticky session intent: seed on turn one, re-run only when unprompted."""
 
-    router: IntentRouter = field(default_factory=LexicalIntentRouter)
+    router: IntentRouter = field(default_factory=lambda: TwoPhaseIntentRouter())
     _sessions: dict[str, _SessionState] = field(default_factory=dict, init=False)
 
     def reset(self, session_id: str) -> None:
@@ -362,6 +366,110 @@ class SessionIntentTracker:
                 for signal in candidate.signals
             )
         return True
+
+
+class TwoPhaseIntentRouter:
+    """Constraint tags first, signal ledger second, BROWSING if still unsure.
+
+    Phase 1 asks a factual question: how many distinct canonical constraint
+    fields did the customer actually fill in? A message carrying two or more
+    -- a colour and a price, a brand and a size -- has committed to enough
+    that no further reading is needed. This is issue #7's extractor doing the
+    work, and it is the cheapest and least arguable evidence available.
+
+    Phase 2 handles everything Phase 1 cannot settle, which is every message
+    whose intent lives in *how* it is phrased rather than in what it names.
+    That is the signal ledger, optionally refined by the reranker on the
+    messages the ledger itself is unsure about.
+
+    The terminal rule is deliberate asymmetry: anything still undecided is
+    routed BROWSING. The two errors are not symmetric. A Browsing session that
+    was really a buyer still converges -- broad retrieval plus a clarifying
+    question recovers it within a turn or two. A Buying session that was
+    really a browser narrows hard onto constraints the customer never gave and
+    has no natural way back.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: "object | None" = None,
+        tag_threshold: int | None = None,
+        decision_confidence: float | None = None,
+        rules: LexicalIntentRouter | None = None,
+        escalation_threshold: float | None = None,
+    ) -> None:
+        self.rules = rules or LexicalIntentRouter()
+        self.tag_threshold = (
+            lexicon.BUYING_TAG_THRESHOLD if tag_threshold is None else int(tag_threshold)
+        )
+        self.decision_confidence = (
+            lexicon.DECISION_CONFIDENCE
+            if decision_confidence is None
+            else float(decision_confidence)
+        )
+        self.cascade = CascadingIntentRouter(
+            backend=backend, threshold=escalation_threshold, rules=self.rules
+        )
+        self.phase1_decisions = 0
+        self.defaulted = 0
+
+    @property
+    def escalations(self) -> int:
+        return self.cascade.escalations
+
+    @property
+    def backend_failures(self) -> int:
+        return self.cascade.backend_failures
+
+    def classify(self, message: str) -> IntentResult:
+        constraints = extract_constraints(message)
+        tags = constraints.populated_fields(exclude=lexicon.TAG_COUNT_EXCLUDE)
+
+        # -- Phase 1: enough named constraints is decisive on its own --------
+        if len(tags) >= self.tag_threshold:
+            self.phase1_decisions += 1
+            # Confidence grows with the evidence, saturating quickly: three
+            # constraints is not meaningfully surer than two.
+            confidence = min(0.99, 0.80 + 0.06 * (len(tags) - self.tag_threshold))
+            return IntentResult(
+                intent=BUYING,
+                confidence=confidence,
+                margin=float(len(tags)),
+                signals=(),
+                weak=False,
+                tier="tags",
+                tags=tags,
+                constraints=constraints,
+            )
+
+        # -- Phase 2: fall back to the signal ledger (and the reranker) ------
+        result = self.cascade.classify(message)
+
+        # -- Terminal rule: undecided means BROWSING -------------------------
+        if result.confidence < self.decision_confidence and result.intent != BROWSING:
+            self.defaulted += 1
+            return IntentResult(
+                intent=BROWSING,
+                confidence=self.decision_confidence,
+                margin=result.margin,
+                signals=result.signals,
+                weak=True,
+                tier="default",
+                tags=tags,
+                constraints=constraints,
+            )
+
+        return IntentResult(
+            intent=result.intent,
+            confidence=result.confidence,
+            margin=result.margin,
+            signals=result.signals,
+            weak=result.weak,
+            tier=result.tier,
+            tags=tags,
+            constraints=constraints,
+        )
 
 
 _DEFAULT_ROUTER = LexicalIntentRouter()
