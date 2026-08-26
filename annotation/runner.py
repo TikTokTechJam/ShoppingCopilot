@@ -166,6 +166,7 @@ def _process_product(
     last_error: Exception | None = None
     request_elapsed = 0.0
     final_attempt = attempt
+    previous_retry_kind: str | None = None
     product_started = time.perf_counter()
     total_attempts = retries + 1
     for retry_index in range(total_attempts):
@@ -180,7 +181,7 @@ def _process_product(
         )
         try:
             retry_instruction = None
-            if retry_index == 1:
+            if previous_retry_kind == "schema":
                 retry_instruction = (
                     "The previous response failed schema validation. Return exactly "
                     "the six requested arrays, with no extra keys or prose."
@@ -210,6 +211,7 @@ def _process_product(
             retry_kind = _retry_kind(exc, retry_index)
             can_retry = retry_index + 1 < total_attempts and retry_kind is not None
             if can_retry:
+                previous_retry_kind = retry_kind
                 _emit_progress(
                     f"retry parent_asin={parent_asin} after_attempt={current_attempt} "
                     f"next_attempt={current_attempt + 1} kind={retry_kind} "
