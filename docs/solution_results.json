@@ -1,0 +1,48 @@
+{
+  "system": "Generalized Compass offline hybrid agent",
+  "evaluation_variant": "candidate-driven concrete attributes; no catch-all request or intent-card reconstruction",
+  "dataset": "data/public_set.jsonl",
+  "sample_count": 200,
+  "hit_rate_at_10": 1.0,
+  "mrr": 0.687687,
+  "mttc": 1.61,
+  "efficiency": 0.939,
+  "technical_score": 0.894106,
+  "reported_token_usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
+  "scenario_metrics": {
+    "boundary": {
+      "sample_count": 10,
+      "hit_rate_at_10": 1.0,
+      "mrr": 0.46873,
+      "mttc": 1.9
+    },
+    "browsing": {
+      "sample_count": 80,
+      "hit_rate_at_10": 1.0,
+      "mrr": 0.636176,
+      "mttc": 1.225
+    },
+    "buying": {
+      "sample_count": 80,
+      "hit_rate_at_10": 1.0,
+      "mrr": 0.742664,
+      "mttc": 1.1625
+    },
+    "intent_override": {
+      "sample_count": 30,
+      "hit_rate_at_10": 1.0,
+      "mrr": 0.751429,
+      "mttc": 3.733333
+    }
+  },
+  "benchmark_environment": {
+    "python": "Anaconda Python 3.13.5",
+    "platform": "Windows",
+    "wall_seconds_including_cold_start": 47.665,
+    "model_api_cost_usd": 0.0
+  }
+}

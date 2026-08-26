@@ -1,0 +1,40 @@
+{
+  "benchmark": "Deterministic catalog-driven hard stress evaluator",
+  "evaluator": "evaluator/hard_evaluator.py",
+  "sample_count": 200,
+  "seed": 20260826,
+  "hit_rate_at_10": 0.89,
+  "mrr": 0.457266,
+  "mttc": 4.74,
+  "efficiency": 0.626,
+  "technical_score": 0.70738,
+  "scenario_metrics": {
+    "boundary": {
+      "sample_count": 10,
+      "hit_rate_at_10": 0.8,
+      "mrr": 0.403333,
+      "mttc": 4.3
+    },
+    "browsing": {
+      "sample_count": 80,
+      "hit_rate_at_10": 0.875,
+      "mrr": 0.402297,
+      "mttc": 5.0375
+    },
+    "buying": {
+      "sample_count": 80,
+      "hit_rate_at_10": 0.9625,
+      "mrr": 0.533512,
+      "mttc": 3.4625
+    },
+    "intent_override": {
+      "sample_count": 30,
+      "hit_rate_at_10": 0.766667,
+      "mrr": 0.418505,
+      "mttc": 7.5
+    }
+  },
+  "command": "python -m evaluator.hard_evaluator --sample-count 200 --seed 20260826",
+  "reported_token_usage": 0,
+  "notes": "Generated from normalized catalog facts independently of the public labeled sessions; no catch-all other attribute target-fact leakage."
+}
