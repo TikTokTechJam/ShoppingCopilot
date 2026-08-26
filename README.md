@@ -48,6 +48,60 @@ The command writes per-session results and aggregate metrics to `results.json`.
 The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
 MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
 
+## Canonical Catalog Facts (Issue #5)
+
+Issue #5 provides a reusable product-facts layer without modifying the frozen `data/catalog.jsonl`. The file-based pipeline separates the hosted-model annotation/audit artifacts from the deterministic Agent-facing `catalog_facts.jsonl` output:
+
+```text
+catalog.jsonl
+    -> scripts.annotate_catalog
+    -> data/derived/annotations/v2/annotations.jsonl + failures.jsonl + manifest.json
+    -> scripts.build_catalog_facts
+    -> data/derived/catalog_facts/catalog_facts.jsonl
+```
+
+The annotation runner is resumable: successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. It makes no network call unless a local endpoint is configured. Hosted endpoint URL, API key environment variable, model, timeout, token limit, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
+
+Create a local environment file from the ignored template, then fill in your own endpoint, model, and key:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+`.env` is ignored by Git. Never paste the real API key into tracked files, README text, a commit, or a pull request. `ANNOTATION_BASE_URL` may be either an OpenAI-compatible `/v1` base URL or a full `/chat/completions` URL; the client adds the path when needed.
+
+Preview the work without calling a model:
+
+```powershell
+python -m scripts.annotate_catalog --dry-run --limit 100
+```
+
+First, make one local test request. The command below reads the ignored `.env`, uses a long timeout for a remote/local model, and keeps concurrency at one so the setup is easy to diagnose:
+
+```powershell
+python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 2048 --concurrency 1
+```
+
+Progress is printed immediately to stderr, including the selected product, request attempt, retry reason, success/failure, elapsed time, and batch totals. The final JSON summary remains on stdout. Use `--log-every 100` for a large run, or `--quiet` to suppress progress logs.
+
+After that succeeds, run a small batch and review the generated facts before considering larger work:
+
+```powershell
+python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v2 --limit 10 --timeout 180 --max-tokens 2048 --concurrency 1 --retries 2 --log-every 1
+```
+
+For future larger runs, increase concurrency gradually (1, then 4, 8, and 16) only after checking precision, latency, and failure rates. Do not start a full 50,000-product run until those measurements are understood. After an annotation run completes, build and validate the deterministic facts output:
+
+```powershell
+python -m scripts.build_catalog_facts --annotations data/derived/annotations/v2/annotations.jsonl
+python -m scripts.validate_catalog_facts
+```
+
+Reasoning is disabled by default for extraction; use `--thinking` only for an explicit comparison. The runner retries transient 429/network/5xx failures, gives at most one corrective retry for schema errors, and does not repeat a request that ended with `finish_reason=length` or a context-length error. Use `--no-json-mode` if the endpoint does not support the OpenAI `response_format` option. The runner sends the API key only as an in-memory `Authorization` header and never writes it to output or the manifest.
+
+The model receives only useful product source fields and must return the versioned v2 semantic schema for `color`, `material`, `size`, `style`, `feature`, and `use_case`. `category` is copied from the raw catalog hierarchy and `brand` is copied only from explicit brand/manufacturer metadata. Precision is preferred over coverage: accessories, warnings, negations, seller metadata, and unrelated examples must not become main-product facts. `parent_asin` and `price` are copied from the source catalog, and the original catalog remains unchanged.
+
 ## Hard Evaluator and Expected-Utility Search Benchmark
 
 The repository also includes a fixed hard benchmark for the expected-utility adaptive search policy. It contains 400 GPTAnnotation sessions in `data/derived/gptannotation/sessions.jsonl`: 160 Buying, 160 Browsing, 60 Intent Override, and 20 Boundary sessions. Each session has a catalog target and evidence-backed hidden facts used only by the simulator.
@@ -111,6 +165,10 @@ docs/evaluation_config.json       scoring configuration
 docs/baseline_results.json        reproducible weak-starter reference score
 starter/agent.py                  editable weak starter
 evaluator/local_evaluator.py      public-set simulator and scorer
+annotation/                       annotation prompt, schema, client, and runner
+scripts/annotate_catalog.py      resumable hosted-model annotation CLI
+scripts/build_catalog_facts.py   deterministic canonical-facts builder
+scripts/validate_catalog_facts.py read-only canonical-facts validator
 evaluator/hard_evaluator.py       fixed GPTAnnotation hard benchmark evaluator
 data/derived/gptannotation/       400-session hard benchmark input
 IMPROVEMENT_LOG.md                chronological change and evaluation record

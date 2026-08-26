@@ -22,3 +22,7 @@ tests/test_organizer_pipeline.py
 # Optional intent-router model weights (~1.2 GB). Fetch with:
 #   python -m tools.fetch_reranker
 assets/qwen3-reranker-0.6b-onnx
+
+# Generated Issue #5 annotation and canonical-facts outputs.
+data/derived/annotations/
+data/derived/catalog_facts/
