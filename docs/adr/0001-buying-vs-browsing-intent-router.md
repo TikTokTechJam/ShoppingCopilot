@@ -230,9 +230,14 @@ Treat edits to those strings as a behaviour change.
   matched the "m" in "I'm", and `down` as a material matched "down jacket",
   which is a category. Both invented a hard constraint and flipped the label
   confidently.
-- Intermittent, harmless: onnxruntime has been seen to raise from its thread
-  pool destructor at interpreter shutdown on Python 3.14, after all results
-  are produced. `QwenRerankerBackend.close()` releases the session explicitly.
+- onnxruntime has been seen to raise from its thread-pool destructor at
+  interpreter shutdown on Python 3.14, after all results are produced but with
+  a non-zero exit code, which reads as a failing test run.
+  `QwenRerankerBackend` registers `close()` with `atexit` so the session is
+  destroyed while the interpreter can still run the destructor cleanly.
+  Single-threaded session options also avoid it but measured 3.3x slower
+  (466 ms against 142 ms per forward pass), which is too much to pay for a
+  rare unclean exit.
 
 ## Follow-ups
 

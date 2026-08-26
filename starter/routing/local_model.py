@@ -28,6 +28,8 @@ every acceptance criterion in the issue.
 
 from __future__ import annotations
 
+import atexit
+import gc
 import math
 import os
 from functools import lru_cache
@@ -120,6 +122,7 @@ class QwenRerankerBackend:
         self._yes_id: int | None = None
         self._no_id: int | None = None
         self._load_error: str | None = None
+        self._atexit_registered = False
         self._score_cached = lru_cache(maxsize=cache_size)(self._score_uncached)
 
     # -- availability -----------------------------------------------------
@@ -161,6 +164,14 @@ class QwenRerankerBackend:
             self._tokenizer = Tokenizer.from_file(str(self.model_dir / "tokenizer.json"))
             self._yes_id = self._tokenizer.encode("yes", add_special_tokens=False).ids[0]
             self._no_id = self._tokenizer.encode("no", add_special_tokens=False).ids[0]
+            if not self._atexit_registered:
+                # Tear the session down while the interpreter is still healthy.
+                # Left to garbage collection at shutdown, onnxruntime has been
+                # seen to raise from its thread-pool destructor on Python 3.14
+                # -- after all results are produced, but with a non-zero exit
+                # code, which reads as a failing test run.
+                atexit.register(self.close)
+                self._atexit_registered = True
             return True
         except Exception as error:  # missing package, corrupt file, bad graph
             self._load_error = f"{type(error).__name__}: {error}"
@@ -172,15 +183,18 @@ class QwenRerankerBackend:
         return self._load_error
 
     def close(self) -> None:
-        """Release the session deterministically.
+        """Release the session deterministically. Safe to call more than once.
 
-        onnxruntime has been seen to raise from its thread-pool destructor
-        during interpreter shutdown on Python 3.14 (after all work is done, so
-        results are unaffected). Releasing here keeps teardown predictable.
+        Registered with `atexit` on first load, so the ONNX session is
+        destroyed at a point where the interpreter can still run the
+        destructor cleanly. Single-threaded session options would also avoid
+        the problem, but measured 3.3x slower (466 ms against 142 ms per
+        forward pass), which is far too much to pay for a rare unclean exit.
         """
         self._session = None
         self._tokenizer = None
         self._score_cached.cache_clear()
+        gc.collect()
 
     # -- scoring ----------------------------------------------------------
 
