@@ -1,0 +1,13 @@
+{"message": "I need black waterproof hiking boots under $100.", "intent": "BUYING"}
+{"message": "I'm looking for a Nike running shoe in size 10.", "intent": "BUYING"}
+{"message": "I need a leather handbag under $150.", "intent": "BUYING"}
+{"message": "Show me a white cotton shirt with long sleeves.", "intent": "BUYING"}
+{"message": "I want waterproof hiking shoes for men.", "intent": "BUYING"}
+{"message": "I'm looking for something nice for a winter trip.", "intent": "BROWSING"}
+{"message": "I'm just exploring some options for my vacation.", "intent": "BROWSING"}
+{"message": "I want something comfortable for everyday use.", "intent": "BROWSING"}
+{"message": "Can you show me some gift ideas?", "intent": "BROWSING"}
+{"message": "I'm not sure what style I want yet.", "intent": "BROWSING"}
+{"message": "I need something suitable for outdoor activities.", "intent": "BROWSING"}
+{"message": "I'm browsing running shoes and not sure what I want yet.", "intent": "BROWSING"}
+{"message": "I need something for hiking, but it must be waterproof and under $80.", "intent": "BUYING"}

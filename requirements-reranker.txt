@@ -1,0 +1,6 @@
+# Optional Stage 2 of the intent router (issue #6).
+# The agent runs rules-only without these; nothing else in the repo needs them.
+onnxruntime>=1.17
+tokenizers>=0.15
+numpy>=1.24
+huggingface_hub>=0.23   # only needed by tools/fetch_reranker.py
