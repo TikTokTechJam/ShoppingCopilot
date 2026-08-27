@@ -105,8 +105,8 @@ python -m scripts.validate_attribute_dictionary `
   --directory data/derived/dictionary
 ```
 
-The build command defaults to `data/annotations.jsonl`, the current V4
-annotation output in this repository. Use `--input` to point it at another V4
+The build command defaults to `data/derived/annotations/v4/annotations.jsonl`,
+the current V4 annotation output in this repository. Use `--input` to point it at another V4
 annotation JSONL location, such as a generated release under
 `data/derived/annotations/v4/annotations.jsonl`. The optional embedding command
 requires the dependencies in `requirements-embeddings.txt`; it is intentionally

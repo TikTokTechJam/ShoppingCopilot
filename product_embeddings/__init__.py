@@ -1,32 +1,37 @@
 """Offline product-embedding artifact generation and exact retrieval."""
 
 from .loader import ProductEmbeddingIndex, ProductEmbeddingMatch, load_product_embedding_index
-from .pipeline import (
-    BUILDER_VERSION,
-    HashEmbeddingModel,
-    build_product_embeddings,
+from .layer2 import (
+    DEFAULT_LAYER2_WEIGHTS,
+    LAYER2_ARTIFACT_VERSION,
+    LAYER2_FILES,
+    LAYER2_TEXT_VERSION,
+    LAYER2_VIEWS,
+    Layer2EmbeddingIndex,
+    Layer2EmbeddingMatch,
+    build_layer2_embeddings,
+    build_layer2_view_documents,
+    build_layer2_view_text,
+    load_layer2_embedding_index,
 )
-from .text import PRODUCT_TEXT_VERSION, build_product_text
-from .tier4 import (
-    TIER4_ARTIFACT_VERSION,
-    TIER4_FIELDS,
-    build_tier4_raw_text,
-    build_tier4_record,
-    normalize_tier4_source,
+from .pipeline import (
+    HashEmbeddingModel,
 )
 
 __all__ = [
-    "BUILDER_VERSION",
+    "DEFAULT_LAYER2_WEIGHTS",
     "HashEmbeddingModel",
-    "PRODUCT_TEXT_VERSION",
+    "LAYER2_ARTIFACT_VERSION",
+    "LAYER2_FILES",
+    "LAYER2_TEXT_VERSION",
+    "LAYER2_VIEWS",
+    "Layer2EmbeddingIndex",
+    "Layer2EmbeddingMatch",
     "ProductEmbeddingIndex",
     "ProductEmbeddingMatch",
-    "build_product_embeddings",
-    "build_product_text",
-    "TIER4_ARTIFACT_VERSION",
-    "TIER4_FIELDS",
-    "build_tier4_raw_text",
-    "build_tier4_record",
-    "normalize_tier4_source",
+    "build_layer2_embeddings",
+    "build_layer2_view_documents",
+    "build_layer2_view_text",
     "load_product_embedding_index",
+    "load_layer2_embedding_index",
 ]

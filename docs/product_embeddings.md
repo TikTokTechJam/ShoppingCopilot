@@ -1,85 +1,85 @@
-# Product embedding artifacts
+# Layer 2 product-field embedding artifacts
 
-Issue #12 adds a pure offline artifact boundary for whole-product semantic retrieval. It keeps `Agent.respond` and model invocation unchanged; the #13 retriever consumes the optional valid artifact when present while retaining compatibility fallback behavior.
+Layer 2 is the independent dense-retrieval path described in
+`Architecture.md`. It reads only the immutable `data/catalog.jsonl`; it does
+not require Tier 1, Tier 2, or Tier 3 facts and never rewrites the catalog.
 
-## Inputs
+## Views
 
-The builder joins two JSONL sources by `parent_asin`:
-
-- `data/catalog.jsonl`: source catalog rows. The current catalog uses `title` as a string and `description` as an array of strings.
-- `data/annotations.jsonl`: the preferred V4 annotation-wrapper input when available. Its `facts` object contains `category`, `brand`, `color`, `material`, `style`, `feature`, and `use_case`; `brand` is an array and `size` is intentionally absent.
-- `data/derived/catalog_facts/catalog_facts.jsonl`: the final flattened facts alternative, using `category`, `brand`, `price`, `color`, `material`, `size`, `style`, `feature`, and `use_case`.
-- Optional `data/derived/tier4/raw_text.jsonl`: the source-only Tier 4 view with `parent_asin`, `title`, `features`, `description`, and `details`. If it is not supplied, the builder reads those fields directly from `catalog.jsonl`.
-
-The Issue #5/V4 annotation wrapper (`{"parent_asin": ..., "facts": {...}, ...}`) is accepted directly. The builder normally requires every catalog ASIN exactly once in the facts input and writes rows in catalog order. For an incomplete annotation run, `--allow-missing-facts` creates empty canonical fields for missing ASINs without inventing facts; the raw Tier 4 source is still embedded.
-
-## Stable product text
-
-Each product is represented by this fixed, non-JSON document shape:
+Each catalog product receives four independent semantic views:
 
 ```text
-Title: <Tier 4 title>
-Category: <canonical values>
-Brand: <canonical brand>
-Material: <canonical values>
-Color: <canonical values>
-Style: <canonical values>
-Features: <canonical feature values>
-Use cases: <canonical values>
-Description: <short normalized Tier 4 description>
-Raw features: <selected Tier 4 features>
-Details: <selected Tier 4 details>
+categories   -> ordered product category path
+title        -> original title
+features     -> all feature bullets joined in source order
+description  -> all description strings joined in source order
 ```
 
-Canonical array values are de-duplicated and sorted. Tier 4 text retains source order, is whitespace-normalized, and is bounded for stable documents (description 1,000 characters, raw features/details 2,000 characters by default). Price, size, annotation metadata, and arbitrary raw JSON are not embedded; price and size remain available to structured retrieval.
+The optional selected-details view is intentionally not implemented in this
+MVP. Details should not be embedded blindly because many keys are bookkeeping
+or numeric metadata already handled by structured retrieval.
+
+Empty fields are represented by a zero row and a `has_<view>` presence mask in
+`product_embedding_metadata.json`. Missing text therefore contributes no
+score and is never treated as negative evidence.
 
 ## Build
 
+Use a local or injected embedding model for benchmark artifacts:
+
 ```bash
-python scripts/build_product_embeddings.py \
+python -m scripts.build_layer2_embeddings \
   --catalog data/catalog.jsonl \
-  --facts data/annotations.jsonl \
-  --raw-text data/derived/tier4/raw_text.jsonl \
   --output-dir data/derived/product_embeddings \
-  --allow-missing-facts \
   --model path/to/local/sentence-transformer
 ```
 
-The current local `data/annotations.jsonl` contains 49,999 successful records. The missing catalog ASIN is `B08BPJ3YS3`, so `--allow-missing-facts` is required for a full 50,000-row build until that annotation is added.
+The builder loads local SentenceTransformers models with
+`local_files_only=True`; it will not download a model or call an API. For a
+dependency-light pipeline smoke test, omit `--model` and use the deterministic
+hashing fallback, or provide `--embedder package.module:object`.
 
-Build the optional Tier 4 view first with:
-
-```bash
-python scripts/build_tier4_raw_text.py \
-  --catalog data/catalog.jsonl \
-  --output data/derived/tier4/raw_text.jsonl
-```
-
-`--model` is loaded with `local_files_only=True`; it cannot download a model or call an API. `sentence-transformers` is optional and is imported only when `--model` is used. A local injected object/factory can be supplied with `--embedder package.module:object`. The default built-in hashing embedder needs only NumPy and is intended as a deterministic pipeline fallback, not as a semantic-quality benchmark model.
-
-The builder accepts an embedder exposing `embed_documents(texts)`, `encode(texts, ...)`, `embed(texts)`, or a callable receiving a list of texts. All returned rows are converted to finite `float32`, L2-normalized, and rejected if they are zero vectors.
+Pass `--generated-at-utc` when a byte-stable manifest is useful. The catalog
+row order is preserved in every matrix and in the metadata mapping.
 
 ## Artifacts
 
 ```text
 data/derived/product_embeddings/
-├── product_embeddings.npy
+├── category_embeddings.npy
+├── title_embeddings.npy
+├── features_embeddings.npy
+├── description_embeddings.npy
 ├── product_embedding_metadata.json
 └── manifest.json
 ```
 
-The matrix is shaped `(product_count, embedding_dimension)` and has dtype `float32`. Metadata is a JSON array with the exact row-to-ASIN mapping. The manifest records the model identity, dimension, `l2` normalization policy, text/builder versions, source paths/versions, row order, and generation timestamp. Pass `--generated-at-utc` when a byte-stable manifest is required across rebuilds; vectors and row metadata are deterministic for the same inputs/model/config.
+All four matrices have shape `(product_count, embedding_dimension)`, use
+`float32`, and have L2-normalized rows for present fields. The manifest records
+the source catalog hash/version, model, dimension, normalization policy, view
+names, row order, and generation configuration.
 
-## Exact loading
+## Runtime search
 
 ```python
-from product_embeddings import load_product_embedding_index
+from product_embeddings import load_layer2_embedding_index
 
-index = load_product_embedding_index(
+index = load_layer2_embedding_index(
     "data/derived/product_embeddings",
     expected_asins=["B07K34RX5J", "B07KCFS4VC"],
 )
 matches = index.search(query_embedding, top_k=10)
 ```
 
-The loader validates matrix dtype/shape, manifest dimension/count, finite L2-normalized rows, unique ASINs, and contiguous metadata row numbers. Query vectors are normalized before exact matrix multiplication, so inner product is cosine similarity. Ties retain deterministic row order. No FAISS, vector database, network service, or Agent integration is required.
+The loader validates all matrix shapes, dtypes, finite/L2-normalized present
+rows, zero missing rows, metadata row numbers, unique ASINs, manifest counts,
+and catalog order. Search normalizes one query vector and computes exact
+inner products against all four views. The default score is a
+presence-aware weighted average; callers can supply benchmark-tuned view
+weights.
+
+`ProductRetriever` automatically looks for a valid Layer 2 artifact under
+`data/derived/product_embeddings` and uses it when a compatible query encoder
+is supplied. Layer 1 constraints still run independently and are combined only
+at candidate scoring. A compatibility loader can still read previously
+generated single-matrix `product_embeddings.npy` artifacts.

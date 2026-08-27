@@ -47,20 +47,6 @@ Existing code is not automatically correct if it has drifted from the documented
 - Preserve the official Agent/evaluator contract.
 - Do not use hidden benchmark targets, simulator-only facts, or evaluator labels in Agent logic.
 
-## Catalog, Tier 4, and product embeddings
-
-- Treat `data/catalog.jsonl` as immutable source data. Derived processing must not rewrite, remove, or replace its raw fields.
-- Tier 4 is the raw product-text view: `parent_asin`, `title`, `features`, `description`, and `details`. Use `scripts/build_tier4_raw_text.py` to create the optional `data/derived/tier4/raw_text.jsonl` artifact.
-- Keep Tier 4 separate from canonical facts. Join records by exact `parent_asin`; do not fabricate missing Tier 1–3 facts from the Tier 4 source.
-- When present, `data/annotations.jsonl` is the preferred V4 Tier 1–3 annotation input for local embedding/dictionary builds. Check catalog coverage before building; use an explicit partial-facts option only when missing products will receive empty canonical fields and Tier 4 remains available.
-- The supplied `test.json` shape is a facts-format example/fixture. It may use a nested `facts` object, a `brand` array, and no `size`; it is not a complete replacement for the 50,000-product facts artifact.
-- Build one deterministic whole-product embedding document per product from canonical semantic facts plus selected Tier 4 text. Do not dump raw JSON or annotation metadata into the document.
-- Keep price, size labels, numeric measurements, and dimensions in structured retrieval. Do not use dense similarity as their final enforcement mechanism.
-- Product embeddings must be finite L2-normalized `float32` rows with exact metadata mapping each row to one `parent_asin`. Preserve the manifest and validate row/count/model compatibility when loading artifacts.
-- Use exact in-memory inner-product search for the MVP. Do not add FAISS, a vector database, or another retrieval service without an architecture decision and measured need.
-- Use the same embedding model/configuration for product documents and runtime query text. The hashing embedder is for smoke tests only; benchmark runs require a real semantic model.
-- Generate embeddings and other catalog artifacts offline. Runtime Agent code should load them once and must degrade safely when an artifact is missing or invalid.
-
 ## Architecture.md is read-only for coding agents
 
 Automated coding agents must not edit, rewrite, append to, or otherwise modify `Architecture.md`.
