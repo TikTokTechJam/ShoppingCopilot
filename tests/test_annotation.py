@@ -15,7 +15,7 @@ from annotation.client import HostedLLMClient, completion_url
 from annotation.config import load_env_file
 from annotation.prompt import PROMPT_VERSION, build_annotation_prompt
 from annotation.runner import run_annotation
-from annotation.schema import parse_and_validate_json
+from annotation.schema import normalize_price, parse_and_validate_json
 from annotation.validate import validate_catalog_facts
 
 
@@ -93,6 +93,10 @@ class AnnotationPipelineTests(unittest.TestCase):
             ["four way stretch", "machine washable", "water resistant"],
         )
         self.assertEqual(facts["use_case"], ["trail running", "swimming"])
+        self.assertIsNone(normalize_price("-"))
+        self.assertIsNone(normalize_price("—"))
+        self.assertEqual(normalize_price("from 12.99"), 12.99)
+        self.assertEqual(normalize_price("from $12.99"), 12.99)
 
         with self.assertRaises(ValueError):
             parse_and_validate_json({
