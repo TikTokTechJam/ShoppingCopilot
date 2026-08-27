@@ -27,7 +27,9 @@ wholesale by a generated dictionary without touching the extraction code.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 
 # Field -> ((canonical_value, alias_pattern), ...). Order matters: the first
@@ -448,6 +450,7 @@ from typing import Callable as _Callable, Iterable as _Iterable, Mapping as _Map
 
 from dictionary.registry import AttributeDictionary as _AttributeDictionary
 from dictionary.registry import LookupMatch as _LookupMatch
+from dictionary.registry import normalize_text as _normalize_dictionary_text
 
 
 @_dataclass(frozen=True)
@@ -508,6 +511,7 @@ _RESIDUAL_STOPWORDS = frozenset(
 )
 
 
+@lru_cache(maxsize=1)
 def _load_default_dictionary() -> _AttributeDictionary | None:
     directory = _Path("data/derived/dictionary")
     if not (directory / "canonical_values.json").exists():
@@ -521,21 +525,74 @@ def _dictionary_surface_matches(
     dictionary: _AttributeDictionary,
     text: str,
 ) -> tuple[_SpanMatch, ...]:
-    found: dict[tuple[int, int], set[str]] = {}
-    for value in dictionary.values:
-        parts = [re.escape(part) for part in value.normalized.split()]
-        if not parts:
+    """Find non-overlapping dictionary phrases with longest-first matching.
+
+    Matching is token based rather than substring based. The registry and
+    utterance use the same lexical normalization, while the token spans retain
+    the original text for evidence and overlap accounting.
+    """
+
+    def tokens(value: str) -> tuple[tuple[str, int, int], ...]:
+        folded = unicodedata.normalize("NFKC", value).casefold()
+        apostrophes = {"'", "’", "ʼ", "＇"}
+        found_tokens: list[tuple[str, int, int]] = []
+        current: list[str] = []
+        start: int | None = None
+
+        def finish(end: int) -> None:
+            nonlocal current, start
+            if current and start is not None:
+                token = _normalize_dictionary_text("".join(current))
+                if token:
+                    found_tokens.append((token, start, end))
+            current = []
+            start = None
+
+        for index, character in enumerate(folded):
+            if character.isalnum():
+                if start is None:
+                    start = index
+                current.append(character)
+            elif (
+                character in apostrophes
+                and start is not None
+                and index + 1 < len(folded)
+                and folded[index + 1].isalnum()
+            ):
+                # Keep a word such as Levi's as one lexical token.
+                continue
+            else:
+                finish(index)
+        finish(len(folded))
+        return tuple(found_tokens)
+
+    utterance_tokens = tokens(text)
+    found: dict[tuple[int, int], tuple[int, set[str]]] = {}
+    for offset, (first_token, _, _) in enumerate(utterance_tokens):
+        for parts, value_id in dictionary.phrase_index.get(first_token, ()):
+            width = len(parts)
+            if tuple(token[0] for token in utterance_tokens[offset : offset + width]) != parts:
+                continue
+            start = utterance_tokens[offset][1]
+            end = utterance_tokens[offset + width - 1][2]
+            key = (start, end)
+            if key not in found:
+                found[key] = (width, set())
+            found[key][1].add(value_id)
+
+    candidates = [
+        (start, end, ids, width, end - start)
+        for (start, end), (width, ids) in found.items()
+    ]
+    candidates.sort(key=lambda item: (-item[3], -item[4], item[0], item[1]))
+    accepted: list[tuple[int, int, set[str]]] = []
+    for start, end, ids, _, _ in candidates:
+        if any(start < taken_end and end > taken_start for taken_start, taken_end, _ in accepted):
             continue
-        pattern = r"(?<![A-Za-z0-9])" + r"[ _-]+".join(parts) + r"(?![A-Za-z0-9])"
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            found.setdefault((match.start(), match.end()), set()).add(
-                value.canonical_id
-            )
+        accepted.append((start, end, ids))
     return tuple(
         _SpanMatch(start, end, text[start:end], tuple(sorted(ids)))
-        for (start, end), ids in sorted(
-            found.items(), key=lambda item: (item[0][0], -(item[0][1] - item[0][0]))
-        )
+        for start, end, ids in sorted(accepted, key=lambda item: (item[0], item[1]))
     )
 
 
