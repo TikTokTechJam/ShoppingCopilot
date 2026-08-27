@@ -7,10 +7,11 @@ Issue #12 adds a pure offline artifact boundary for whole-product semantic retri
 The builder joins two JSONL sources by `parent_asin`:
 
 - `data/catalog.jsonl`: source catalog rows. The current catalog uses `title` as a string and `description` as an array of strings.
-- `data/derived/catalog_facts/catalog_facts.jsonl`: one canonical facts record per catalog product, using `category`, `brand`, `price`, `color`, `material`, `size`, `style`, `feature`, and `use_case`.
+- `data/annotations.jsonl`: the preferred V4 annotation-wrapper input when available. Its `facts` object contains `category`, `brand`, `color`, `material`, `style`, `feature`, and `use_case`; `brand` is an array and `size` is intentionally absent.
+- `data/derived/catalog_facts/catalog_facts.jsonl`: the final flattened facts alternative, using `category`, `brand`, `price`, `color`, `material`, `size`, `style`, `feature`, and `use_case`.
 - Optional `data/derived/tier4/raw_text.jsonl`: the source-only Tier 4 view with `parent_asin`, `title`, `features`, `description`, and `details`. If it is not supplied, the builder reads those fields directly from `catalog.jsonl`.
 
-The Issue #5 annotation wrapper (`{"parent_asin": ..., "facts": {...}, ...}`) is accepted too. The builder still requires every catalog ASIN exactly once in both inputs, and writes rows in catalog order.
+The Issue #5/V4 annotation wrapper (`{"parent_asin": ..., "facts": {...}, ...}`) is accepted directly. The builder normally requires every catalog ASIN exactly once in the facts input and writes rows in catalog order. For an incomplete annotation run, `--allow-missing-facts` creates empty canonical fields for missing ASINs without inventing facts; the raw Tier 4 source is still embedded.
 
 ## Stable product text
 
@@ -37,11 +38,14 @@ Canonical array values are de-duplicated and sorted. Tier 4 text retains source 
 ```bash
 python scripts/build_product_embeddings.py \
   --catalog data/catalog.jsonl \
-  --facts data/derived/catalog_facts/catalog_facts.jsonl \
+  --facts data/annotations.jsonl \
   --raw-text data/derived/tier4/raw_text.jsonl \
   --output-dir data/derived/product_embeddings \
+  --allow-missing-facts \
   --model path/to/local/sentence-transformer
 ```
+
+The current local `data/annotations.jsonl` contains 49,999 successful records. The missing catalog ASIN is `B08BPJ3YS3`, so `--allow-missing-facts` is required for a full 50,000-row build until that annotation is added.
 
 Build the optional Tier 4 view first with:
 

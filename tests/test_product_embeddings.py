@@ -188,6 +188,70 @@ class ProductEmbeddingTests(unittest.TestCase):
             )
             self.assertEqual([item.parent_asin for item in candidates], ["B123", "B456"])
 
+    @unittest.skipUnless(np is not None, "NumPy is required for embedding artifacts")
+    def test_partial_facts_are_explicit_and_do_not_invent_values(self) -> None:
+        assert np is not None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            catalog.write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "parent_asin": asin,
+                            "title": title,
+                            "features": [],
+                            "description": [],
+                            "details": {},
+                        }
+                    )
+                    for asin, title in (("A1", "Blue boots"), ("A2", "Red shoes"))
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            facts = root / "annotations.jsonl"
+            facts.write_text(
+                json.dumps(
+                    {
+                        "parent_asin": "A1",
+                        "facts": {
+                            "category": ["boots"],
+                            "brand": ["maker"],
+                            "color": ["blue"],
+                            "material": [],
+                            "style": [],
+                            "feature": [],
+                            "use_case": [],
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                build_product_embeddings(
+                    catalog,
+                    facts,
+                    root / "strict",
+                    KeywordEmbedder(),
+                )
+
+            manifest = build_product_embeddings(
+                catalog,
+                facts,
+                root / "partial",
+                KeywordEmbedder(),
+                allow_missing_facts=True,
+                generated_at_utc="2026-01-01T00:00:00Z",
+            )
+            self.assertEqual(manifest["missing_fact_asins"], ["A2"])
+            self.assertEqual(manifest["missing_fact_count"], 1)
+            self.assertEqual(
+                np.load(root / "partial" / "product_embeddings.npy", allow_pickle=False).shape,
+                (2, 2),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

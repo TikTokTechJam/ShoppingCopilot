@@ -21,6 +21,7 @@ from starter.routing.constraints import CATEGORICAL_FIELDS
 
 FACT_FIELDS = tuple(CATEGORICAL_FIELDS)
 DEFAULT_FACT_PATHS = (
+    Path("data/annotations.jsonl"),
     Path("data/derived/catalog_facts/catalog_facts.jsonl"),
     Path("data/derived/annotations/v2/annotations.jsonl"),
     Path("data/derived/annotations/v1/annotations.jsonl"),

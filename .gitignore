@@ -25,3 +25,5 @@ assets/qwen3-reranker-0.6b-onnx
 
 # Generated annotation datasets and reports.
 data/derived/annotations/
+data/annotations.jsonl
+data/derived/tier4/raw_text.jsonl

@@ -51,14 +51,25 @@ def _read_facts(path: Path) -> tuple[dict[tuple[str, str], int], int, int]:
                 raise ValueError(f"{path}:{line_number}: duplicate product {parent_asin}")
             seen_products.add(parent_asin)
 
-            missing = [field for field in ATTRIBUTE_FIELDS if field not in record]
+            nested = record.get("facts")
+            facts = nested if isinstance(nested, Mapping) else record
+            missing = [
+                field
+                for field in ATTRIBUTE_FIELDS
+                if field != "size" and field not in facts
+            ]
             if missing:
                 raise ValueError(f"{path}:{line_number}: missing facts {missing}")
 
             for attribute in ATTRIBUTE_FIELDS:
-                raw_values = record[attribute]
+                raw_values = facts.get(attribute, [])
                 if attribute == "brand":
-                    values: Iterable[Any] = () if raw_values is None else (raw_values,)
+                    if raw_values is None:
+                        values = ()
+                    elif isinstance(raw_values, list):
+                        values = raw_values
+                    else:
+                        values = (raw_values,)
                 else:
                     if raw_values is None:
                         values = ()
@@ -181,7 +192,7 @@ def _write_npy(path: Path, matrix: Any) -> None:
 
 
 def build_attribute_dictionary(
-    facts_path: str | Path = "data/derived/catalog_facts/catalog_facts.jsonl",
+    facts_path: str | Path = "data/annotations.jsonl",
     output_dir: str | Path = "data/derived/dictionary",
     *,
     embedding_model: str | None = None,
@@ -309,8 +320,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--facts",
-        default="data/derived/catalog_facts/catalog_facts.jsonl",
-        help="Issue #5 canonical facts JSONL",
+        default="data/annotations.jsonl",
+        help="Canonical facts or V4 annotation-wrapper JSONL",
     )
     parser.add_argument(
         "--output-dir",

@@ -37,8 +37,9 @@ python -m scripts.build_attribute_dictionary `
 ```
 
 The facts path defaults to
-`data/derived/catalog_facts/catalog_facts.jsonl`, the deterministic output of
-Issue #5. The embedding command requires the optional dependencies in
+`data/annotations.jsonl` is accepted directly as the preferred V4 annotation
+input; the flattened `data/derived/catalog_facts/catalog_facts.jsonl` from
+Issue #5 is also supported. The embedding command requires the optional dependencies in
 `requirements-embeddings.txt`; it is intentionally not run as part of normal
 repository checks.
 

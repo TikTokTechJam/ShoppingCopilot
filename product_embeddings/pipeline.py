@@ -212,6 +212,20 @@ def _read_facts(path: Path) -> dict[str, dict[str, Any]]:
     return facts_by_asin
 
 
+def _empty_facts() -> dict[str, Any]:
+    """Represent an unannotated product without inventing semantic facts."""
+    return {
+        "category": [],
+        "brand": None,
+        "color": [],
+        "material": [],
+        "size": [],
+        "style": [],
+        "feature": [],
+        "use_case": [],
+    }
+
+
 def _read_tier4(path: Path) -> dict[str, dict[str, Any]]:
     raw_by_asin: dict[str, dict[str, Any]] = {}
     for line_number, record in _read_jsonl(path):
@@ -229,18 +243,22 @@ def _read_tier4(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def _validate_input_asins(
-    products: Sequence[Mapping[str, Any]], facts_by_asin: Mapping[str, Any]
-) -> None:
+    products: Sequence[Mapping[str, Any]],
+    facts_by_asin: Mapping[str, Any],
+    *,
+    allow_missing: bool = False,
+) -> tuple[str, ...]:
     catalog_asins = [str(product["parent_asin"]) for product in products]
     catalog_set = set(catalog_asins)
     facts_set = set(facts_by_asin)
     missing = sorted(catalog_set - facts_set)
     extra = sorted(facts_set - catalog_set)
-    if missing or extra:
+    if extra or (missing and not allow_missing):
         raise ValueError(
             "catalog/facts ASIN mismatch; "
             f"missing={missing[:5]}, extra={extra[:5]}"
         )
+    return tuple(missing)
 
 
 def _call_encode(model: Any, texts: Sequence[str], batch_size: int) -> Any:
@@ -386,6 +404,7 @@ def build_product_embeddings(
     model: Any,
     *,
     raw_text_path: str | Path | None = None,
+    allow_missing_facts: bool = False,
     batch_size: int = 32,
     catalog_version: str | None = None,
     facts_version: str | None = None,
@@ -400,7 +419,15 @@ def build_product_embeddings(
     output = Path(output_dir)
     products = _read_catalog(catalog)
     facts_by_asin = _read_facts(facts)
-    _validate_input_asins(products, facts_by_asin)
+    missing_fact_asins = _validate_input_asins(
+        products,
+        facts_by_asin,
+        allow_missing=allow_missing_facts,
+    )
+    if missing_fact_asins:
+        facts_by_asin = dict(facts_by_asin)
+        for asin in missing_fact_asins:
+            facts_by_asin[asin] = _empty_facts()
     raw_text = Path(raw_text_path) if raw_text_path is not None else None
     raw_by_asin: dict[str, dict[str, Any]] | None = None
     if raw_text is not None:
@@ -438,6 +465,9 @@ def build_product_embeddings(
         "generated_at_utc": generated_at_utc,
         "catalog_path": _manifest_path(catalog),
         "facts_path": _manifest_path(facts),
+        "allow_missing_facts": allow_missing_facts,
+        "missing_fact_asins": list(missing_fact_asins),
+        "missing_fact_count": len(missing_fact_asins),
         "tier4_path": _manifest_path(raw_text) if raw_text is not None else None,
         "tier4_version": TIER4_ARTIFACT_VERSION if raw_text is not None else "catalog-source",
         "catalog_version": resolved_catalog_version,

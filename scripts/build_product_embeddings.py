@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument(
         "--facts",
-        default="data/derived/catalog_facts/catalog_facts.jsonl",
+        default="data/annotations.jsonl",
         help="Canonical facts JSONL/JSON; annotation/test wrappers are also accepted.",
     )
     parser.add_argument(
@@ -50,6 +50,14 @@ def main() -> None:
         help="Dimension for the dependency-light deterministic fallback.",
     )
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--allow-missing-facts",
+        action="store_true",
+        help=(
+            "Build rows for catalog products without an annotation by leaving "
+            "their canonical fields empty and using Tier 4 text."
+        ),
+    )
     parser.add_argument("--catalog-version")
     parser.add_argument("--facts-version")
     parser.add_argument(
@@ -74,6 +82,7 @@ def main() -> None:
         args.output_dir,
         model,
         raw_text_path=args.raw_text,
+        allow_missing_facts=args.allow_missing_facts,
         batch_size=args.batch_size,
         catalog_version=args.catalog_version,
         facts_version=args.facts_version,
