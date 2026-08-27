@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -17,8 +18,21 @@ from dictionary.registry import (
 )
 
 
-LIST_FIELDS = tuple(field for field in ATTRIBUTE_FIELDS if field != "brand")
-SCHEMA_VERSION = "canonical-attribute-dictionary/v1"
+SCHEMA_VERSION = "canonical-attribute-dictionary/v2"
+DEFAULT_INPUT = "data/derived/annotations/v4/annotations.jsonl"
+
+
+@dataclass(frozen=True)
+class _ReadResult:
+    counts: dict[tuple[str, str], int]
+    representatives: dict[tuple[str, str], str]
+    raw_variants: dict[tuple[str, str], frozenset[str]]
+    records_read: int
+    records_used: int
+    records_skipped: int
+    skipped_by_reason: dict[str, int]
+    source_product_count: int | None
+    prompt_versions: tuple[str, ...]
 
 
 def _source_sha256(path: Path) -> str:
@@ -29,81 +43,186 @@ def _source_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_facts(path: Path) -> tuple[dict[tuple[str, str], int], int, int]:
-    counts: dict[tuple[str, str], int] = defaultdict(int)
+def _natural_value(value: str) -> str:
+    """Return a lowercase human-readable value while retaining apostrophes."""
+
+    text = unicodedata.normalize("NFKC", value).casefold()
+    apostrophes = {"'", "’", "ʼ", "＇"}
+    output: list[str] = []
+    pending_space = False
+    for index, character in enumerate(text):
+        if character.isalnum():
+            if pending_space and output:
+                output.append(" ")
+            output.append(character)
+            pending_space = False
+        elif (
+            character in apostrophes
+            and index > 0
+            and index + 1 < len(text)
+            and text[index - 1].isalnum()
+            and text[index + 1].isalnum()
+        ):
+            output.append("'")
+            pending_space = False
+        else:
+            pending_space = bool(output)
+    return "".join(output).strip()
+
+
+def _source_product_count(path: Path, records_read: int) -> int | None:
+    """Read a nearby annotation manifest when it declares the source size."""
+
+    manifest_path = path.with_name("manifest.json")
+    if not manifest_path.exists():
+        return records_read
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return records_read
+    if not isinstance(payload, Mapping):
+        return records_read
+    for key in ("source_product_count", "selected_product_count", "catalog_product_count"):
+        value = payload.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    source = payload.get("source")
+    if isinstance(source, Mapping):
+        value = source.get("product_count")
+        if isinstance(value, int) and value >= 0:
+            return value
+    return records_read
+
+
+def _read_facts(path: Path) -> _ReadResult:
+    """Read successful V4 annotation wrappers without requiring full coverage."""
+
+    product_membership: dict[tuple[str, str], set[str]] = defaultdict(set)
+    representatives: dict[tuple[str, str], str] = {}
+    raw_variants: dict[tuple[str, str], set[str]] = defaultdict(set)
     seen_products: set[str] = set()
-    record_count = 0
+    skipped_by_reason: dict[str, int] = defaultdict(int)
+    prompt_versions: set[str] = set()
+    records_read = 0
+    records_used = 0
+
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
                 continue
+            records_read += 1
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON") from exc
+            except json.JSONDecodeError:
+                skipped_by_reason["invalid_json"] += 1
+                continue
             if not isinstance(record, Mapping):
-                raise ValueError(f"{path}:{line_number}: fact record must be an object")
+                skipped_by_reason["record_not_object"] += 1
+                continue
 
+            annotation = record.get("annotation")
+            if not isinstance(annotation, Mapping) or annotation.get("status") != "success":
+                skipped_by_reason["not_successful"] += 1
+                continue
             parent_asin = record.get("parent_asin")
+            facts = record.get("facts")
             if not isinstance(parent_asin, str) or not parent_asin.strip():
-                raise ValueError(f"{path}:{line_number}: missing parent_asin")
+                skipped_by_reason["missing_parent_asin"] += 1
+                continue
             if parent_asin in seen_products:
-                raise ValueError(f"{path}:{line_number}: duplicate product {parent_asin}")
-            seen_products.add(parent_asin)
+                skipped_by_reason["duplicate_parent_asin"] += 1
+                continue
+            if not isinstance(facts, Mapping):
+                skipped_by_reason["facts_not_object"] += 1
+                continue
+            if any(field not in facts for field in ATTRIBUTE_FIELDS):
+                skipped_by_reason["missing_dictionary_field"] += 1
+                continue
 
-            missing = [field for field in ATTRIBUTE_FIELDS if field not in record]
-            if missing:
-                raise ValueError(f"{path}:{line_number}: missing facts {missing}")
-
+            normalized_record: dict[str, list[tuple[str, str]]] = {}
+            malformed = False
             for attribute in ATTRIBUTE_FIELDS:
-                raw_values = record[attribute]
-                if attribute == "brand":
-                    values: Iterable[Any] = () if raw_values is None else (raw_values,)
-                else:
-                    if raw_values is None:
-                        values = ()
-                    elif isinstance(raw_values, list):
-                        values = raw_values
-                    else:
-                        raise ValueError(
-                            f"{path}:{line_number}: {attribute} must be an array"
-                        )
-
-                product_values: set[str] = set()
-                for value in values:
-                    if not isinstance(value, str):
-                        raise ValueError(
-                            f"{path}:{line_number}: {attribute} values must be strings"
-                        )
-                    if not value.strip():
+                raw_values = facts.get(attribute)
+                if not isinstance(raw_values, list):
+                    malformed = True
+                    break
+                values: list[tuple[str, str]] = []
+                for raw_value in raw_values:
+                    if not isinstance(raw_value, str):
+                        malformed = True
+                        break
+                    display = _natural_value(raw_value)
+                    normalized = normalize_text(display)
+                    if not normalized:
                         continue
-                    if not normalize_text(value):
-                        raise ValueError(
-                            f"{path}:{line_number}: {attribute} has no searchable text"
-                        )
-                    product_values.add(value)
-                for value in product_values:
-                    counts[(attribute, value)] += 1
-            record_count += 1
-    return dict(counts), record_count, len(seen_products)
+                    values.append((display, normalized))
+                if malformed:
+                    break
+                normalized_record[attribute] = values
+            if malformed:
+                skipped_by_reason["malformed_dictionary_field"] += 1
+                continue
+
+            seen_products.add(parent_asin)
+            records_used += 1
+            prompt_version = annotation.get("prompt_version")
+            if isinstance(prompt_version, str) and prompt_version.strip():
+                prompt_versions.add(prompt_version.strip())
+
+            # A product contributes at most once per attribute/surface, even if
+            # the model repeats a value or returns separator variants.
+            product_surfaces: set[tuple[str, str]] = set()
+            for attribute, values in normalized_record.items():
+                for display, normalized in values:
+                    key = (attribute, normalized)
+                    if key in product_surfaces:
+                        continue
+                    product_surfaces.add(key)
+                    product_membership[key].add(parent_asin)
+                    raw_variants[key].add(display)
+                    representatives[key] = min(
+                        representatives.get(key, display), display
+                    )
+
+    counts = {key: len(products) for key, products in product_membership.items()}
+    return _ReadResult(
+        counts=counts,
+        representatives=representatives,
+        raw_variants={key: frozenset(values) for key, values in raw_variants.items()},
+        records_read=records_read,
+        records_used=records_used,
+        records_skipped=records_read - records_used,
+        skipped_by_reason=dict(sorted(skipped_by_reason.items())),
+        source_product_count=_source_product_count(path, records_read),
+        prompt_versions=tuple(sorted(prompt_versions)),
+    )
 
 
-def _registry_records(counts: Mapping[tuple[str, str], int]) -> list[dict[str, Any]]:
-    records = []
-    for (attribute, value), count in sorted(counts.items()):
-        records.append(
-            {
-                "canonical_id": canonical_id(attribute, value),
-                "attribute": attribute,
-                "value": value,
-                "normalized": normalize_text(value),
-                "count": count,
-            }
+def _registry_records(result: _ReadResult) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for attribute in ATTRIBUTE_FIELDS:
+        keys = sorted(
+            (key for key in result.counts if key[0] == attribute),
+            key=lambda item: item[1],
         )
+        for key in keys:
+            _, normalized = key
+            value = result.representatives[key]
+            records.append(
+                {
+                    "canonical_id": canonical_id(attribute, value),
+                    "attribute": attribute,
+                    "value": value,
+                    "normalized": normalized,
+                    "count": result.counts[key],
+                }
+            )
     return records
 
 
-def _normalized_lookup(records: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, list[str]]]:
+def _normalized_lookup(
+    records: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, list[str]]]:
     lookup: dict[str, dict[str, list[str]]] = {
         attribute: {} for attribute in ATTRIBUTE_FIELDS
     }
@@ -115,6 +234,15 @@ def _normalized_lookup(records: Iterable[Mapping[str, Any]]) -> dict[str, dict[s
         for canonical_ids in surfaces.values():
             canonical_ids.sort()
     return lookup
+
+
+def _ambiguous_surface_count(lookup: Mapping[str, Mapping[str, Iterable[str]]]) -> int:
+    surfaces: dict[str, set[str]] = defaultdict(set)
+    for attribute, values in lookup.items():
+        for normalized, canonical_ids in values.items():
+            if canonical_ids:
+                surfaces[normalized].add(attribute)
+    return sum(1 for attributes in surfaces.values() if len(attributes) > 1)
 
 
 def _load_numpy() -> Any:
@@ -181,23 +309,18 @@ def _write_npy(path: Path, matrix: Any) -> None:
 
 
 def build_attribute_dictionary(
-    facts_path: str | Path = "data/derived/catalog_facts/catalog_facts.jsonl",
+    input_path: str | Path = DEFAULT_INPUT,
     output_dir: str | Path = "data/derived/dictionary",
     *,
+    facts_path: str | Path | None = None,
     embedding_model: str | None = None,
     precomputed_embeddings: str | Path | None = None,
     semantic_attributes: Iterable[str] = SEMANTIC_ATTRIBUTES,
     query_encoder_factory: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
-    """Build deterministic registry artifacts and optional real embeddings.
+    """Build deterministic exact V4 registry artifacts and optional embeddings."""
 
-    When no embedding source is supplied, this builds the exact normalized
-    registry only. Use ``embedding_model`` or ``precomputed_embeddings`` to
-    produce the shared semantic matrix; no hash-based pseudo-embeddings are
-    generated.
-    """
-
-    facts = Path(facts_path)
+    source_path = Path(facts_path if facts_path is not None else input_path)
     output = Path(output_dir)
     selected_attributes = tuple(semantic_attributes)
     unknown = sorted(set(selected_attributes) - set(SEMANTIC_ATTRIBUTES))
@@ -206,8 +329,8 @@ def build_attribute_dictionary(
     if embedding_model and precomputed_embeddings:
         raise ValueError("choose embedding_model or precomputed_embeddings, not both")
 
-    counts, record_count, product_count = _read_facts(facts)
-    records = _registry_records(counts)
+    result = _read_facts(source_path)
+    records = _registry_records(result)
     lookup = _normalized_lookup(records)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -241,14 +364,12 @@ def build_attribute_dictionary(
         }
         for row, record in enumerate(embedded_records)
     ]
-
     embedding_dimension = None
     embedding_model_name = None
     embedding_status = "not_generated"
     if embedding_model:
-        texts = [str(row["embedding_text"]) for row in embedding_rows]
         matrix, embedding_model_name = _encode_with_sentence_transformers(
-            embedding_model, texts
+            embedding_model, [str(row["embedding_text"]) for row in embedding_rows]
         )
         normalized_matrix = _normalize_matrix(matrix)
         if int(normalized_matrix.shape[0]) != len(embedding_rows):
@@ -258,59 +379,105 @@ def build_attribute_dictionary(
         embedding_status = "generated"
     elif precomputed_embeddings:
         np = _load_numpy()
-        matrix = np.load(Path(precomputed_embeddings), allow_pickle=False)
-        normalized_matrix = _normalize_matrix(matrix)
+        normalized_matrix = _normalize_matrix(
+            np.load(Path(precomputed_embeddings), allow_pickle=False)
+        )
         if int(normalized_matrix.shape[0]) != len(embedding_rows):
             raise ValueError(
-                "precomputed embedding rows must follow the deterministic embedded "
-                "canonical-value order"
+                "precomputed embedding rows must follow the deterministic "
+                "embedded-value order"
             )
         _write_npy(output / "attribute_embeddings.npy", normalized_matrix)
         embedding_model_name = "precomputed"
         embedding_dimension = int(normalized_matrix.shape[1])
         embedding_status = "generated"
     else:
+        # Never leave placeholder metadata behind in an exact-only build.
+        for optional_path in (
+            output / "embedding_metadata.json",
+            output / "attribute_embeddings.npy",
+        ):
+            if optional_path.exists():
+                optional_path.unlink()
         embedding_rows = []
 
-    _write_json(output / "embedding_metadata.json", embedding_rows)
+    if embedding_status == "generated":
+        _write_json(output / "embedding_metadata.json", embedding_rows)
+
+    canonical_value_count_by_attribute = {
+        attribute: sum(1 for record in records if record["attribute"] == attribute)
+        for attribute in ATTRIBUTE_FIELDS
+    }
+    normalized_collision_count = sum(
+        1 for variants in result.raw_variants.values() if len(variants) > 1
+    )
+    prompt_version: str | None
+    if len(result.prompt_versions) == 1:
+        prompt_version = result.prompt_versions[0]
+    else:
+        prompt_version = None
     _write_json(
         output / "manifest.json",
         {
             "schema_version": SCHEMA_VERSION,
-            "source": {
-                "path": str(facts),
-                "sha256": _source_sha256(facts),
-                "record_count": record_count,
-                "product_count": product_count,
-            },
+            "dictionary_version": SCHEMA_VERSION,
+            "source_path": str(source_path),
+            "source_sha256": _source_sha256(source_path),
+            "source_product_count": result.source_product_count,
+            "records_read": result.records_read,
+            "successful_annotation_records": result.records_used,
+            "records_used": result.records_used,
+            "records_skipped": result.records_skipped,
+            "skipped_by_reason": result.skipped_by_reason,
+            "prompt_version": prompt_version,
+            "fields": list(ATTRIBUTE_FIELDS),
             "normalization_version": NORMALIZATION_VERSION,
             "canonical_value_count": len(records),
-            "embedded_value_count": len(embedding_rows),
+            "canonical_value_count_by_attribute": canonical_value_count_by_attribute,
+            "normalized_collision_count": normalized_collision_count,
+            "ambiguous_normalized_surface_count": _ambiguous_surface_count(lookup),
+            "embeddings": embedding_status == "generated",
             "semantic_attributes": list(selected_attributes),
             "embedding": {
                 "status": embedding_status,
                 "model": embedding_model_name,
                 "dimension": embedding_dimension,
             },
+            "source": {
+                "path": str(source_path),
+                "sha256": _source_sha256(source_path),
+                "record_count": result.records_read,
+                "product_count": result.source_product_count,
+            },
+            "embedded_value_count": len(embedding_rows),
         },
     )
     return {
-        "source_record_count": record_count,
-        "product_count": product_count,
+        "source_product_count": result.source_product_count,
+        "records_read": result.records_read,
+        "successful_annotation_records": result.records_used,
+        "records_used": result.records_used,
+        "records_skipped": result.records_skipped,
+        "skipped_by_reason": result.skipped_by_reason,
         "canonical_value_count": len(records),
-        "embedded_value_count": len(embedding_rows),
+        "canonical_value_count_by_attribute": canonical_value_count_by_attribute,
+        "normalized_collision_count": normalized_collision_count,
+        "ambiguous_normalized_surface_count": _ambiguous_surface_count(lookup),
         "embedding_status": embedding_status,
+        "output_dir": str(output),
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build the Issue #8 canonical attribute registry."
+        description="Build the V4 canonical attribute dictionary."
     )
     parser.add_argument(
+        "--input",
         "--facts",
-        default="data/derived/catalog_facts/catalog_facts.jsonl",
-        help="Issue #5 canonical facts JSONL",
+        dest="input_path",
+        default=DEFAULT_INPUT,
+        help="V4 annotation JSONL containing nested facts",
     )
     parser.add_argument(
         "--output-dir",
@@ -318,14 +485,8 @@ def main() -> None:
         help="Derived dictionary artifact directory",
     )
     embedding = parser.add_mutually_exclusive_group()
-    embedding.add_argument(
-        "--embedding-model",
-        help="SentenceTransformers model name or local model path",
-    )
-    embedding.add_argument(
-        "--precomputed-embeddings",
-        help=".npy matrix in deterministic embedded-value order",
-    )
+    embedding.add_argument("--embedding-model")
+    embedding.add_argument("--precomputed-embeddings")
     embedding.add_argument(
         "--no-embeddings",
         action="store_true",
@@ -336,7 +497,6 @@ def main() -> None:
         nargs="+",
         default=list(SEMANTIC_ATTRIBUTES),
         choices=SEMANTIC_ATTRIBUTES,
-        help="Attributes included in the one shared semantic matrix",
     )
     args = parser.parse_args()
     if not (args.embedding_model or args.precomputed_embeddings or args.no_embeddings):
@@ -344,13 +504,13 @@ def main() -> None:
             "choose --embedding-model, --precomputed-embeddings, or --no-embeddings"
         )
     result = build_attribute_dictionary(
-        args.facts,
+        args.input_path,
         args.output_dir,
         embedding_model=args.embedding_model,
         precomputed_embeddings=args.precomputed_embeddings,
         semantic_attributes=args.semantic_attributes,
     )
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

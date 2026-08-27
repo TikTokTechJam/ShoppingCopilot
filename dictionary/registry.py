@@ -13,17 +13,16 @@ ATTRIBUTE_FIELDS = (
     "brand",
     "color",
     "material",
-    "size",
     "style",
     "feature",
     "use_case",
 )
 
-# Semantic lookup is deliberately limited to meaning-heavy fields. Brand and
-# size are better handled by exact/structured matching, while price is not a
-# categorical field at all.
+# Semantic lookup is optional and deliberately excludes category, which is a
+# Tier-1 exact/structured field. Size and price are runtime structured fields,
+# not dictionary attributes.
 SEMANTIC_ATTRIBUTES = (
-    "category",
+    "brand",
     "color",
     "material",
     "style",
@@ -31,7 +30,7 @@ SEMANTIC_ATTRIBUTES = (
     "use_case",
 )
 
-NORMALIZATION_VERSION = "nfkc-casefold-separators-punctuation-v1"
+NORMALIZATION_VERSION = "nfkc-casefold-apostrophe-removal-v2"
 DEFAULT_MIN_SIMILARITY = 0.70
 
 
@@ -46,11 +45,22 @@ def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     output: list[str] = []
     pending_space = False
-    for character in normalized:
+    apostrophes = {"'", "’", "ʼ", "＇"}
+    for index, character in enumerate(normalized):
         if character.isalnum():
             if pending_space and output:
                 output.append(" ")
             output.append(character)
+            pending_space = False
+        elif (
+            character in apostrophes
+            and index > 0
+            and index + 1 < len(normalized)
+            and normalized[index - 1].isalnum()
+            and normalized[index + 1].isalnum()
+        ):
+            # Apostrophes inside words are lexical decoration, not a word
+            # boundary: Levi's -> levis and O'Neill -> oneill.
             pending_space = False
         elif character.isspace() or character in {"_", "-"}:
             pending_space = bool(output)
@@ -68,7 +78,10 @@ def canonical_id(attribute: str, value: str) -> str:
         raise ValueError(f"unknown canonical attribute: {attribute}")
     if not isinstance(value, str) or not value:
         raise ValueError("canonical values must be non-empty strings")
-    return f"{attribute}:{value}"
+    normalized = normalize_text(value)
+    if not normalized:
+        raise ValueError("canonical values must contain searchable text")
+    return f"{attribute}:{normalized.replace(' ', '_')}"
 
 
 @dataclass(frozen=True)
@@ -91,7 +104,11 @@ class LookupMatch:
     similarity: float
 
 
-def _as_records(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+def _as_records(payload: Any) -> list[Mapping[str, Any]]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, Mapping):
+        raise ValueError("canonical_values.json must contain an object or array")
     values = payload.get("values")
     if isinstance(values, Mapping):
         return [
@@ -127,6 +144,15 @@ class AttributeDictionary:
         embeddings: Any = None,
     ) -> None:
         self._values = {value.canonical_id: value for value in values}
+        phrase_index: dict[str, list[tuple[tuple[str, ...], str]]] = {}
+        for value in self._values.values():
+            parts = tuple(value.normalized.split())
+            if parts:
+                phrase_index.setdefault(parts[0], []).append((parts, value.canonical_id))
+        self._phrase_index = {
+            first: tuple(sorted(entries, key=lambda item: (-len(item[0]), item[0], item[1])))
+            for first, entries in phrase_index.items()
+        }
         self._normalized_index = {
             attribute: {
                 normalized: tuple(canonical_ids)
@@ -193,6 +219,12 @@ class AttributeDictionary:
     @property
     def rows_by_attribute(self) -> Mapping[str, tuple[int, ...]]:
         return dict(self._rows_by_attribute)
+
+    @property
+    def phrase_index(self) -> Mapping[str, tuple[tuple[tuple[str, ...], str], ...]]:
+        """Return normalized dictionary phrases grouped by their first token."""
+
+        return dict(self._phrase_index)
 
     def get(self, value_id: str) -> CanonicalValue | None:
         return self._values.get(value_id)
@@ -355,6 +387,7 @@ class AttributeDictionary:
         self._query_encoder = encoder
 
     def _validate(self) -> None:
+        seen_surfaces: set[tuple[str, str]] = set()
         for value_id, value in self._values.items():
             if value_id != value.canonical_id:
                 raise ValueError(f"registry key mismatch for {value_id}")
@@ -362,8 +395,36 @@ class AttributeDictionary:
                 raise ValueError(f"unknown attribute in registry: {value.attribute}")
             if canonical_id(value.attribute, value.value) != value.canonical_id:
                 raise ValueError(f"invalid canonical_id: {value.canonical_id}")
+            if normalize_text(value.value) != value.normalized:
+                raise ValueError(f"normalized value disagrees with registry: {value_id}")
             if not value.normalized or value.count < 1:
                 raise ValueError(f"invalid registry value: {value.canonical_id}")
+            surface_key = (value.attribute, value.normalized)
+            if surface_key in seen_surfaces:
+                raise ValueError(
+                    "duplicate attribute/normalized surface: "
+                    f"{value.attribute}:{value.normalized}"
+                )
+            seen_surfaces.add(surface_key)
+
+        for attribute, surfaces in self._normalized_index.items():
+            if attribute not in ATTRIBUTE_FIELDS:
+                raise ValueError(f"unknown attribute in normalized lookup: {attribute}")
+            for normalized, value_ids in surfaces.items():
+                if not normalized or normalize_text(normalized) != normalized:
+                    raise ValueError("normalized lookup contains an invalid surface")
+                if not value_ids:
+                    raise ValueError("normalized lookup contains an empty ID list")
+                for value_id in value_ids:
+                    value = self._values.get(value_id)
+                    if value is None:
+                        raise ValueError(
+                            f"normalized lookup references unknown canonical_id: {value_id}"
+                        )
+                    if value.attribute != attribute or value.normalized != normalized:
+                        raise ValueError(
+                            f"normalized lookup disagrees with registry: {value_id}"
+                        )
 
         if self._embeddings is None:
             if self._embedding_rows:
