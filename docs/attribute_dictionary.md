@@ -1,61 +1,117 @@
-# Canonical attribute dictionary (Issue #8)
+# V4 canonical attribute dictionary
 
-Issue #8 turns the canonical product facts from Issue #5 into one stable
-attribute registry. It does not extract facts, invent aliases, parse user
-utterances, or retrieve products.
+The dictionary is a deterministic exact-lookup layer built from successful V4
+annotation records:
 
-The registry is written to `data/derived/dictionary/`:
-
-- `canonical_values.json` stores the canonical ID, source attribute, exact
-  Issue-5 value, normalized surface, and product frequency for every value.
-- `normalized_lookup.json` stores attribute-scoped exact lookup lists. Lists
-  preserve ambiguity when more than one canonical value has the same surface.
-- `embedding_metadata.json` maps rows in the one shared semantic matrix back
-  to canonical IDs.
-- `attribute_embeddings.npy` stores normalized vectors for the configured
-  semantic attributes when embeddings are generated.
-- `manifest.json` records the source facts hash, normalization policy, model,
-  dimensions, and counts.
-
-The JSON files are deterministic registry metadata; they are not a database or
-a separate dictionary of invented synonyms. The semantic lookup representation
-is one in-memory matrix, not eight vector stores. Brand and size are excluded
-from the default semantic set; price remains numeric.
-
-Build exact lookup artifacts without a model:
-
-```powershell
-python -m scripts.build_attribute_dictionary --no-embeddings
-python -m scripts.validate_attribute_dictionary
+```text
+V4 annotations
+      ↓
+exact canonical dictionary
+      ↓
+runtime registry
+      ↓
+longest-first exact utterance matching
 ```
 
-Build the shared semantic matrix with a local SentenceTransformers model:
+The input is the V4 annotation JSONL. Each record contains nested `facts` and
+an annotation status. Only records whose status is `success` contribute values;
+failed records are reported and do not block the build.
+
+The dictionary has exactly seven fields:
+
+```text
+category, brand, color, material, style, feature, use_case
+```
+
+`price` remains numeric/structured and `size` remains a structured runtime
+constraint. Neither is included in this dictionary. V4 `brand` values are
+lists, and each brand value becomes an independent dictionary entry.
+
+Canonical values remain lowercase natural text with spaces:
+
+```text
+value:         "moisture wicking"
+canonical_id:  "feature:moisture_wicking"
+normalized:    "moisture wicking"
+```
+
+Machine IDs are attribute-scoped and derived from the normalized surface. A
+normalized surface can map to more than one attribute. The runtime resolves
+those exact matches conservatively: directly attached directional context is preferred,
+then catalog-count dominance is accepted only when the leading attribute owns at
+least 75% of the candidate count and is at least 3 times the runner-up. Otherwise
+the surface remains unresolved rather than being assigned arbitrarily.
+
+Attribute context is directional and directly attached to the matched value.
+Supported forms include `brand VALUE`, `VALUE brand`, `from VALUE`, `made by
+VALUE`, `by VALUE`, `color/colour VALUE`, `VALUE color/colour`, `made of/from/
+with VALUE`, `VALUE material/fabric`, `style/fit VALUE`, `VALUE style/fit`,
+`feature(s) VALUE`, `VALUE feature`, and `for`, `good for`, `use for`, or `for
+use VALUE`. Proximity alone does not resolve ambiguity; the cue words do not
+consume or reserve other dictionary matches.
+
+A small brand-only collision guard suppresses confirmed query-language terms
+(currently `find`) when they appear as single-word brands without explicit
+brand context. Cues such as `brand`, `from`, `made by`, and `by` restore an
+intentional match. Multi-word brands and non-brand attributes are unaffected.
+
+Normalization is lexical only. It applies Unicode NFKC and case folding,
+converts separators to spaces, removes apostrophes inside words, collapses
+whitespace, and trims. For example:
+
+```text
+New_Balance  → new balance
+New-Balance  → new balance
+V_Neck       → v neck
+Levi's       → levis
+O'Neill      → oneill
+```
+
+The readable canonical value may still be `levi's` or `o'neill`. The system
+does not add stemming, synonym aliases, plural conversion, or semantic lookup.
+
+## Artifacts
+
+An exact-only build writes:
+
+```text
+data/derived/dictionary/
+├── canonical_values.json
+├── normalized_lookup.json
+└── manifest.json
+```
+
+`canonical_values.json` stores deterministic entries with the canonical ID,
+attribute, natural value, normalized surface, and distinct-product count.
+`normalized_lookup.json` stores attribute-scoped lookup lists and preserves
+one-to-many ambiguity. `manifest.json` records source provenance, V4 coverage,
+normalization version, counts, and whether embeddings were generated.
+
+No embedding files are required for the exact-only flow. Optional embedding
+support remains available for a later stage, but is not part of the first
+baseline.
+
+## Build and validate
+
+Use the actual V4 annotation output directly:
 
 ```powershell
 python -m scripts.build_attribute_dictionary `
-  --embedding-model sentence-transformers/all-MiniLM-L6-v2
+  --input data/derived/annotations/v4/annotations.jsonl `
+  --output-dir data/derived/dictionary `
+  --no-embeddings
+
+python -m scripts.validate_attribute_dictionary `
+  --directory data/derived/dictionary
 ```
 
-The facts path defaults to
-`data/annotations.jsonl` is accepted directly as the preferred V4 annotation
-input; the flattened `data/derived/catalog_facts/catalog_facts.jsonl` from
-Issue #5 is also supported. The embedding command requires the optional dependencies in
-`requirements-embeddings.txt`; it is intentionally not run as part of normal
-repository checks.
+The build command defaults to `data/annotations.jsonl`, the current V4
+annotation output in this repository. Use `--input` to point it at another V4
+annotation JSONL location, such as a generated release under
+`data/derived/annotations/v4/annotations.jsonl`. The optional embedding command
+requires the dependencies in `requirements-embeddings.txt`; it is intentionally
+not run as part of normal repository checks.
 
-Runtime consumers should load `AttributeDictionary` and use this order:
-
-```text
-exact_match(raw_text, allowed_attribute)
-        ↓ if exactly one result
-canonical_id
-        ↓ if unresolved
-semantic_match(raw_text, allowed_attribute, min_similarity, min_margin)
-        ↓ if confident
-canonical_id + similarity
-```
-
-An exact ambiguity or a weak semantic result is unresolved. No LLM-generated
-alias table is included in this MVP. Issue #7 can use the returned
-`canonical_id`, `match_method`, and `similarity` as its canonicalization
-contract; Issue #9 starts after that contract is produced.
+The runtime loads the generated registry when both exact artifact files are
+present. If they are absent, the existing legacy vocabulary fallback remains
+available so the starter Agent can still run.

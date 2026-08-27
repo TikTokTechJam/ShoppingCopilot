@@ -4,6 +4,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from evaluator.hard_evaluator import customer_sentence
 from starter.routing import (
@@ -17,7 +18,11 @@ from starter.routing import (
     extract_constraints,
     lexicon,
 )
-from starter.routing.constraints import CANONICAL_VOCAB, CATEGORICAL_FIELDS
+from starter.routing.constraints import (
+    CANONICAL_VOCAB,
+    CATEGORICAL_FIELDS,
+    _legacy_extract_constraints,
+)
 from starter.routing.local_model import LABEL_QUERIES, QwenRerankerBackend
 
 
@@ -225,7 +230,9 @@ class CascadeTest(unittest.TestCase):
 
 class ConstraintExtractionTest(unittest.TestCase):
     def test_produces_the_issue_7_record_shape(self) -> None:
-        payload = extract_constraints("I need dark blue waterproof hiking boots under $100.").as_dict()
+        payload = _legacy_extract_constraints(
+            "I need dark blue waterproof hiking boots under $100."
+        ).as_dict()
         self.assertEqual(
             set(payload),
             {"category", "brand", "price_min", "price_max", "color", "material",
@@ -243,7 +250,9 @@ class ConstraintExtractionTest(unittest.TestCase):
             ("vegan leather", "material", "faux_leather"),
         ]
         for phrase, field_name, canonical in cases:
-            values = getattr(extract_constraints(f"I want something {phrase}."), field_name)
+            values = getattr(
+                _legacy_extract_constraints(f"I want something {phrase}."), field_name
+            )
             self.assertIn(canonical, values, phrase)
 
     def test_normalises_price_bounds(self) -> None:
@@ -274,22 +283,30 @@ class ConstraintExtractionTest(unittest.TestCase):
 
     def test_overlapping_aliases_are_counted_once(self) -> None:
         """"dark blue" is one colour, not navy plus blue."""
-        self.assertEqual(extract_constraints("a dark blue coat").color, ("navy",))
+        self.assertEqual(_legacy_extract_constraints("a dark blue coat").color, ("navy",))
 
     def test_a_category_does_not_imply_a_use_case(self) -> None:
         """"running shoes" names a product; it is not a stated use case."""
-        constraints = extract_constraints("I'm browsing running shoes.")
+        constraints = _legacy_extract_constraints("I'm browsing running shoes.")
         self.assertEqual(constraints.category, ("running_shoes",))
         self.assertEqual(constraints.use_case, ())
 
     def test_category_is_excluded_from_the_tag_count(self) -> None:
-        constraints = extract_constraints("I'm looking for cardigans.")
+        constraints = _legacy_extract_constraints("I'm looking for cardigans.")
         self.assertEqual(constraints.category, ("cardigan",))
         self.assertEqual(constraints.tag_count(exclude=("category",)), 0)
 
 
 class TwoPhaseTest(unittest.TestCase):
     def setUp(self) -> None:
+        # These Issue #6/#7 tests exercise the curated legacy intent vocabulary.
+        # V4 dictionary behavior is covered explicitly in test_attribute_dictionary.
+        self._constraint_patcher = patch(
+            "starter.routing.intent_router.extract_constraints",
+            _legacy_extract_constraints,
+        )
+        self._constraint_patcher.start()
+        self.addCleanup(self._constraint_patcher.stop)
         self.router = TwoPhaseIntentRouter()
 
     def test_two_tags_decide_buying_without_consulting_the_ledger(self) -> None:
@@ -445,6 +462,16 @@ class SessionFlowTest(unittest.TestCase):
 
 
 class DevSetTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Keep the historical intent quality floor independent of the optional
+        # V4 catalog dictionary's product-derived fact distribution.
+        self._constraint_patcher = patch(
+            "starter.routing.intent_router.extract_constraints",
+            _legacy_extract_constraints,
+        )
+        self._constraint_patcher.start()
+        self.addCleanup(self._constraint_patcher.stop)
+
     def test_pipeline_floor_without_the_model(self) -> None:
         """The pipeline must stay usable if the reranker is never installed."""
         router = TwoPhaseIntentRouter()
@@ -536,8 +563,9 @@ class VocabularyOwnershipTest(unittest.TestCase):
     def test_extractor_and_ledger_agree_on_an_alias(self) -> None:
         """A canonical mapping and a ledger signal, from the same string."""
         message = "I want a dark blue water resistant coat."
-        self.assertIn("navy", extract_constraints(message).color)
-        self.assertIn("waterproof", extract_constraints(message).feature)
+        legacy = _legacy_extract_constraints(message)
+        self.assertIn("navy", legacy.color)
+        self.assertIn("waterproof", legacy.feature)
         fired = {s.name for s in LexicalIntentRouter().classify(message).signals}
         self.assertIn("color", fired)
         self.assertIn("feature", fired)

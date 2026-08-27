@@ -374,6 +374,10 @@ def normalize_price(value: Any) -> float | None:
         text = value.strip().replace(",", "")
         if not text:
             return None
+        if text in {"-", "–", "—"}:
+            return None
+        if text.casefold().startswith("from "):
+            text = text[5:].strip()
         if text[0] in "$£€":
             text = text[1:].strip()
         try:

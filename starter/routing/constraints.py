@@ -27,7 +27,9 @@ wholesale by a generated dictionary without touching the extraction code.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 
 # Field -> ((canonical_value, alias_pattern), ...). Order matters: the first
@@ -447,7 +449,10 @@ from pathlib import Path as _Path
 from typing import Callable as _Callable, Iterable as _Iterable, Mapping as _Mapping
 
 from dictionary.registry import AttributeDictionary as _AttributeDictionary
+from dictionary.registry import ATTRIBUTE_FIELDS as _DICTIONARY_ATTRIBUTES
+from dictionary.registry import CanonicalValue as _CanonicalValue
 from dictionary.registry import LookupMatch as _LookupMatch
+from dictionary.registry import normalize_text as _normalize_dictionary_text
 
 
 @_dataclass(frozen=True)
@@ -497,6 +502,37 @@ class _SemanticCandidate:
 SemanticMatcher = _Callable[[str], _Iterable[object]]
 
 
+# Ambiguous exact surfaces are resolved only when the evidence is strong. The
+# values are centralized so the policy is easy to audit and test.
+AMBIGUITY_MIN_TOP_SHARE = 0.75
+AMBIGUITY_MIN_COUNT_RATIO = 3.0
+# Context is recognized only when a cue is directly attached to the matched
+# dictionary phrase. The cue itself is evidence, never part of the match span.
+_EXPLICIT_CONTEXT_BEFORE: dict[str, tuple[tuple[str, ...], ...]] = {
+    "brand": (("brand",), ("from",), ("made", "by"), ("by",)),
+    "color": (("color",), ("colour",), ("in",)),
+    "material": (("made", "of"), ("made", "from"), ("made", "with")),
+    "style": (("style",), ("fit",)),
+    "feature": (("feature",), ("features",)),
+    "use_case": (("for",), ("for", "use"), ("use", "for"), ("good", "for")),
+}
+_EXPLICIT_CONTEXT_AFTER: dict[str, tuple[tuple[str, ...], ...]] = {
+    "brand": (("brand",),),
+    "color": (("color",), ("colour",)),
+    "material": (("material",), ("fabric",)),
+    "style": (("style",), ("fit",)),
+    "feature": (("feature",), ("features",)),
+}
+
+_SHOPPING_FOR_CONTEXT_BLOCKERS = frozenset(
+    {"find", "looking", "need", "searching", "shopping", "show", "want"}
+)
+
+# Keep this catalog-derived set limited to obvious single-word brand/query
+# collisions. Multi-word brands and all non-brand attributes are unaffected.
+COMMON_BRAND_COLLISION_TERMS = frozenset({"find"})
+
+
 _RESIDUAL_STOPWORDS = frozenset(
     {
         "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for",
@@ -508,6 +544,7 @@ _RESIDUAL_STOPWORDS = frozenset(
 )
 
 
+@lru_cache(maxsize=1)
 def _load_default_dictionary() -> _AttributeDictionary | None:
     directory = _Path("data/derived/dictionary")
     if not (directory / "canonical_values.json").exists():
@@ -521,22 +558,236 @@ def _dictionary_surface_matches(
     dictionary: _AttributeDictionary,
     text: str,
 ) -> tuple[_SpanMatch, ...]:
-    found: dict[tuple[int, int], set[str]] = {}
-    for value in dictionary.values:
-        parts = [re.escape(part) for part in value.normalized.split()]
-        if not parts:
+    """Find non-overlapping dictionary phrases with longest-first matching.
+
+    Matching is token based rather than substring based. The registry and
+    utterance use the same lexical normalization, while the token spans retain
+    the original text for evidence and overlap accounting.
+    """
+
+    def tokens(value: str) -> tuple[tuple[str, int, int], ...]:
+        folded = unicodedata.normalize("NFKC", value).casefold()
+        apostrophes = {"'", "’", "ʼ", "＇"}
+        found_tokens: list[tuple[str, int, int]] = []
+        current: list[str] = []
+        start: int | None = None
+
+        def finish(end: int) -> None:
+            nonlocal current, start
+            if current and start is not None:
+                token = _normalize_dictionary_text("".join(current))
+                if token:
+                    found_tokens.append((token, start, end))
+            current = []
+            start = None
+
+        for index, character in enumerate(folded):
+            if character.isalnum():
+                if start is None:
+                    start = index
+                current.append(character)
+            elif (
+                character in apostrophes
+                and start is not None
+                and index + 1 < len(folded)
+                and folded[index + 1].isalnum()
+            ):
+                # Keep a word such as Levi's as one lexical token.
+                continue
+            else:
+                finish(index)
+        finish(len(folded))
+        return tuple(found_tokens)
+
+    utterance_tokens = tokens(text)
+    found: dict[tuple[int, int], tuple[int, set[str]]] = {}
+    for offset, (first_token, _, _) in enumerate(utterance_tokens):
+        for parts, value_id in dictionary.phrase_index.get(first_token, ()):
+            width = len(parts)
+            if tuple(token[0] for token in utterance_tokens[offset : offset + width]) != parts:
+                continue
+            start = utterance_tokens[offset][1]
+            end = utterance_tokens[offset + width - 1][2]
+            key = (start, end)
+            if key not in found:
+                found[key] = (width, set())
+            found[key][1].add(value_id)
+
+    candidates = [
+        (start, end, ids, width, end - start)
+        for (start, end), (width, ids) in found.items()
+    ]
+    candidates.sort(key=lambda item: (-item[3], -item[4], item[0], item[1]))
+    accepted: list[tuple[int, int, set[str]]] = []
+    for start, end, ids, _, _ in candidates:
+        if any(start < taken_end and end > taken_start for taken_start, taken_end, _ in accepted):
             continue
-        pattern = r"(?<![A-Za-z0-9])" + r"[ _-]+".join(parts) + r"(?![A-Za-z0-9])"
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            found.setdefault((match.start(), match.end()), set()).add(
-                value.canonical_id
-            )
+        accepted.append((start, end, ids))
     return tuple(
         _SpanMatch(start, end, text[start:end], tuple(sorted(ids)))
-        for (start, end), ids in sorted(
-            found.items(), key=lambda item: (item[0][0], -(item[0][1] - item[0][0]))
-        )
+        for start, end, ids in sorted(accepted, key=lambda item: (item[0], item[1]))
     )
+
+
+def _utterance_tokens(value: str) -> tuple[tuple[str, int, int], ...]:
+    """Tokenize a message with dictionary normalization and source offsets."""
+
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    apostrophes = {"'", "’", "ʼ", "＇"}
+    found_tokens: list[tuple[str, int, int]] = []
+    current: list[str] = []
+    start: int | None = None
+
+    def finish(end: int) -> None:
+        nonlocal current, start
+        if current and start is not None:
+            token = _normalize_dictionary_text("".join(current))
+            if token:
+                found_tokens.append((token, start, end))
+        current = []
+        start = None
+
+    for index, character in enumerate(folded):
+        if character.isalnum():
+            if start is None:
+                start = index
+            current.append(character)
+        elif (
+            character in apostrophes
+            and start is not None
+            and index + 1 < len(folded)
+            and folded[index + 1].isalnum()
+        ):
+            # Keep a word such as Levi's as one lexical token.
+            continue
+        else:
+            finish(index)
+    finish(len(folded))
+    return tuple(found_tokens)
+
+
+def _context_attributes(
+    text: str,
+    match: _SpanMatch,
+    candidates: tuple[_CanonicalValue, ...],
+) -> tuple[str, ...]:
+    """Return attributes requested by a directly attached lexical pattern.
+
+    Context cues are directional and must touch the matched dictionary span.
+    The cue words are not part of the dictionary match and cannot claim any
+    other match elsewhere in the utterance.
+    """
+
+    tokens = _utterance_tokens(text)
+    span_indices = [
+        index
+        for index, (_, start, end) in enumerate(tokens)
+        if start >= match.start and end <= match.end
+    ]
+    if not span_indices:
+        return ()
+
+    first_span_index = span_indices[0]
+    last_span_index = span_indices[-1]
+    token_values = tuple(token[0] for token in tokens)
+
+    def directly_before(pattern: tuple[str, ...]) -> bool:
+        width = len(pattern)
+        start = first_span_index - width
+        if start < 0:
+            return False
+        if token_values[start:first_span_index] != pattern:
+            return False
+        if (
+            pattern == ("for",)
+            and start > 0
+            and token_values[start - 1] in _SHOPPING_FOR_CONTEXT_BLOCKERS
+        ):
+            return False
+        return True
+
+    def directly_after(pattern: tuple[str, ...]) -> bool:
+        width = len(pattern)
+        end = last_span_index + 1 + width
+        return token_values[last_span_index + 1:end] == pattern
+
+    found: list[str] = []
+    candidate_attributes = {candidate.attribute for candidate in candidates}
+    for attribute in _DICTIONARY_ATTRIBUTES:
+        before_patterns = _EXPLICIT_CONTEXT_BEFORE.get(attribute, ())
+        after_patterns = _EXPLICIT_CONTEXT_AFTER.get(attribute, ())
+
+        if any(directly_before(pattern) for pattern in before_patterns):
+            if (
+                attribute == "color"
+                and directly_before(("in",))
+                and "color" not in candidate_attributes
+            ):
+                continue
+            found.append(attribute)
+            continue
+
+        if any(directly_after(pattern) for pattern in after_patterns):
+            found.append(attribute)
+
+    return tuple(found)
+def _is_suppressed_common_brand(
+    entry: _CanonicalValue,
+    context_attributes: tuple[str, ...],
+) -> bool:
+    """Suppress only uncontextualized, single-token query-word brands."""
+
+    return (
+        entry.attribute == "brand"
+        and len(entry.normalized.split()) == 1
+        and entry.normalized in COMMON_BRAND_COLLISION_TERMS
+        and "brand" not in context_attributes
+    )
+
+
+def _resolve_dictionary_match(
+    text: str,
+    match: _SpanMatch,
+    dictionary: _AttributeDictionary,
+) -> _CanonicalValue | None:
+    candidates = dictionary.get_candidates(match.raw_text)
+    context_attributes = _context_attributes(text, match, candidates)
+    if context_attributes:
+        contextual_candidates = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.attribute in context_attributes
+        )
+        if len(context_attributes) != 1 or len(contextual_candidates) != 1:
+            return None
+        return contextual_candidates[0]
+    if len(candidates) == 1:
+        if _is_suppressed_common_brand(candidates[0], context_attributes):
+            return None
+        return candidates[0]
+
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -candidate.count,
+            _DICTIONARY_ATTRIBUTES.index(candidate.attribute),
+            candidate.canonical_id,
+        ),
+    )
+    if len(ranked) < 2:
+        return None
+    total = sum(candidate.count for candidate in ranked)
+    top, second = ranked[0], ranked[1]
+    top_share = top.count / total
+    count_ratio = top.count / second.count
+    if (
+        top_share >= AMBIGUITY_MIN_TOP_SHARE
+        and count_ratio >= AMBIGUITY_MIN_COUNT_RATIO
+    ):
+        if _is_suppressed_common_brand(top, context_attributes):
+            return None
+        return top
+    return None
 
 
 def _residual_phrase(text: str, claimed: list[tuple[int, int]]) -> str:
@@ -611,11 +862,9 @@ def _extract_dictionary_constraints(
         if any(match.start < end and match.end > start for start, end in claimed):
             continue
         claimed.append((match.start, match.end))
-        if len(match.canonical_ids) != 1:
-            unmapped.add(match.raw_text.strip().lower())
-            continue
-        entry = dictionary.get(match.canonical_ids[0])
+        entry = _resolve_dictionary_match(text, match, dictionary)
         if entry is None:
+            unmapped.add(match.raw_text.strip().lower())
             continue
         if entry.value not in values[entry.attribute]:
             values[entry.attribute].append(entry.value)
