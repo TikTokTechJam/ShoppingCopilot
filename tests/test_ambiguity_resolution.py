@@ -135,13 +135,11 @@ class AmbiguityResolutionTests(unittest.TestCase):
             self.assertEqual(constraints.brand, ())
             self.assertIn("find", constraints.unmapped)
 
-        for message in (
-            "brand find shoes",
-            "shoes from find",
-            "made by find",
-            "by find",
-            "find brand",
-        ):
+        brand_find = extract_constraints("brand find shoes", dictionary=dictionary)
+        self.assertEqual(brand_find.brand, ("find",))
+        self.assertEqual(brand_find.category, ("shoes",))
+
+        for message in ("shoes from find", "made by find", "by find", "find brand"):
             constraints = extract_constraints(message, dictionary=dictionary)
             self.assertEqual(constraints.brand, ("find",), message)
 

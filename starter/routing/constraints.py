@@ -670,15 +670,21 @@ def _has_context_cue(
     cue: tuple[str, ...],
     *,
     before: bool,
+    context_window: int | None = None,
 ) -> bool:
+    window_limit = (
+        AMBIGUITY_CONTEXT_WINDOW
+        if context_window is None
+        else context_window
+    )
     if before:
-        start = max(0, span_index - AMBIGUITY_CONTEXT_WINDOW)
+        start = max(0, span_index - window_limit)
         end = span_index
         window = token_values[start:end]
         offset = start
     else:
         start = span_index + 1
-        end = min(len(token_values), start + AMBIGUITY_CONTEXT_WINDOW)
+        end = min(len(token_values), start + window_limit)
         window = token_values[start:end]
         offset = start
     width = len(cue)
@@ -717,13 +723,25 @@ def _context_attributes(
     for attribute in _DICTIONARY_ATTRIBUTES:
         cues = _AMBIGUITY_CONTEXT_CUES.get(attribute, ())
         if any(
-            _has_context_cue(token_values, first_span_index, cue, before=True)
+            _has_context_cue(
+                token_values,
+                first_span_index,
+                cue,
+                before=True,
+                context_window=(len(cue) if attribute == "brand" else None),
+            )
             or (
                 (
                     attribute not in {"use_case", "brand"}
                     or (attribute == "brand" and cue == ("brand",))
                 )
-                and _has_context_cue(token_values, last_span_index, cue, before=False)
+                and _has_context_cue(
+                    token_values,
+                    last_span_index,
+                    cue,
+                    before=False,
+                    context_window=(len(cue) if attribute == "brand" else None),
+                )
             )
             for cue in cues
         ):
