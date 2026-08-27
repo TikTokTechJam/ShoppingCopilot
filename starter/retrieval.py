@@ -475,6 +475,7 @@ class ProductRetriever:
         limit: int = 100,
         minimum_candidates: int = 50,
         excluded_asins: Collection[str] | None = None,
+        apply_budget: bool = True,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
@@ -501,11 +502,16 @@ class ProductRetriever:
             if field_name != "price"
         }
         price_min, price_max = self._price_bounds(constraints)
+        price_eligible_asins = self._eligible_asins(constraints)
+        eligible_source = (
+            price_eligible_asins if apply_budget else self._catalog_order
+        )
         eligible_asins = [
             asin
-            for asin in self._eligible_asins(constraints)
+            for asin in eligible_source
             if asin not in excluded
         ]
+        price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
 
         total_weight = sum(
@@ -518,7 +524,7 @@ class ProductRetriever:
 
         for field_name in constraint_fields:
             if field_name == "price":
-                field_matches = set(eligible_asins)
+                field_matches = price_match_asins & eligible_set
             else:
                 field_matches: set[str] = set()
                 for value in requested_by_field[field_name]:
@@ -580,18 +586,45 @@ class ProductRetriever:
             if price_max is not None:
                 price_labels.append(f"price_max:{price_max:g}")
 
+        def labels_for(asin: str) -> tuple[str, ...]:
+            labels = list(matched_labels.get(asin, ()))
+            if "price" in constraint_fields and asin in price_match_asins:
+                labels.extend(price_labels)
+            return tuple(labels)
+
         return [
             self._candidate(
                 asin,
                 mode,
                 dense_scores.get(asin, 0.0),
                 structured_score(asin),
-                tuple((*matched_labels.get(asin, ()), *price_labels)),
+                labels_for(asin),
                 matched_fields.get(asin, set()),
                 constraint_fields,
             )
             for asin in ranked_asins
         ]
+
+    def debug_rank_all(
+        self,
+        mode: str,
+        query_text: str,
+        constraints: object,
+        *,
+        excluded_asins: Collection[str] | None = None,
+        apply_budget: bool = True,
+    ) -> list[Candidate]:
+        """Return the complete ranking using the production scorer."""
+
+        return self.retrieve(
+            mode,
+            query_text,
+            constraints,
+            limit=len(self.product_by_asin),
+            excluded_asins=excluded_asins,
+            apply_budget=apply_budget,
+        )
+
 
 InMemoryRetriever = ProductRetriever
 
