@@ -119,6 +119,58 @@ class AmbiguityResolutionTests(unittest.TestCase):
             ("leather",),
         )
 
+    def test_common_word_brand_collision_requires_explicit_brand_context(self) -> None:
+        dictionary = _dictionary(
+            ("brand", "find", 16),
+            ("brand", "nike", 100),
+            ("brand", "new balance", 100),
+            ("brand", "air max", 100),
+            ("brand", "air max 270", 100),
+            ("category", "shoes", 1),
+        )
+
+        for message in ("find shoes", "Find shoes"):
+            constraints = extract_constraints(message, dictionary=dictionary)
+            self.assertEqual(constraints.category, ("shoes",))
+            self.assertEqual(constraints.brand, ())
+            self.assertIn("find", constraints.unmapped)
+
+        for message in (
+            "brand find shoes",
+            "shoes from find",
+            "made by find",
+            "by find",
+            "find brand",
+        ):
+            constraints = extract_constraints(message, dictionary=dictionary)
+            self.assertEqual(constraints.brand, ("find",), message)
+
+        unrelated_from = extract_constraints("find shoes from nike", dictionary=dictionary)
+        self.assertEqual(unrelated_from.brand, ("nike",))
+
+        for message in ("nike shoes", "Nike shoes"):
+            self.assertEqual(
+                extract_constraints(message, dictionary=dictionary).brand,
+                ("nike",),
+            )
+        self.assertEqual(
+            extract_constraints("new balance shoes", dictionary=dictionary).brand,
+            ("new balance",),
+        )
+        self.assertEqual(
+            extract_constraints("air max 270", dictionary=dictionary).brand,
+            ("air max 270",),
+        )
+
+    def test_collision_guard_only_applies_to_brand(self) -> None:
+        dictionary = _dictionary(
+            ("brand", "find", 16),
+            ("style", "find", 100),
+        )
+        constraints = extract_constraints("find", dictionary=dictionary)
+        self.assertEqual(constraints.brand, ())
+        self.assertEqual(constraints.style, ("find",))
+
     def test_strong_frequency_dominance_resolves(self) -> None:
         dictionary = _dictionary(
             ("material", "x", 900),

@@ -509,7 +509,7 @@ AMBIGUITY_MIN_COUNT_RATIO = 3.0
 AMBIGUITY_CONTEXT_WINDOW = 3
 
 _AMBIGUITY_CONTEXT_CUES: dict[str, tuple[tuple[str, ...], ...]] = {
-    "brand": (("brand",),),
+    "brand": (("brand",), ("from",), ("made", "by"), ("by",)),
     "color": (("color",), ("colour",), ("in",)),
     "material": (
         ("material",),
@@ -525,6 +525,10 @@ _AMBIGUITY_CONTEXT_CUES: dict[str, tuple[tuple[str, ...], ...]] = {
 _SHOPPING_FOR_CONTEXT_BLOCKERS = frozenset(
     {"find", "looking", "need", "searching", "shopping", "show", "want"}
 )
+
+# Keep this catalog-derived set limited to obvious single-word brand/query
+# collisions. Multi-word brands and all non-brand attributes are unaffected.
+COMMON_BRAND_COLLISION_TERMS = frozenset({"find"})
 
 
 _RESIDUAL_STOPWORDS = frozenset(
@@ -715,13 +719,30 @@ def _context_attributes(
         if any(
             _has_context_cue(token_values, first_span_index, cue, before=True)
             or (
-                attribute != "use_case"
+                (
+                    attribute not in {"use_case", "brand"}
+                    or (attribute == "brand" and cue == ("brand",))
+                )
                 and _has_context_cue(token_values, last_span_index, cue, before=False)
             )
             for cue in cues
         ):
             found.append(attribute)
     return tuple(found)
+
+
+def _is_suppressed_common_brand(
+    entry: _CanonicalValue,
+    context_attributes: tuple[str, ...],
+) -> bool:
+    """Suppress only uncontextualized, single-token query-word brands."""
+
+    return (
+        entry.attribute == "brand"
+        and len(entry.normalized.split()) == 1
+        and entry.normalized in COMMON_BRAND_COLLISION_TERMS
+        and "brand" not in context_attributes
+    )
 
 
 def _resolve_dictionary_match(
@@ -741,6 +762,8 @@ def _resolve_dictionary_match(
             return None
         return contextual_candidates[0]
     if len(candidates) == 1:
+        if _is_suppressed_common_brand(candidates[0], context_attributes):
+            return None
         return candidates[0]
 
     ranked = sorted(
@@ -761,6 +784,8 @@ def _resolve_dictionary_match(
         top_share >= AMBIGUITY_MIN_TOP_SHARE
         and count_ratio >= AMBIGUITY_MIN_COUNT_RATIO
     ):
+        if _is_suppressed_common_brand(top, context_attributes):
+            return None
         return top
     return None
 

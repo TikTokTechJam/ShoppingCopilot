@@ -42,6 +42,11 @@ then catalog-count dominance is accepted only when the leading attribute owns at
 least 75% of the candidate count and is at least 3 times the runner-up. Otherwise
 the surface remains unresolved rather than being assigned arbitrarily.
 
+A small brand-only collision guard suppresses confirmed query-language terms
+(currently `find`) when they appear as single-word brands without explicit
+brand context. Cues such as `brand`, `from`, `made by`, and `by` restore an
+intentional match. Multi-word brands and non-brand attributes are unaffected.
+
 Normalization is lexical only. It applies Unicode NFKC and case folding,
 converts separators to spaces, removes apostrophes inside words, collapses
 whitespace, and trims. For example:
