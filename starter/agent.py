@@ -87,6 +87,8 @@ class Agent:
 
         if state.mode is not None and is_intent_override(message, state.constraints, delta):
             state = self.sessions.reset_goal(session_id)
+        else:
+            self.sessions.promote_last_recommendations(session_id)
 
         if state.mode is None:
             state.mode = self._route(message)
@@ -102,6 +104,7 @@ class Agent:
             state.constraints,
             limit=100,
             minimum_candidates=50,
+            excluded_asins=state.excluded_recommendations,
         )
 
         try:

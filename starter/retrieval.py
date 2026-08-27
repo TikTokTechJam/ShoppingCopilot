@@ -14,7 +14,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Collection, Iterable, Mapping
 
 from dictionary.registry import normalize_text
 from starter.routing.constraints import CATEGORICAL_FIELDS
@@ -474,6 +474,7 @@ class ProductRetriever:
         *,
         limit: int = 100,
         minimum_candidates: int = 50,
+        excluded_asins: Collection[str] | None = None,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
@@ -487,6 +488,11 @@ class ProductRetriever:
         if limit == 0 or not self.product_by_asin:
             return []
         mode = "BUYING" if str(mode).upper() == "BUYING" else "BROWSING"
+        excluded = {
+            str(asin).strip()
+            for asin in (excluded_asins or ())
+            if str(asin).strip()
+        }
         dense_scores = self._dense_scores(query_text) if self.dense_available else {}
         constraint_fields = self._constraint_fields(constraints)
         requested_by_field = {
@@ -495,12 +501,12 @@ class ProductRetriever:
             if field_name != "price"
         }
         price_min, price_max = self._price_bounds(constraints)
-        eligible_asins = self._eligible_asins(constraints)
-        eligible_set = (
-            set(eligible_asins)
-            if price_min is not None or price_max is not None
-            else None
-        )
+        eligible_asins = [
+            asin
+            for asin in self._eligible_asins(constraints)
+            if asin not in excluded
+        ]
+        eligible_set = set(eligible_asins)
 
         total_weight = sum(
             STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
