@@ -37,10 +37,18 @@ normalized:    "moisture wicking"
 
 Machine IDs are attribute-scoped and derived from the normalized surface. A
 normalized surface can map to more than one attribute. The runtime resolves
-those exact matches conservatively: explicit nearby attribute wording is preferred,
+those exact matches conservatively: directly attached directional context is preferred,
 then catalog-count dominance is accepted only when the leading attribute owns at
 least 75% of the candidate count and is at least 3 times the runner-up. Otherwise
 the surface remains unresolved rather than being assigned arbitrarily.
+
+Attribute context is directional and directly attached to the matched value.
+Supported forms include `brand VALUE`, `VALUE brand`, `from VALUE`, `made by
+VALUE`, `by VALUE`, `color/colour VALUE`, `VALUE color/colour`, `made of/from/
+with VALUE`, `VALUE material/fabric`, `style/fit VALUE`, `VALUE style/fit`,
+`feature(s) VALUE`, `VALUE feature`, and `for`, `good for`, `use for`, or `for
+use VALUE`. Proximity alone does not resolve ambiguity; the cue words do not
+consume or reserve other dictionary matches.
 
 A small brand-only collision guard suppresses confirmed query-language terms
 (currently `find`) when they appear as single-word brands without explicit

@@ -506,22 +506,24 @@ SemanticMatcher = _Callable[[str], _Iterable[object]]
 # values are centralized so the policy is easy to audit and test.
 AMBIGUITY_MIN_TOP_SHARE = 0.75
 AMBIGUITY_MIN_COUNT_RATIO = 3.0
-AMBIGUITY_CONTEXT_WINDOW = 3
-
-_AMBIGUITY_CONTEXT_CUES: dict[str, tuple[tuple[str, ...], ...]] = {
+# Context is recognized only when a cue is directly attached to the matched
+# dictionary phrase. The cue itself is evidence, never part of the match span.
+_EXPLICIT_CONTEXT_BEFORE: dict[str, tuple[tuple[str, ...], ...]] = {
     "brand": (("brand",), ("from",), ("made", "by"), ("by",)),
     "color": (("color",), ("colour",), ("in",)),
-    "material": (
-        ("material",),
-        ("fabric",),
-        ("made", "of"),
-        ("made", "from"),
-        ("made", "with"),
-    ),
+    "material": (("made", "of"), ("made", "from"), ("made", "with")),
     "style": (("style",), ("fit",)),
     "feature": (("feature",), ("features",)),
     "use_case": (("for",), ("for", "use"), ("use", "for"), ("good", "for")),
 }
+_EXPLICIT_CONTEXT_AFTER: dict[str, tuple[tuple[str, ...], ...]] = {
+    "brand": (("brand",),),
+    "color": (("color",), ("colour",)),
+    "material": (("material",), ("fabric",)),
+    "style": (("style",), ("fit",)),
+    "feature": (("feature",), ("features",)),
+}
+
 _SHOPPING_FOR_CONTEXT_BLOCKERS = frozenset(
     {"find", "looking", "need", "searching", "shopping", "show", "want"}
 )
@@ -664,49 +666,17 @@ def _utterance_tokens(value: str) -> tuple[tuple[str, int, int], ...]:
     return tuple(found_tokens)
 
 
-def _has_context_cue(
-    token_values: tuple[str, ...],
-    span_index: int,
-    cue: tuple[str, ...],
-    *,
-    before: bool,
-    context_window: int | None = None,
-) -> bool:
-    window_limit = (
-        AMBIGUITY_CONTEXT_WINDOW
-        if context_window is None
-        else context_window
-    )
-    if before:
-        start = max(0, span_index - window_limit)
-        end = span_index
-        window = token_values[start:end]
-        offset = start
-    else:
-        start = span_index + 1
-        end = min(len(token_values), start + window_limit)
-        window = token_values[start:end]
-        offset = start
-    width = len(cue)
-    for index in range(0, len(window) - width + 1):
-        if window[index : index + width] != cue:
-            continue
-        absolute_index = offset + index
-        if (
-            cue == ("for",)
-            and absolute_index > 0
-            and token_values[absolute_index - 1] in _SHOPPING_FOR_CONTEXT_BLOCKERS
-        ):
-            continue
-        return True
-    return False
-
-
 def _context_attributes(
     text: str,
     match: _SpanMatch,
+    candidates: tuple[_CanonicalValue, ...],
 ) -> tuple[str, ...]:
-    """Return attributes explicitly requested by nearby lexical cues."""
+    """Return attributes requested by a directly attached lexical pattern.
+
+    Context cues are directional and must touch the matched dictionary span.
+    The cue words are not part of the dictionary match and cannot claim any
+    other match elsewhere in the utterance.
+    """
 
     tokens = _utterance_tokens(text)
     span_indices = [
@@ -716,39 +686,51 @@ def _context_attributes(
     ]
     if not span_indices:
         return ()
+
     first_span_index = span_indices[0]
     last_span_index = span_indices[-1]
     token_values = tuple(token[0] for token in tokens)
-    found: list[str] = []
-    for attribute in _DICTIONARY_ATTRIBUTES:
-        cues = _AMBIGUITY_CONTEXT_CUES.get(attribute, ())
-        if any(
-            _has_context_cue(
-                token_values,
-                first_span_index,
-                cue,
-                before=True,
-                context_window=(len(cue) if attribute == "brand" else None),
-            )
-            or (
-                (
-                    attribute not in {"use_case", "brand"}
-                    or (attribute == "brand" and cue == ("brand",))
-                )
-                and _has_context_cue(
-                    token_values,
-                    last_span_index,
-                    cue,
-                    before=False,
-                    context_window=(len(cue) if attribute == "brand" else None),
-                )
-            )
-            for cue in cues
+
+    def directly_before(pattern: tuple[str, ...]) -> bool:
+        width = len(pattern)
+        start = first_span_index - width
+        if start < 0:
+            return False
+        if token_values[start:first_span_index] != pattern:
+            return False
+        if (
+            pattern == ("for",)
+            and start > 0
+            and token_values[start - 1] in _SHOPPING_FOR_CONTEXT_BLOCKERS
         ):
+            return False
+        return True
+
+    def directly_after(pattern: tuple[str, ...]) -> bool:
+        width = len(pattern)
+        end = last_span_index + 1 + width
+        return token_values[last_span_index + 1:end] == pattern
+
+    found: list[str] = []
+    candidate_attributes = {candidate.attribute for candidate in candidates}
+    for attribute in _DICTIONARY_ATTRIBUTES:
+        before_patterns = _EXPLICIT_CONTEXT_BEFORE.get(attribute, ())
+        after_patterns = _EXPLICIT_CONTEXT_AFTER.get(attribute, ())
+
+        if any(directly_before(pattern) for pattern in before_patterns):
+            if (
+                attribute == "color"
+                and directly_before(("in",))
+                and "color" not in candidate_attributes
+            ):
+                continue
             found.append(attribute)
+            continue
+
+        if any(directly_after(pattern) for pattern in after_patterns):
+            found.append(attribute)
+
     return tuple(found)
-
-
 def _is_suppressed_common_brand(
     entry: _CanonicalValue,
     context_attributes: tuple[str, ...],
@@ -769,7 +751,7 @@ def _resolve_dictionary_match(
     dictionary: _AttributeDictionary,
 ) -> _CanonicalValue | None:
     candidates = dictionary.get_candidates(match.raw_text)
-    context_attributes = _context_attributes(text, match)
+    context_attributes = _context_attributes(text, match, candidates)
     if context_attributes:
         contextual_candidates = tuple(
             candidate

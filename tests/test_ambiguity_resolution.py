@@ -29,6 +29,25 @@ def _dictionary(*entries: tuple[str, str, int]) -> AttributeDictionary:
     return AttributeDictionary(values, normalized_index)
 
 
+def _neighbor_context_dictionary() -> AttributeDictionary:
+    return _dictionary(
+        ("brand", "salomon", 50),
+        ("brand", "alpha", 1),
+        ("category", "shoes", 11689),
+        ("style", "shoes", 1),
+        ("use_case", "shoes", 5),
+        ("color", "black", 7125),
+        ("material", "rubber", 6456),
+        ("color", "rubber", 1),
+        ("style", "rubber", 1),
+        ("material", "leather", 10),
+        ("style", "leather", 100),
+        ("use_case", "running", 2782),
+        ("category", "running", 964),
+        ("style", "running", 5),
+    )
+
+
 class AmbiguityResolutionTests(unittest.TestCase):
     def test_unambiguous_exact_value_is_preserved(self) -> None:
         dictionary = _dictionary(("color", "black", 1))
@@ -93,6 +112,75 @@ class AmbiguityResolutionTests(unittest.TestCase):
             extract_constraints("style casual", dictionary=dictionary).style,
             ("casual",),
         )
+
+    def test_nearby_material_context_does_not_hijack_brand_or_category(self) -> None:
+        dictionary = _neighbor_context_dictionary()
+
+        for message in (
+            "I want to buy a Salomon shoes, rubber material",
+            "I want to buy a Salomon shoes with rubber material",
+            "salomon shoes rubber material",
+        ):
+            constraints = extract_constraints(message, dictionary=dictionary)
+            self.assertEqual(constraints.brand, ("salomon",), message)
+            self.assertEqual(constraints.category, ("shoes",), message)
+            self.assertEqual(constraints.material, ("rubber",), message)
+
+    def test_direct_post_context_resolves_only_the_matched_material(self) -> None:
+        dictionary = _neighbor_context_dictionary()
+        constraints = extract_constraints("rubber material", dictionary=dictionary)
+
+        self.assertEqual(constraints.material, ("rubber",))
+        self.assertEqual(constraints.color, ())
+        self.assertEqual(constraints.style, ())
+
+    def test_direct_pre_context_resolves_material_and_keeps_category(self) -> None:
+        dictionary = _neighbor_context_dictionary()
+        constraints = extract_constraints("made of leather shoes", dictionary=dictionary)
+
+        self.assertEqual(constraints.material, ("leather",))
+        self.assertEqual(constraints.category, ("shoes",))
+        self.assertEqual(constraints.style, ())
+
+    def test_direct_brand_context_keeps_other_matches_independent(self) -> None:
+        dictionary = _neighbor_context_dictionary()
+        constraints = extract_constraints(
+            "brand salomon black shoes",
+            dictionary=dictionary,
+        )
+
+        self.assertEqual(constraints.brand, ("salomon",))
+        self.assertEqual(constraints.color, ("black",))
+        self.assertEqual(constraints.category, ("shoes",))
+
+    def test_directional_brand_and_use_case_context(self) -> None:
+        dictionary = _neighbor_context_dictionary()
+
+        from_constraints = extract_constraints(
+            "shoes from salomon",
+            dictionary=dictionary,
+        )
+        self.assertEqual(from_constraints.category, ("shoes",))
+        self.assertEqual(from_constraints.brand, ("salomon",))
+
+        use_case_constraints = extract_constraints(
+            "shoes for running",
+            dictionary=dictionary,
+        )
+        self.assertEqual(use_case_constraints.category, ("shoes",))
+        self.assertEqual(use_case_constraints.use_case, ("running",))
+        self.assertEqual(use_case_constraints.style, ())
+
+    def test_no_generic_proximity_context_is_applied(self) -> None:
+        dictionary = _neighbor_context_dictionary()
+        constraints = extract_constraints(
+            "alpha shoes rubber material",
+            dictionary=dictionary,
+        )
+
+        self.assertEqual(constraints.brand, ("alpha",))
+        self.assertEqual(constraints.category, ("shoes",))
+        self.assertEqual(constraints.material, ("rubber",))
 
     def test_explicit_context_does_not_fall_through_to_another_attribute(self) -> None:
         dictionary = _dictionary(
