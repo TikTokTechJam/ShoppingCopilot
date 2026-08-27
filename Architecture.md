@@ -97,6 +97,54 @@ selected details
 
 Each view is embedded independently so noisy text in one catalog field does not contaminate the semantic representation of another field.
 
+### Runtime flow
+
+```text
+                               USER TURN
+                                   |
+                                   v
+                     existing utterance processing
+                                   |
+                    +--------------+--------------+
+                    |                             |
+                    v                             v
+          Layer 1 parsed state            Layer 2 semantic query
+          structured / canonical          current + active session intent
+                    |                             |
+                    |                             v
+                    |                      embed query once
+                    |                             |
+                    |                             v
+                    |              normalized query_embedding
+                    |                             |
+                    |              +--------------+--------------+--------------+--------------+
+                    |              |              |              |              |              |
+                    |              v              v              v              v              v
+                    |         categories      title          features      description      details
+                    |          matrix          matrix          matrix          matrix          matrix
+                    |              |              |              |              |              |
+                    |              v              v              v              v              v
+                    |        category score   title score   features score description score details score
+                    |              |              |              |              |              |
+                    |              +--------------+--------------+--------------+--------------+
+                    |                                             |
+                    |                                             v
+                    |                                presence-aware weighted score
+                    |                                             |
+                    +----------------------+----------------------+
+                                           |
+                                           v
+                              combine Layer 1 + Layer 2 evidence
+                                           |
+                                           v
+                                      rank candidates
+                                           |
+                                           v
+                                         Top-K
+```
+
+At runtime, catalog embeddings are never regenerated. The Agent loads the five matrices once at startup and creates only one new query embedding per turn.
+
 ## 3. Product knowledge model
 
 ### Tier 1 — exact structured facts
