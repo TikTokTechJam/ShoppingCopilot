@@ -695,9 +695,8 @@ def _has_context_cue(
 def _context_attributes(
     text: str,
     match: _SpanMatch,
-    candidates: tuple[_CanonicalValue, ...],
 ) -> tuple[str, ...]:
-    """Return candidate attributes supported by nearby lexical cues."""
+    """Return attributes explicitly requested by nearby lexical cues."""
 
     tokens = _utterance_tokens(text)
     span_indices = [
@@ -710,11 +709,8 @@ def _context_attributes(
     first_span_index = span_indices[0]
     last_span_index = span_indices[-1]
     token_values = tuple(token[0] for token in tokens)
-    candidate_attributes = {candidate.attribute for candidate in candidates}
     found: list[str] = []
     for attribute in _DICTIONARY_ATTRIBUTES:
-        if attribute not in candidate_attributes:
-            continue
         cues = _AMBIGUITY_CONTEXT_CUES.get(attribute, ())
         if any(
             _has_context_cue(token_values, first_span_index, cue, before=True)
@@ -728,19 +724,24 @@ def _context_attributes(
     return tuple(found)
 
 
-def _resolve_ambiguous_dictionary_match(
+def _resolve_dictionary_match(
     text: str,
     match: _SpanMatch,
     dictionary: _AttributeDictionary,
 ) -> _CanonicalValue | None:
     candidates = dictionary.get_candidates(match.raw_text)
+    context_attributes = _context_attributes(text, match)
+    if context_attributes:
+        contextual_candidates = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.attribute in context_attributes
+        )
+        if len(context_attributes) != 1 or len(contextual_candidates) != 1:
+            return None
+        return contextual_candidates[0]
     if len(candidates) == 1:
         return candidates[0]
-
-    context_attributes = _context_attributes(text, match, candidates)
-    if len(context_attributes) == 1:
-        attribute = context_attributes[0]
-        return next(candidate for candidate in candidates if candidate.attribute == attribute)
 
     ranked = sorted(
         candidates,
@@ -836,14 +837,9 @@ def _extract_dictionary_constraints(
         if any(match.start < end and match.end > start for start, end in claimed):
             continue
         claimed.append((match.start, match.end))
-        if len(match.canonical_ids) == 1:
-            entry = dictionary.get(match.canonical_ids[0])
-        else:
-            entry = _resolve_ambiguous_dictionary_match(text, match, dictionary)
-            if entry is None:
-                unmapped.add(match.raw_text.strip().lower())
-                continue
+        entry = _resolve_dictionary_match(text, match, dictionary)
         if entry is None:
+            unmapped.add(match.raw_text.strip().lower())
             continue
         if entry.value not in values[entry.attribute]:
             values[entry.attribute].append(entry.value)

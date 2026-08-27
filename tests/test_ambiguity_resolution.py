@@ -94,6 +94,31 @@ class AmbiguityResolutionTests(unittest.TestCase):
             ("casual",),
         )
 
+    def test_explicit_context_does_not_fall_through_to_another_attribute(self) -> None:
+        dictionary = _dictionary(
+            ("color", "orange", 1000),
+            ("material", "leather", 1000),
+        )
+
+        brand_orange = extract_constraints("brand orange", dictionary=dictionary)
+        self.assertEqual(brand_orange.brand, ())
+        self.assertEqual(brand_orange.color, ())
+        self.assertIn("orange", brand_orange.unmapped)
+
+        brand_leather = extract_constraints("brand leather", dictionary=dictionary)
+        self.assertEqual(brand_leather.brand, ())
+        self.assertEqual(brand_leather.material, ())
+        self.assertIn("leather", brand_leather.unmapped)
+
+        self.assertEqual(
+            extract_constraints("color orange", dictionary=dictionary).color,
+            ("orange",),
+        )
+        self.assertEqual(
+            extract_constraints("made of leather", dictionary=dictionary).material,
+            ("leather",),
+        )
+
     def test_strong_frequency_dominance_resolves(self) -> None:
         dictionary = _dictionary(
             ("material", "x", 900),
