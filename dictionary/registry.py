@@ -229,6 +229,26 @@ class AttributeDictionary:
     def get(self, value_id: str) -> CanonicalValue | None:
         return self._values.get(value_id)
 
+    def get_candidates(self, raw_text: str) -> tuple[CanonicalValue, ...]:
+        """Return canonical values for a normalized surface, preserving ambiguity.
+
+        Results follow the fixed attribute order and are deterministic.  This
+        exposes the metadata needed by conservative runtime disambiguation
+        without changing the public constraint shape.
+        """
+
+        normalized = normalize_text(raw_text)
+        if not normalized:
+            return ()
+        candidates: list[CanonicalValue] = []
+        for attribute in ATTRIBUTE_FIELDS:
+            value_ids = self._normalized_index.get(attribute, {}).get(normalized, ())
+            for value_id in sorted(value_ids):
+                value = self._values.get(value_id)
+                if value is not None:
+                    candidates.append(value)
+        return tuple(candidates)
+
     def exact_match(
         self,
         raw_text: str,

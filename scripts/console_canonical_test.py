@@ -1,11 +1,11 @@
-"""Interactive diagnostic for exact intent, tags, and product intersections."""
+"""Interactive diagnostic for exact intent, constraints, and intersections."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -23,6 +23,7 @@ class ProductTagIndex:
 
     postings: Mapping[str, Mapping[str, frozenset[str]]]
     product_count: int
+    prices: Mapping[str, float | None] = field(default_factory=dict)
 
 
 def _fact_values(value: object) -> Iterable[object]:
@@ -42,6 +43,7 @@ def build_product_index(path: str | Path = DEFAULT_ANNOTATIONS) -> ProductTagInd
         attribute: defaultdict(set) for attribute in ATTRIBUTE_FIELDS
     }
     asins: set[str] = set()
+    prices: dict[str, float | None] = {}
 
     source = Path(path)
     with source.open(encoding="utf-8") as handle:
@@ -67,6 +69,13 @@ def build_product_index(path: str | Path = DEFAULT_ANNOTATIONS) -> ProductTagInd
                 raise ValueError(f"{source}:{line_number}: duplicate parent_asin {asin}")
             asins.add(asin)
 
+            raw_price = record.get("price")
+            if raw_price is not None and (
+                isinstance(raw_price, bool) or not isinstance(raw_price, (int, float))
+            ):
+                raise ValueError(f"{source}:{line_number}: price must be numeric or null")
+            prices[asin] = None if raw_price is None else float(raw_price)
+
             facts = record.get("facts")
             if not isinstance(facts, Mapping):
                 raise ValueError(f"{source}:{line_number}: facts must be an object")
@@ -85,7 +94,7 @@ def build_product_index(path: str | Path = DEFAULT_ANNOTATIONS) -> ProductTagInd
         }
         for attribute, values in postings.items()
     }
-    return ProductTagIndex(postings=frozen, product_count=len(asins))
+    return ProductTagIndex(postings=frozen, product_count=len(asins), prices=prices)
 
 
 def _constraint_values(constraints: object, attribute: str) -> tuple[str, ...]:
@@ -109,14 +118,51 @@ def canonical_tags(constraints: ShoppingConstraints) -> dict[str, list[str]]:
     }
 
 
+def _price_bounds(constraints: object) -> tuple[float | None, float | None]:
+    def value_for(name: str) -> float | None:
+        value: Any = getattr(constraints, name, None)
+        if value is None and isinstance(constraints, Mapping):
+            value = constraints.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    return value_for("price_min"), value_for("price_max")
+
+
+def _budget_payload(constraints: object) -> dict[str, int | float]:
+    price_min, price_max = _price_bounds(constraints)
+    budget: dict[str, int | float] = {}
+    if price_min is not None:
+        budget["min"] = int(price_min) if price_min.is_integer() else price_min
+    if price_max is not None:
+        budget["max"] = int(price_max) if price_max.is_integer() else price_max
+    return budget
+
+
+def _price_matches(
+    price: float | None,
+    price_min: float | None,
+    price_max: float | None,
+) -> bool:
+    if price is None:
+        return False
+    if price_min is not None and price < price_min:
+        return False
+    if price_max is not None and price > price_max:
+        return False
+    return True
+
+
 def count_products_with_all_tags(
     constraints: ShoppingConstraints | Mapping[str, object],
     index: ProductTagIndex,
 ) -> int | None:
-    """Count products matching every categorical value with AND semantics.
+    """Count products matching categorical values and an optional budget.
 
-    ``None`` means that no canonical categorical tags were supplied. A zero
-    count means tags were supplied but no indexed product matched them.
+    A price constraint filters the categorical intersection to products with a
+    known price satisfying the existing inclusive min/max convention. Without
+    a price constraint, null-priced products remain eligible.
     """
 
     tag_sets: list[frozenset[str]] = []
@@ -130,12 +176,23 @@ def count_products_with_all_tags(
                 return 0
             tag_sets.append(matches)
 
+    price_min, price_max = _price_bounds(constraints)
+    has_price = price_min is not None or price_max is not None
     if not tag_sets:
-        return None
+        if not has_price:
+            return None
+        result = set(index.prices)
+    else:
+        result = set(min(tag_sets, key=len))
+        for matches in tag_sets:
+            result.intersection_update(matches)
 
-    result = set(min(tag_sets, key=len))
-    for matches in tag_sets:
-        result.intersection_update(matches)
+    if has_price:
+        result = {
+            asin
+            for asin in result
+            if _price_matches(index.prices.get(asin), price_min, price_max)
+        }
     return len(result)
 
 
@@ -143,27 +200,30 @@ def analyze_utterance(
     utterance: str,
     index: ProductTagIndex,
     router: TwoPhaseIntentRouter | None = None,
-) -> tuple[str, dict[str, list[str]], int | None]:
+) -> tuple[str, dict[str, object], int | None]:
     """Run the existing router/canonicalizer and then the exact index."""
 
     active_router = router or TwoPhaseIntentRouter()
     intent_result = active_router.classify(utterance)
     constraints = intent_result.constraints or extract_constraints(utterance)
-    tags = canonical_tags(constraints)
+    tags: dict[str, object] = dict(canonical_tags(constraints))
+    budget = _budget_payload(constraints)
+    if budget:
+        tags["budget"] = budget
     count = count_products_with_all_tags(constraints, index)
     intent = "BUYING" if str(intent_result.intent).upper() == "BUYING" else "BROWSING"
     return intent, tags, count
 
 
-def print_analysis(intent: str, tags: Mapping[str, list[str]], count: int | None) -> None:
+def print_analysis(intent: str, tags: Mapping[str, object], count: int | None) -> None:
     print(f"Intent: {intent}")
     print()
     print(json.dumps(dict(tags), indent=2, ensure_ascii=False))
     print()
     if count is None:
-        print("No canonical tags matched.")
+        print("No constraints matched.")
     else:
-        print(f"Products matching all tags: {count}")
+        print(f"Products matching all constraints: {count}")
 
 
 def run_console(annotations_path: str | Path = DEFAULT_ANNOTATIONS) -> None:
@@ -192,7 +252,7 @@ def run_console(annotations_path: str | Path = DEFAULT_ANNOTATIONS) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Inspect exact canonical tags and V4 product intersections."
+        description="Inspect exact canonical constraints and V4 product intersections."
     )
     parser.add_argument(
         "--annotations",
