@@ -14,7 +14,6 @@ from .client import AnnotationClient, HostedLLMClient
 from .config import load_env_file
 from .prompt import PROMPT_VERSION, build_annotation_prompt
 from .schema import (
-    deterministic_catalog_brand,
     normalize_catalog_categories,
     normalize_price,
     parse_and_validate_json,
@@ -98,7 +97,6 @@ def _annotation_record(
 ) -> dict[str, Any]:
     combined_facts = {
         "category": normalize_catalog_categories(product.get("categories")),
-        "brand": deterministic_catalog_brand(product),
         **dict(facts),
     }
     return validate_annotation_record({
@@ -439,7 +437,7 @@ def run_annotation(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Resume-safe catalog annotation runner.")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
-    parser.add_argument("--output-dir", default="data/derived/annotations/v2")
+    parser.add_argument("--output-dir", default="data/derived/annotations/v4")
     parser.add_argument(
         "--env-file",
         help="Optional local KEY=VALUE file; never commit this file.",
@@ -494,7 +492,7 @@ def main() -> None:
         or os.environ.get("ANNOTATION_BASE_URL")
         or os.environ.get("ANNOTATION_ENDPOINT")
     )
-    model = args.model or os.environ.get("ANNOTATION_MODEL", "catalog-annotator-v2")
+    model = args.model or os.environ.get("ANNOTATION_MODEL", "catalog-annotator-v4")
 
     if args.dry_run:
         client = None
