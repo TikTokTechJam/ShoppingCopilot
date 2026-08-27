@@ -22,79 +22,128 @@ The first MVP deliberately favors deterministic preprocessing, in-memory indexes
 ## 2. System-level architecture
 
 ```text
-                          OFFLINE / BUILD TIME
-
-                               catalog.jsonl
-                                    |
-              +---------------------+----------------------+--------------------+
-              |                     |                      |                    |
-              v                     v                      v                    v
-       Tier 1 structured      Tier 2 trusted         Tier 3 descriptive    Tier 4 raw text
-          extraction           annotation              annotation             source
-              |                     |                      |                    |
-              | category            | brand                | style              | title
-              | price               | color                | feature            | features
-              | size labels         | material             | use_case           | description
-              | measurements        |                      |                    | details
-              | package dims        |                      |                    |
-              | product dims        |                      |                    |
-              | item weight         |                      |                    |
-              +---------------------+-----------+----------+--------------------+
-                                                |
-                                                v
-                                  validation + normalization
-                                                |
-                                                v
-                                      canonical product facts
-                                                |
-                   +----------------------------+---------------------------+
-                   |                            |                           |
-                   v                            v                           v
-          exact / numeric indexes       canonical registries        product embeddings
-                   |                            |                           |
-                   +----------------------------+---------------------------+
-                                                |
-                                                v
-                                  in-memory Agent runtime
-
-
-                              RUNTIME / USER TURN
-
- user utterance
-      |
-      +--> structured parser
-      |      price, size, numeric measurements, dimensions
-      |
-      +--> trusted canonical matcher
-      |      brand, color, material
-      |
-      +--> descriptive semantic matcher
-      |      style, feature, use_case
-      |
-      `--> residual / full query representation
-             dense semantic context
-                    |
-                    v
-             session state merge
-                    |
-                    v
-          Buying / Browsing retrieval
-                    |
-                    v
-             candidate ranking
-                    |
-          +---------+---------+
-          |                   |
-          v                   v
-      Top-K recs       optional clarification
-          |                   |
-          +---------+---------+
-                    |
-                    v
-            Agent response contract
+                              catalog.jsonl
+                                   |
+                    +--------------+--------------+
+                    |                             |
+                    v                             v
+        LAYER 1 — EXISTING FLOW          LAYER 2 — EMBEDDING FLOW
+              (UNCHANGED)                 (DIRECT FROM CATALOG)
+                    |                             |
+      +-------------+-------------+       +------+-------+-------+-------+---------+
+      |             |             |       |              |       |       |         |
+      v             v             v       v              v       v       v         v
+ Tier 1         Tier 2        Tier 3   categories       title  features description details (optional/later)
+ structured     trusted       descriptive                |       |       |         |
+ extraction     annotation    annotation                 |       |       |         |
+      |             |             |       |              |       |       |         |
+      | category    | brand       | style |              |       |       |         |
+      | price       | color       | feature              |       |       |         |
+      | size labels | material    | use_case             |       |       |         |
+      | measurements|             |                      |       |       |         |
+      | package dims|             |                      |       |       |         |
+      | product dims|             |                      |       |       |         |
+      | item weight |             |                      |       |       |         |
+      +-------------+-------------+                      |       |       |         |
+                    |                                    |       |       |         |
+                    v                                    v       v       v         v
+        validation + normalization                 category   title   features description selected
+                    |                              embedding embedding embedding embedding details
+                    v                                                       |                   embedding
+          canonical product facts                                           |
+                    |                                                       |
+          +---------+---------+                                             |
+          |                   |                                             |
+          v                   v                                             |
+ exact / numeric       canonical registries                                 |
+      indexes                                                               |
+          |                   |                                             |
+          +---------+---------+                                             |
+                    |                                                       |
+                    +----------------------+--------------------------------+
+                                           |
+                                           v
+                                  RETRIEVAL / RANKING
+                                           |
+                              +------------+------------+
+                              |                         |
+                              v                         v
+                    Layer 1 evidence             Layer 2 scores
+                    exact / structured           category similarity
+                    canonical matches            title similarity
+                                                 features similarity
+                                                 description similarity
+                                                 details similarity
+                              |                         |
+                              +------------+------------+
+                                           |
+                                           v
+                                        Top-K
 ```
 
-The central principle is that not all facts have the same reliability or retrieval role. The system therefore uses four knowledge tiers from precise structured facts through broad raw semantic context.
+The central principle remains unchanged for Layer 1: not all facts have the same reliability or retrieval role.
+
+Layer 2 is an independent semantic retrieval path built directly from `catalog.jsonl`. It does not consume Tier 1, Tier 2, or Tier 3 outputs. Layer 1 and Layer 2 meet only at retrieval/ranking.
+
+Layer 2 creates four core product views plus one optional view for later implementation:
+
+```text
+categories
+title
+features
+description
+selected details  # optional / later implementation
+```
+
+Each view is embedded independently so noisy text in one catalog field does not contaminate the semantic representation of another field.
+
+### Runtime flow
+
+```text
+                               USER TURN
+                                   |
+                                   v
+                     existing utterance processing
+                                   |
+                    +--------------+--------------+
+                    |                             |
+                    v                             v
+          Layer 1 parsed state            Layer 2 semantic query
+          structured / canonical          current + active session intent
+                    |                             |
+                    |                             v
+                    |                      embed query once
+                    |                             |
+                    |                             v
+                    |              normalized query_embedding
+                    |                             |
+                    |              +--------------+--------------+--------------+--------------+
+                    |              |              |              |              |              |
+                    |              v              v              v              v              v
+                    |         categories      title          features      description      details (optional)
+                    |          matrix          matrix          matrix          matrix          matrix (optional)
+                    |              |              |              |              |              |
+                    |              v              v              v              v              v
+                    |        category score   title score   features score description score details score (optional)
+                    |              |              |              |              |              |
+                    |              +--------------+--------------+--------------+--------------+
+                    |                                             |
+                    |                                             v
+                    |                                presence-aware weighted score
+                    |                                             |
+                    +----------------------+----------------------+
+                                           |
+                                           v
+                              combine Layer 1 + Layer 2 evidence
+                                           |
+                                           v
+                                      rank candidates
+                                           |
+                                           v
+                                         Top-K
+```
+
+At runtime, catalog embeddings are never regenerated. The Agent loads the four core matrices once at startup and may additionally load the optional details matrix when that view is implemented. It creates only one new query embedding per turn.
 
 ## 3. Product knowledge model
 
@@ -399,38 +448,273 @@ Semantic fallback is attribute-scoped:
 
 Attribute-value embeddings are separate from whole-product embeddings. They resolve user phrases to canonical values; they are not a product retrieval index.
 
-## 7. Whole-product embeddings
+## 7. Layer 2 direct field embeddings
 
-Each product receives one offline semantic embedding for dense retrieval.
+Layer 1 remains unchanged.
 
-The embedding text should combine stable useful content from all four tiers without dumping raw JSON or annotation metadata. A practical representation is:
+Layer 2 is an independent embedding path that reads directly from `catalog.jsonl`.
+
+For every product, Layer 2 creates four core semantic views and reserves selected details as an optional later view:
 
 ```text
-Title: <title>
-Category: <category path>
-Brand: <trusted brand>
-Color: <trusted colors>
-Material: <trusted materials>
-Style: <styles>
-Features: <features>
-Use cases: <use cases>
-Description: <selected useful source text>
+categories
+title
+features
+description
+selected details  # optional / later implementation
 ```
 
-Artifacts:
+The views are embedded separately. The architecture does not create one giant embedding from the entire product record.
+
+### 7.1 Categories embedding
+
+Build one embedding from the product's ordered category path.
+
+Example source:
+
+```json
+{
+  "categories": [
+    "Clothing, Shoes & Jewelry",
+    "Women",
+    "Jewelry",
+    "Rings"
+  ]
+}
+```
+
+Embedding text:
+
+```text
+clothing shoes jewelry women jewelry rings
+```
+
+The category view provides a strong semantic product-type signal and complements the existing Layer 1 category logic.
+
+### 7.2 Title embedding
+
+Build one embedding from the original product title.
+
+Example:
+
+```text
+DALEGEM Genuine Yellow Tiger Eye Stone Ring for Men Women,
+Retro Vintage Quartz Crystal Gemstone Turkish Ring Jewelry Gift
+```
+
+The title is expected to be one of the strongest semantic views because it is concise and often contains product type, identity, material, style, and use-case information.
+
+### 7.3 Features embedding
+
+Build one embedding from all feature bullets for the product.
+
+For the MVP, concatenate the feature strings into one input:
+
+```python
+feature_text = " ".join(product["features"])
+```
+
+Do not create one vector per individual feature bullet.
+
+Feature text is often information-rich, but it can also contain seller marketing, guarantees, package contents, SEO wording, or unsupported claims. Keeping features in their own embedding view prevents that noise from contaminating title or category similarity.
+
+### 7.4 Description embedding
+
+Build one embedding from the product description when description content exists.
+
+Description can recover useful long-tail information that does not appear in the title or feature bullets, but it can also contain repetitive or marketing-heavy language.
+
+Description therefore remains a separate view with an independently tunable weight.
+
+If a product has no description, description contributes no score rather than negative evidence.
+
+### 7.5 Selected details embedding — optional / later implementation
+
+This view is optional for the first MVP and may be implemented later. When it is added, do not embed the full `details` dictionary blindly.
+
+Build the details embedding only from shopper-relevant keys.
+
+Useful examples may include:
+
+```text
+Fabric Type
+Outer Material
+Sole Material
+Closure Type
+Water Resistance Level
+Fit
+Compatibility
+Style Name
+Lining
+```
+
+Avoid embedding metadata that usually has little semantic shopping value:
+
+```text
+Date First Available
+ASIN
+Best Sellers Rank
+internal identifiers
+seller/catalog bookkeeping
+```
+
+Numeric details that already have strong structured meaning should continue to be handled by Layer 1 rather than semantic similarity.
+
+Examples include:
+
+```text
+Package Dimensions
+Item Weight
+Stone Width
+Stone Length
+case diameter
+```
+
+### 7.6 Embedding artifacts
+
+A practical artifact layout is:
 
 ```text
 data/derived/product_embeddings/
-├── product_embeddings.npy
+├── category_embeddings.npy
+├── title_embeddings.npy
+├── features_embeddings.npy
+├── description_embeddings.npy
+├── details_embeddings.npy          # optional / later
 ├── product_embedding_metadata.json
 └── manifest.json
 ```
 
-Vectors should be L2-normalized float32. Metadata must preserve exact row-to-`parent_asin` mapping. The manifest records model identity, dimension, normalization, source/facts version, and generation configuration.
+All implemented matrices must use exactly the same product row order. The optional details matrix must follow the same mapping when added.
 
-For roughly 50,000 products, exact in-process search is sufficient. Normalized NumPy inner product or FAISS `IndexFlatIP` is acceptable. An external vector database is not required.
+Metadata must preserve the exact row-to-`parent_asin` mapping.
 
-A missing or invalid embedding artifact must select a documented fallback; the runtime must never silently use a mismatched row mapping or fabricate pseudo-vectors.
+The manifest records:
+
+```text
+embedding model
+embedding dimension
+normalization
+source catalog version
+product count
+field/view names
+generation configuration
+```
+
+### 7.7 Query embedding
+
+For the first MVP baseline, create one semantic embedding from the current user/session query and compare the same query vector against the four core product views. The optional selected-details view can be added later without changing this query flow.
+
+Example:
+
+```python
+query_embedding = embed(user_query)
+
+category_scores = category_embeddings @ query_embedding
+title_scores = title_embeddings @ query_embedding
+features_scores = features_embeddings @ query_embedding
+description_scores = description_embeddings @ query_embedding
+# Optional later:
+# details_scores = details_embeddings @ query_embedding
+```
+
+This keeps the baseline simple and avoids adding query-to-field routing before benchmark evidence justifies it.
+
+### 7.8 Multi-view Layer 2 score
+
+A conceptual Layer 2 score is:
+
+```text
+layer2_score(product) =
+    w_category    * category_similarity
+  + w_title       * title_similarity
+  + w_features    * features_similarity
+  + w_description * description_similarity
+  + w_details     * details_similarity   # optional / later
+```
+
+Actual weights are benchmark-tuned and should not be fixed in this document.
+
+A reasonable starting trust order is:
+
+```text
+title          very high
+categories     very high
+features       high
+description    medium
+details        optional / later, medium / supporting
+```
+
+### 7.9 Missing fields
+
+Products may have missing or empty catalog fields.
+
+The runtime should keep presence masks such as:
+
+```text
+has_categories
+has_title
+has_features
+has_description
+has_details    # optional / later
+```
+
+A missing field contributes no Layer 2 score and must not be treated as negative evidence.
+
+### 7.10 Vector normalization and search
+
+Vectors should be L2-normalized float32.
+
+For normalized vectors:
+
+```python
+scores = embeddings @ query_embedding
+```
+
+is cosine similarity.
+
+For roughly 50,000 products, exact in-process search is sufficient. Normalized NumPy inner product or FAISS `IndexFlatIP` is acceptable.
+
+An external vector database is not required.
+
+### 7.11 Layer 1 and Layer 2 relationship
+
+Layer 1 remains the existing structured/canonical pipeline.
+
+Layer 2 does not replace Layer 1 and does not require Layer 1 output.
+
+The two paths run independently:
+
+```text
+catalog.jsonl
+    |
+    +--> Layer 1 existing structured / annotation / canonical path
+    |
+    `--> Layer 2 direct field embedding path
+```
+
+They meet only during retrieval/ranking.
+
+Layer 1 contributes:
+
+```text
+structured constraints
+exact / numeric evidence
+trusted canonical matches
+descriptive canonical matches
+```
+
+Layer 2 contributes:
+
+```text
+category similarity
+title similarity
+features similarity
+description similarity
+details similarity  # optional / later
+```
+
+The ranking layer combines both sources of evidence.
 
 ## 8. User-utterance processing
 
@@ -565,7 +849,7 @@ Tier 2 trusted semantic exact match
 Tier 3 descriptive semantic match
     -> soft ranking evidence
 
-Tier 4 dense product similarity
+Layer 2 direct-field similarity
     -> recall and broad semantic ranking
 ```
 
@@ -576,7 +860,7 @@ category exact / numeric budget / explicit size or measurement    VERY HIGH
 brand exact                                                       VERY HIGH
 color/material exact                                              HIGH
 style/feature/use_case                                            MEDIUM
-whole-product dense similarity                                    MEDIUM
+Layer 2 multi-view similarity                                      MEDIUM
 ```
 
 Actual weights are benchmark-tuned and should not be hard-coded into this document.
@@ -600,8 +884,8 @@ apply strong trusted-semantic evidence
 score descriptive semantic matches
     |
     v
-use dense similarity among viable candidates
-    |
+use Layer 2 multi-view similarity among viable candidates
+    |   categories / title / features / description / selected details (optional)
     v
 rank candidate pool
 ```
@@ -632,7 +916,7 @@ Browsing is recall-first.
 full current/session semantic context
         |
         v
-whole-product dense retrieval over 50k
+Layer 2 multi-view dense retrieval over 50k
         |
         v
 broad candidate pool
@@ -677,7 +961,7 @@ structured numeric arrays/lookups
 Tier 2 canonical inverted indexes
 Tier 3 canonical inverted indexes where useful
 canonical registries
-product embedding matrix + row metadata when valid
+Layer 2 category/title/features/description embedding matrices + optional details matrix + shared row metadata when valid
 ```
 
 Typical exact indexes:
@@ -766,6 +1050,11 @@ data/derived/
 ├── catalog_facts/
 ├── dictionary/
 └── product_embeddings/
+    ├── category_embeddings.npy
+    ├── title_embeddings.npy
+    ├── features_embeddings.npy
+    ├── description_embeddings.npy
+    └── details_embeddings.npy      # optional / later
 ```
 
 Every generated artifact should record enough information to detect mismatches, including source/facts version, model or normalization configuration, dimensions/counts, and row mappings where relevant.

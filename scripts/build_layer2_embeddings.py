@@ -1,3 +1,5 @@
+"""Build the direct catalog-only Layer 2 embedding artifacts."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,24 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from product_embeddings import HashEmbeddingModel, build_product_embeddings
+from product_embeddings import HashEmbeddingModel, build_layer2_embeddings
 from product_embeddings.pipeline import load_injected_embedder, load_local_sentence_transformer
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build offline product embedding artifacts from catalog facts."
+        description="Build direct catalog-only Layer 2 field embeddings."
     )
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument(
-        "--facts",
-        default="data/derived/catalog_facts/catalog_facts.jsonl",
-        help="Canonical facts JSONL; Issue #5 annotation wrappers are also accepted.",
-    )
-    parser.add_argument(
         "--output-dir",
         default="data/derived/product_embeddings",
-        help="Directory for the three generated artifacts.",
+        help="Directory for the four Layer 2 matrices, metadata, and manifest.",
     )
     parser.add_argument(
         "--model",
@@ -44,12 +41,10 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--catalog-version")
-    parser.add_argument("--facts-version")
     parser.add_argument(
         "--generated-at-utc",
         help="Optional fixed timestamp for byte-stable manifest regeneration.",
     )
-    parser.add_argument("--description-max-chars", type=int, default=1000)
     args = parser.parse_args()
 
     if args.model and args.embedder:
@@ -61,16 +56,13 @@ def main() -> None:
     else:
         model = HashEmbeddingModel(args.hash_dimension)
 
-    manifest = build_product_embeddings(
+    manifest = build_layer2_embeddings(
         args.catalog,
-        args.facts,
         args.output_dir,
         model,
         batch_size=args.batch_size,
         catalog_version=args.catalog_version,
-        facts_version=args.facts_version,
         generated_at_utc=args.generated_at_utc,
-        description_max_chars=args.description_max_chars,
     )
     print(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True))
 

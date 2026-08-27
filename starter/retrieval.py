@@ -1,10 +1,10 @@
-"""Dependency-light in-memory product retrieval for Issues #13 and #15.
+"""Dependency-light in-memory product retrieval for the Layer 1/2 MVP.
 
-The retriever consumes canonical product facts and optional product vectors. It
-does not parse user language and it does not maintain a second lexical/BM25
-product-search route. User text is only passed to an injected compatible query
-encoder when dense artifacts are available; canonical constraints drive the
-Buying filters and preference boosts drive Browsing.
+The retriever consumes canonical product facts and optional direct Layer 2
+field vectors. It does not parse user language and it does not maintain a
+second lexical/BM25 product-search route. User text is only passed to an
+injected compatible query encoder when dense artifacts are available; canonical
+constraints drive the Buying filters and preference boosts drive Browsing.
 """
 
 from __future__ import annotations
@@ -17,12 +17,18 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Mapping
 
 from dictionary.registry import normalize_text
+
+from product_embeddings.layer2 import (
+    Layer2EmbeddingIndex,
+    load_layer2_embedding_index,
+)
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
 FACT_FIELDS = tuple(CATEGORICAL_FIELDS)
 DEFAULT_FACT_PATHS = (
     Path("data/derived/annotations/v4/annotations.jsonl"),
+    Path("data/derived/catalog_facts/catalog_facts.jsonl"),
     Path("data/derived/annotations/v2/annotations.jsonl"),
     Path("data/derived/annotations/v1/annotations.jsonl"),
     Path("data/derived/facts/facts.jsonl"),
@@ -39,6 +45,12 @@ DEFAULT_METADATA_PATHS = (
     Path("data/derived/product_embedding_metadata.json"),
     Path("data/product_embedding_metadata.json"),
     Path("product_embedding_metadata.json"),
+)
+DEFAULT_LAYER2_ARTIFACT_PATHS = (
+    Path("data/derived/product_embeddings"),
+    Path("data/derived/layer2_embeddings"),
+    Path("data/layer2_embeddings"),
+    Path("layer2_embeddings"),
 )
 
 
@@ -191,7 +203,7 @@ class Candidate:
 
 
 SharedCandidate = Candidate
-QueryEncoder = Callable[[str], Any]
+QueryEncoder = Any
 
 
 class ProductRetriever:
@@ -205,9 +217,12 @@ class ProductRetriever:
         embeddings_path: str | Path | None = None,
         metadata_path: str | Path | None = None,
         query_encoder: QueryEncoder | None = None,
+        layer2_artifact_dir: str | Path | None = None,
+        layer2_weights: Mapping[str, float] | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.query_encoder = query_encoder
+        self.layer2_weights = dict(layer2_weights) if layer2_weights is not None else None
         self.product_by_asin: dict[str, ProductRecord] = {}
         self._catalog_order: list[str] = []
         self.inverted_index: dict[str, dict[str, set[str]]] = {
@@ -220,6 +235,8 @@ class ProductRetriever:
         self.embedding_asins: tuple[str, ...] = ()
         self._embedding_norms: Any = None
         self._load_embeddings(embeddings_path, metadata_path)
+        self.layer2_index: Layer2EmbeddingIndex | None = None
+        self._load_layer2(layer2_artifact_dir)
 
     @property
     def valid_asins(self) -> frozenset[str]:
@@ -227,11 +244,38 @@ class ProductRetriever:
 
     @property
     def has_dense_index(self) -> bool:
-        return self.embedding_matrix is not None and bool(self.embedding_asins)
+        return bool(self.layer2_index is not None and self.layer2_index.asins) or (
+            self.embedding_matrix is not None and bool(self.embedding_asins)
+        )
+
+    def _load_layer2(self, artifact_dir: str | Path | None) -> None:
+        candidates = (
+            (Path(artifact_dir),) if artifact_dir is not None else DEFAULT_LAYER2_ARTIFACT_PATHS
+        )
+        expected_asins = tuple(self._catalog_order)
+        for candidate in candidates:
+            if not candidate.is_dir():
+                continue
+            try:
+                index = load_layer2_embedding_index(
+                    candidate,
+                    expected_asins=expected_asins,
+                )
+            except (ImportError, OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            self.layer2_index = index
+            return
 
     @property
     def dense_available(self) -> bool:
-        return self.has_dense_index and callable(self.query_encoder)
+        encoder = self.query_encoder
+        return self.has_dense_index and (
+            callable(encoder)
+            or any(
+                callable(getattr(encoder, name, None))
+                for name in ("encode", "embed_documents", "embed")
+            )
+        )
 
     def _load_fact_artifact(
         self, facts_path: str | Path | None
@@ -421,15 +465,34 @@ class ProductRetriever:
         )
 
     def _dense_scores(self, query_text: str) -> dict[str, float]:
-        if not self.has_dense_index or self.query_encoder is None:
+        if self.query_encoder is None:
+            return {}
+        if self.layer2_index is not None:
+            try:
+                query = self._query_embedding(query_text, self.layer2_index.dimension)
+                if query is None:
+                    return {}
+                scores, _ = self.layer2_index.score_all(
+                    query,
+                    weights=self.layer2_weights,
+                )
+                return {
+                    asin: float(score)
+                    for asin, score in zip(self.layer2_index.asins, scores)
+                }
+            except (TypeError, ValueError, RuntimeError):
+                return {}
+        if self.embedding_matrix is None or not self.embedding_asins:
             return {}
         try:
             import numpy as np
-
-            query = np.asarray(self.query_encoder(query_text), dtype=np.float32).reshape(-1)
-            if query.size != int(self.embedding_matrix.shape[1]):
+            query = self._query_embedding(
+                query_text,
+                int(self.embedding_matrix.shape[1]),
+            )
+            if query is None:
                 return {}
-            norm = float(np.linalg.norm(query))
+            norm = float(np.linalg.norm(query.astype(np.float64)))
             if not math.isfinite(norm) or norm == 0.0:
                 return {}
             scores = (self.embedding_matrix @ query) / (self._embedding_norms * norm)
@@ -438,6 +501,42 @@ class ProductRetriever:
             return {asin: float(score) for asin, score in zip(self.embedding_asins, scores)}
         except (ImportError, TypeError, ValueError, RuntimeError):
             return {}
+
+    def _query_embedding(self, query_text: str, dimension: int) -> Any:
+        """Encode one query with the shared runtime encoder and validate it."""
+        import numpy as np
+
+        encoder = self.query_encoder
+        if encoder is None:
+            return None
+        if hasattr(encoder, "encode"):
+            method = encoder.encode
+            try:
+                query_value = method(
+                    [query_text],
+                    convert_to_numpy=True,
+                    normalize_embeddings=False,
+                    show_progress_bar=False,
+                )
+            except TypeError:
+                query_value = method([query_text])
+        elif hasattr(encoder, "embed_documents"):
+            query_value = encoder.embed_documents([query_text])
+        elif hasattr(encoder, "embed"):
+            query_value = encoder.embed([query_text])
+        elif callable(encoder):
+            query_value = encoder(query_text)
+        else:
+            return None
+        query = np.asarray(query_value, dtype=np.float32)
+        if query.ndim == 2 and query.shape[0] == 1:
+            query = query[0]
+        if query.ndim != 1 or query.size != dimension:
+            return None
+        norm = float(np.linalg.norm(query.astype(np.float64)))
+        if not math.isfinite(norm) or norm == 0.0:
+            return None
+        return query
 
     def _candidate(
         self,

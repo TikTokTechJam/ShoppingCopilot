@@ -30,6 +30,8 @@ class Agent:
         embeddings_path: str | Path | None = None,
         metadata_path: str | Path | None = None,
         query_encoder: object | None = None,
+        layer2_artifact_dir: str | Path | None = None,
+        layer2_weights: Mapping[str, float] | None = None,
         retriever: ProductRetriever | None = None,
         router: object | None = None,
     ) -> None:
@@ -38,7 +40,9 @@ class Agent:
             facts_path=facts_path,
             embeddings_path=embeddings_path,
             metadata_path=metadata_path,
-            query_encoder=query_encoder if callable(query_encoder) else None,
+            query_encoder=query_encoder,
+            layer2_artifact_dir=layer2_artifact_dir,
+            layer2_weights=layer2_weights,
         )
         self.sessions = SessionManager()
         # Keep the old private attribute available to lightweight integrations

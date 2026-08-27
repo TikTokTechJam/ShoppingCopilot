@@ -105,6 +105,13 @@ python -m scripts.validate_attribute_dictionary `
   --directory data/derived/dictionary
 ```
 
+The build command defaults to `data/derived/annotations/v4/annotations.jsonl`,
+the current V4 annotation output in this repository. Use `--input` to point it at another V4
+annotation JSONL location, such as a generated release under
+`data/derived/annotations/v4/annotations.jsonl`. The optional embedding command
+requires the dependencies in `requirements-embeddings.txt`; it is intentionally
+not run as part of normal repository checks.
+
 The runtime loads the generated registry when both exact artifact files are
 present. If they are absent, the existing legacy vocabulary fallback remains
 available so the starter Agent can still run.
