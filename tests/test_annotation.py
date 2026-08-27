@@ -199,6 +199,73 @@ class AnnotationPipelineTests(unittest.TestCase):
             self.assertIsNone(final_records[1]["brand"])
             self.assertIsNone(final_records[1]["price"])
 
+    def test_runner_ctrl_c_keeps_completed_jsonl_and_resumes(self) -> None:
+        class InterruptClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def annotate(self, prompt: str) -> Any:
+                self.calls += 1
+                if self.calls == 2:
+                    raise KeyboardInterrupt()
+                return {
+                    "brand": [],
+                    "color": ["blue"],
+                    "material": ["cotton"],
+                    "style": [],
+                    "feature": [],
+                    "use_case": [],
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            catalog.write_text(
+                "\n".join([
+                    json.dumps({"parent_asin": "A1"}),
+                    json.dumps({"parent_asin": "A2"}),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            output_dir = root / "annotations"
+            stopped = run_annotation(
+                catalog,
+                output_dir,
+                InterruptClient(),
+                model="test-model",
+                retries=0,
+            )
+            self.assertTrue(stopped["stopped"])
+            self.assertEqual(stopped["successful"], 1)
+            self.assertEqual(
+                len((output_dir / "annotations.jsonl").read_text(encoding="utf-8").splitlines()),
+                1,
+            )
+            manifest = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(manifest["stopped"])
+
+            resumed = run_annotation(
+                catalog,
+                output_dir,
+                StaticClient(),
+                model="test-model",
+                retries=0,
+            )
+            self.assertFalse(resumed["stopped"])
+            self.assertEqual(resumed["successful"], 2)
+            records = [
+                json.loads(line)
+                for line in (output_dir / "annotations.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(
+                {record["parent_asin"] for record in records},
+                {"A1", "A2"},
+            )
+
     def test_runner_retries_transient_call_without_duplicate_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -266,6 +333,7 @@ class AnnotationPipelineTests(unittest.TestCase):
             self.assertIn("request_elapsed=", output)
             self.assertIn("total_elapsed=", output)
             self.assertIn("batch_complete", output)
+            self.assertIn("saved_in_batch=1/1", output)
             self.assertIn("complete selected=1", output)
 
     def test_local_endpoint_configuration_is_safe_and_openai_compatible(self) -> None:

@@ -60,7 +60,7 @@ catalog.jsonl
     -> data/derived/catalog_facts/catalog_facts.jsonl
 ```
 
-The annotation runner is resumable: successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. It makes no network call unless a local endpoint is configured. Hosted endpoint URL, API key environment variable, model, timeout, token limit, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
+The annotation runner is resumable: every completed success or failure is flushed to JSONL immediately, successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. Press `Ctrl+C` to stop scheduling new work; completed records remain saved and the next run resumes from the same output directory. It makes no network call unless a local endpoint is configured. Hosted endpoint URL, API key environment variable, model, timeout, token limit, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
 
 Create a local environment file from the ignored template, then fill in your own endpoint, model, and key:
 
@@ -83,7 +83,7 @@ First, make one local test request. The command below reads the ignored `.env`, 
 python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 2048 --concurrency 1
 ```
 
-Progress is printed immediately to stderr, including the selected product, request attempt, retry reason, success/failure, elapsed time, and batch totals. The final JSON summary remains on stdout. Use `--log-every 100` for a large run, or `--quiet` to suppress progress logs.
+Progress is printed immediately to stderr, including the selected product, request attempt, retry reason, success/failure, elapsed time, saved-record count, and batch totals. The final JSON summary remains on stdout. Press `Ctrl+C` once to stop cleanly; already completed records have been flushed and can be resumed with the same command. Use `--log-every 100` for a large run, or `--quiet` to suppress progress logs.
 
 After that succeeds, run a small batch and review the generated facts before considering larger work:
 
