@@ -33,7 +33,7 @@ The first MVP deliberately favors deterministic preprocessing, in-memory indexes
       +-------------+-------------+       +------+-------+-------+-------+---------+
       |             |             |       |              |       |       |         |
       v             v             v       v              v       v       v         v
- Tier 1         Tier 2        Tier 3   categories       title  features description details
+ Tier 1         Tier 2        Tier 3   categories       title  features description details (optional/later)
  structured     trusted       descriptive                |       |       |         |
  extraction     annotation    annotation                 |       |       |         |
       |             |             |       |              |       |       |         |
@@ -85,14 +85,14 @@ The central principle remains unchanged for Layer 1: not all facts have the same
 
 Layer 2 is an independent semantic retrieval path built directly from `catalog.jsonl`. It does not consume Tier 1, Tier 2, or Tier 3 outputs. Layer 1 and Layer 2 meet only at retrieval/ranking.
 
-Layer 2 creates five separate product views:
+Layer 2 creates four core product views plus one optional view for later implementation:
 
 ```text
 categories
 title
 features
 description
-selected details
+selected details  # optional / later implementation
 ```
 
 Each view is embedded independently so noisy text in one catalog field does not contaminate the semantic representation of another field.
@@ -120,11 +120,11 @@ Each view is embedded independently so noisy text in one catalog field does not 
                     |              +--------------+--------------+--------------+--------------+
                     |              |              |              |              |              |
                     |              v              v              v              v              v
-                    |         categories      title          features      description      details
-                    |          matrix          matrix          matrix          matrix          matrix
+                    |         categories      title          features      description      details (optional)
+                    |          matrix          matrix          matrix          matrix          matrix (optional)
                     |              |              |              |              |              |
                     |              v              v              v              v              v
-                    |        category score   title score   features score description score details score
+                    |        category score   title score   features score description score details score (optional)
                     |              |              |              |              |              |
                     |              +--------------+--------------+--------------+--------------+
                     |                                             |
@@ -143,7 +143,7 @@ Each view is embedded independently so noisy text in one catalog field does not 
                                          Top-K
 ```
 
-At runtime, catalog embeddings are never regenerated. The Agent loads the five matrices once at startup and creates only one new query embedding per turn.
+At runtime, catalog embeddings are never regenerated. The Agent loads the four core matrices once at startup and may additionally load the optional details matrix when that view is implemented. It creates only one new query embedding per turn.
 
 ## 3. Product knowledge model
 
@@ -454,14 +454,14 @@ Layer 1 remains unchanged.
 
 Layer 2 is an independent embedding path that reads directly from `catalog.jsonl`.
 
-For every product, Layer 2 creates five separate semantic views:
+For every product, Layer 2 creates four core semantic views and reserves selected details as an optional later view:
 
 ```text
 categories
 title
 features
 description
-selected details
+selected details  # optional / later implementation
 ```
 
 The views are embedded separately. The architecture does not create one giant embedding from the entire product record.
@@ -528,9 +528,9 @@ Description therefore remains a separate view with an independently tunable weig
 
 If a product has no description, description contributes no score rather than negative evidence.
 
-### 7.5 Selected details embedding
+### 7.5 Selected details embedding — optional / later implementation
 
-Do not embed the full `details` dictionary blindly.
+This view is optional for the first MVP and may be implemented later. When it is added, do not embed the full `details` dictionary blindly.
 
 Build the details embedding only from shopper-relevant keys.
 
@@ -580,12 +580,12 @@ data/derived/product_embeddings/
 ├── title_embeddings.npy
 ├── features_embeddings.npy
 ├── description_embeddings.npy
-├── details_embeddings.npy
+├── details_embeddings.npy          # optional / later
 ├── product_embedding_metadata.json
 └── manifest.json
 ```
 
-All five matrices must use exactly the same product row order.
+All implemented matrices must use exactly the same product row order. The optional details matrix must follow the same mapping when added.
 
 Metadata must preserve the exact row-to-`parent_asin` mapping.
 
@@ -603,7 +603,7 @@ generation configuration
 
 ### 7.7 Query embedding
 
-For the first MVP baseline, create one semantic embedding from the current user/session query and compare the same query vector against all five product views.
+For the first MVP baseline, create one semantic embedding from the current user/session query and compare the same query vector against the four core product views. The optional selected-details view can be added later without changing this query flow.
 
 Example:
 
@@ -614,7 +614,8 @@ category_scores = category_embeddings @ query_embedding
 title_scores = title_embeddings @ query_embedding
 features_scores = features_embeddings @ query_embedding
 description_scores = description_embeddings @ query_embedding
-details_scores = details_embeddings @ query_embedding
+# Optional later:
+# details_scores = details_embeddings @ query_embedding
 ```
 
 This keeps the baseline simple and avoids adding query-to-field routing before benchmark evidence justifies it.
@@ -629,7 +630,7 @@ layer2_score(product) =
   + w_title       * title_similarity
   + w_features    * features_similarity
   + w_description * description_similarity
-  + w_details     * details_similarity
+  + w_details     * details_similarity   # optional / later
 ```
 
 Actual weights are benchmark-tuned and should not be fixed in this document.
@@ -641,7 +642,7 @@ title          very high
 categories     very high
 features       high
 description    medium
-details        medium / supporting
+details        optional / later, medium / supporting
 ```
 
 ### 7.9 Missing fields
@@ -655,7 +656,7 @@ has_categories
 has_title
 has_features
 has_description
-has_details
+has_details    # optional / later
 ```
 
 A missing field contributes no Layer 2 score and must not be treated as negative evidence.
@@ -710,7 +711,7 @@ category similarity
 title similarity
 features similarity
 description similarity
-details similarity
+details similarity  # optional / later
 ```
 
 The ranking layer combines both sources of evidence.
@@ -884,7 +885,7 @@ score descriptive semantic matches
     |
     v
 use Layer 2 multi-view similarity among viable candidates
-    |   categories / title / features / description / selected details
+    |   categories / title / features / description / selected details (optional)
     v
 rank candidate pool
 ```
@@ -960,7 +961,7 @@ structured numeric arrays/lookups
 Tier 2 canonical inverted indexes
 Tier 3 canonical inverted indexes where useful
 canonical registries
-Layer 2 category/title/features/description/details embedding matrices + shared row metadata when valid
+Layer 2 category/title/features/description embedding matrices + optional details matrix + shared row metadata when valid
 ```
 
 Typical exact indexes:
@@ -1053,7 +1054,7 @@ data/derived/
     ├── title_embeddings.npy
     ├── features_embeddings.npy
     ├── description_embeddings.npy
-    └── details_embeddings.npy
+    └── details_embeddings.npy      # optional / later
 ```
 
 Every generated artifact should record enough information to detect mismatches, including source/facts version, model or normalization configuration, dimensions/counts, and row mappings where relevant.
