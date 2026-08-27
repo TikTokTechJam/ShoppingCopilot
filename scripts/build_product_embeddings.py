@@ -21,7 +21,14 @@ def main() -> None:
     parser.add_argument(
         "--facts",
         default="data/derived/catalog_facts/catalog_facts.jsonl",
-        help="Canonical facts JSONL; Issue #5 annotation wrappers are also accepted.",
+        help="Canonical facts JSONL/JSON; annotation/test wrappers are also accepted.",
+    )
+    parser.add_argument(
+        "--raw-text",
+        help=(
+            "Optional Tier 4 JSONL/JSON artifact with parent_asin, title, "
+            "features, description, and details. Defaults to catalog fields."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -66,6 +73,7 @@ def main() -> None:
         args.facts,
         args.output_dir,
         model,
+        raw_text_path=args.raw_text,
         batch_size=args.batch_size,
         catalog_version=args.catalog_version,
         facts_version=args.facts_version,

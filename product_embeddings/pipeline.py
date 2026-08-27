@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .text import PRODUCT_TEXT_VERSION, build_product_text
+from .tier4 import TIER4_ARTIFACT_VERSION, build_tier4_record
 
-BUILDER_VERSION = "product-embeddings-v1"
+BUILDER_VERSION = "product-embeddings-v2"
 _FACT_FIELDS = (
     "category",
     "brand",
@@ -79,6 +80,24 @@ def _require_numpy() -> Any:
 
 
 def _read_jsonl(path: Path) -> Iterable[tuple[int, Mapping[str, Any]]]:
+    # The supplied annotation example is a regular JSON object, while build
+    # outputs are normally JSONL. Accept both at the facts boundary.
+    if path.suffix.casefold() == ".json":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{path}: invalid JSON") from exc
+        if isinstance(payload, Mapping):
+            yield 1, payload
+            return
+        if isinstance(payload, list):
+            for line_number, record in enumerate(payload, 1):
+                if not isinstance(record, Mapping):
+                    raise ValueError(f"{path}:{line_number}: record must be an object")
+                yield line_number, record
+            return
+        raise ValueError(f"{path}: JSON document must contain an object or array")
+
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
@@ -148,7 +167,11 @@ def _normalise_facts(
     else:
         raise ValueError(f"{path}:{line_number}: facts must be an object")
 
-    missing = [field for field in _FACT_FIELDS if field not in facts_source]
+    # V4 annotation/test records do not contain structured ``size`` yet. The
+    # final catalog-facts artifact does, so make only semantic fields required
+    # here and supply an empty size list for the annotation shape.
+    required_fields = [field for field in _FACT_FIELDS if field != "size"]
+    missing = [field for field in required_fields if field not in facts_source]
     if missing:
         raise ValueError(
             f"{path}:{line_number}: canonical facts missing fields {missing}"
@@ -156,15 +179,20 @@ def _normalise_facts(
 
     facts: dict[str, Any] = {}
     for field in _FACT_FIELDS:
-        if field == "brand":
+        if field == "size" and field not in facts_source:
+            facts[field] = []
+        elif field == "brand":
             value = facts_source[field]
-            if value is not None and (
-                not isinstance(value, str) or not value.strip()
-            ):
+            if value is None:
+                facts[field] = None
+            elif isinstance(value, str):
+                facts[field] = " ".join(value.split())
+            elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+                facts[field] = _normalise_fact_values(value, field=field)
+            else:
                 raise ValueError(
-                    f"{path}:{line_number}: canonical fact brand must be string or null"
+                    f"{path}:{line_number}: canonical fact brand must be string, array, or null"
                 )
-            facts[field] = None if value is None else " ".join(value.split())
         else:
             facts[field] = _normalise_fact_values(facts_source[field], field=field)
     return facts
@@ -182,6 +210,22 @@ def _read_facts(path: Path) -> dict[str, dict[str, Any]]:
     if not facts_by_asin:
         raise ValueError(f"{path}: facts contain no products")
     return facts_by_asin
+
+
+def _read_tier4(path: Path) -> dict[str, dict[str, Any]]:
+    raw_by_asin: dict[str, dict[str, Any]] = {}
+    for line_number, record in _read_jsonl(path):
+        try:
+            raw = build_tier4_record(record)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{path}:{line_number}: invalid Tier 4 record") from exc
+        asin = raw["parent_asin"]
+        if asin in raw_by_asin:
+            raise ValueError(f"{path}:{line_number}: duplicate parent_asin {asin}")
+        raw_by_asin[asin] = raw
+    if not raw_by_asin:
+        raise ValueError(f"{path}: Tier 4 source contains no products")
+    return raw_by_asin
 
 
 def _validate_input_asins(
@@ -341,6 +385,7 @@ def build_product_embeddings(
     output_dir: str | Path,
     model: Any,
     *,
+    raw_text_path: str | Path | None = None,
     batch_size: int = 32,
     catalog_version: str | None = None,
     facts_version: str | None = None,
@@ -356,12 +401,18 @@ def build_product_embeddings(
     products = _read_catalog(catalog)
     facts_by_asin = _read_facts(facts)
     _validate_input_asins(products, facts_by_asin)
+    raw_text = Path(raw_text_path) if raw_text_path is not None else None
+    raw_by_asin: dict[str, dict[str, Any]] | None = None
+    if raw_text is not None:
+        raw_by_asin = _read_tier4(raw_text)
+        _validate_input_asins(products, raw_by_asin)
 
     asins = [str(product["parent_asin"]) for product in products]
     texts = [
         build_product_text(
             product,
             facts_by_asin[asin],
+            raw_text=raw_by_asin[asin] if raw_by_asin is not None else None,
             description_max_chars=description_max_chars,
         )
         for product, asin in zip(products, asins)
@@ -387,6 +438,8 @@ def build_product_embeddings(
         "generated_at_utc": generated_at_utc,
         "catalog_path": _manifest_path(catalog),
         "facts_path": _manifest_path(facts),
+        "tier4_path": _manifest_path(raw_text) if raw_text is not None else None,
+        "tier4_version": TIER4_ARTIFACT_VERSION if raw_text is not None else "catalog-source",
         "catalog_version": resolved_catalog_version,
         "facts_version": resolved_facts_version,
         "product_text_version": PRODUCT_TEXT_VERSION,

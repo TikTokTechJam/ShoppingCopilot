@@ -14,13 +14,14 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
 FACT_FIELDS = tuple(CATEGORICAL_FIELDS)
 DEFAULT_FACT_PATHS = (
+    Path("data/derived/catalog_facts/catalog_facts.jsonl"),
     Path("data/derived/annotations/v2/annotations.jsonl"),
     Path("data/derived/annotations/v1/annotations.jsonl"),
     Path("data/derived/facts/facts.jsonl"),
@@ -180,7 +181,7 @@ class Candidate:
 
 
 SharedCandidate = Candidate
-QueryEncoder = Callable[[str], Any]
+QueryEncoder = Any
 
 
 class ProductRetriever:
@@ -426,7 +427,28 @@ class ProductRetriever:
         try:
             import numpy as np
 
-            query = np.asarray(self.query_encoder(query_text), dtype=np.float32).reshape(-1)
+            encoder = self.query_encoder
+            if hasattr(encoder, "encode"):
+                method = encoder.encode
+                try:
+                    query_value = method(
+                        [query_text],
+                        convert_to_numpy=True,
+                        normalize_embeddings=False,
+                        show_progress_bar=False,
+                    )
+                except TypeError:
+                    query_value = method([query_text])
+            elif hasattr(encoder, "embed_documents"):
+                query_value = encoder.embed_documents([query_text])
+            elif callable(encoder):
+                query_value = encoder(query_text)
+            else:
+                return {}
+            query = np.asarray(query_value, dtype=np.float32)
+            if query.ndim == 2 and query.shape[0] == 1:
+                query = query[0]
+            query = query.reshape(-1)
             if query.size != int(self.embedding_matrix.shape[1]):
                 return {}
             norm = float(np.linalg.norm(query))

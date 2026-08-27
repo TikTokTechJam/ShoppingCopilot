@@ -38,7 +38,7 @@ class Agent:
             facts_path=facts_path,
             embeddings_path=embeddings_path,
             metadata_path=metadata_path,
-            query_encoder=query_encoder if callable(query_encoder) else None,
+            query_encoder=query_encoder,
         )
         self.sessions = SessionManager()
         # Keep the old private attribute available to lightweight integrations

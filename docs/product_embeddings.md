@@ -8,6 +8,7 @@ The builder joins two JSONL sources by `parent_asin`:
 
 - `data/catalog.jsonl`: source catalog rows. The current catalog uses `title` as a string and `description` as an array of strings.
 - `data/derived/catalog_facts/catalog_facts.jsonl`: one canonical facts record per catalog product, using `category`, `brand`, `price`, `color`, `material`, `size`, `style`, `feature`, and `use_case`.
+- Optional `data/derived/tier4/raw_text.jsonl`: the source-only Tier 4 view with `parent_asin`, `title`, `features`, `description`, and `details`. If it is not supplied, the builder reads those fields directly from `catalog.jsonl`.
 
 The Issue #5 annotation wrapper (`{"parent_asin": ..., "facts": {...}, ...}`) is accepted too. The builder still requires every catalog ASIN exactly once in both inputs, and writes rows in catalog order.
 
@@ -16,7 +17,7 @@ The Issue #5 annotation wrapper (`{"parent_asin": ..., "facts": {...}, ...}`) is
 Each product is represented by this fixed, non-JSON document shape:
 
 ```text
-Title: <source title>
+Title: <Tier 4 title>
 Category: <canonical values>
 Brand: <canonical brand>
 Material: <canonical values>
@@ -24,10 +25,12 @@ Color: <canonical values>
 Style: <canonical values>
 Features: <canonical feature values>
 Use cases: <canonical values>
-Description: <short normalized source description>
+Description: <short normalized Tier 4 description>
+Raw features: <selected Tier 4 features>
+Details: <selected Tier 4 details>
 ```
 
-Canonical array values are de-duplicated and sorted. Source descriptions are whitespace-normalized and capped at 1,000 characters by default. Price, size, raw source `features`, annotation metadata, and arbitrary JSON are not embedded: price and size remain available to structured retrieval, while the embedding representation follows the semantic product fields in the Issue #12 solution.
+Canonical array values are de-duplicated and sorted. Tier 4 text retains source order, is whitespace-normalized, and is bounded for stable documents (description 1,000 characters, raw features/details 2,000 characters by default). Price, size, annotation metadata, and arbitrary raw JSON are not embedded; price and size remain available to structured retrieval.
 
 ## Build
 
@@ -35,8 +38,17 @@ Canonical array values are de-duplicated and sorted. Source descriptions are whi
 python scripts/build_product_embeddings.py \
   --catalog data/catalog.jsonl \
   --facts data/derived/catalog_facts/catalog_facts.jsonl \
+  --raw-text data/derived/tier4/raw_text.jsonl \
   --output-dir data/derived/product_embeddings \
   --model path/to/local/sentence-transformer
+```
+
+Build the optional Tier 4 view first with:
+
+```bash
+python scripts/build_tier4_raw_text.py \
+  --catalog data/catalog.jsonl \
+  --output data/derived/tier4/raw_text.jsonl
 ```
 
 `--model` is loaded with `local_files_only=True`; it cannot download a model or call an API. `sentence-transformers` is optional and is imported only when `--model` is used. A local injected object/factory can be supplied with `--embedder package.module:object`. The default built-in hashing embedder needs only NumPy and is intended as a deterministic pipeline fallback, not as a semantic-quality benchmark model.

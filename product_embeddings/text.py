@@ -3,8 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-PRODUCT_TEXT_VERSION = "product-text-v1"
+from .tier4 import normalize_tier4_source
+
+PRODUCT_TEXT_VERSION = "product-text-v2"
 DESCRIPTION_MAX_CHARS = 1_000
+RAW_FEATURES_MAX_CHARS = 2_000
+RAW_DETAILS_MAX_CHARS = 2_000
 
 # Keep this order stable. It is part of the embedding document contract.
 _FACT_TEXT_FIELDS = (
@@ -59,37 +63,78 @@ def _facts_payload(facts_record: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _source_description(product: Mapping[str, Any], max_chars: int) -> str:
-    descriptions = _clean_sequence(
-        product.get("description", []),
-        field="description",
-        sort_values=False,
-    )
+    descriptions = [
+        value
+        for value in product.get("description", [])
+        if isinstance(value, str) and value
+    ]
     description = " ".join(descriptions)
     return description[:max_chars].rstrip()
+
+
+def _detail_value_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return " ".join(value.split())
+    if isinstance(value, Mapping):
+        parts: list[str] = []
+        for key in sorted(value, key=lambda item: (str(item).casefold(), str(item))):
+            rendered = _detail_value_text(value[key])
+            if rendered:
+                parts.append(f"{key}: {rendered}")
+        return "; ".join(parts)
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return ", ".join(
+            rendered
+            for item in value
+            if (rendered := _detail_value_text(item))
+        )
+    return " ".join(str(value).split())
+
+
+def _source_details(product: Mapping[str, Any], max_chars: int) -> str:
+    details = product.get("details", {})
+    if not isinstance(details, Mapping):
+        raise TypeError("details must be an object or null")
+    parts: list[str] = []
+    for key in sorted(details, key=lambda item: (str(item).casefold(), str(item))):
+        value = _detail_value_text(details[key])
+        if value:
+            parts.append(f"{_clean_text(key)}: {value}")
+    return "; ".join(parts)[:max_chars].rstrip()
 
 
 def build_product_text(
     product: Mapping[str, Any],
     canonical_facts: Mapping[str, Any],
     *,
+    raw_text: Mapping[str, Any] | None = None,
     description_max_chars: int = DESCRIPTION_MAX_CHARS,
+    raw_features_max_chars: int = RAW_FEATURES_MAX_CHARS,
+    raw_details_max_chars: int = RAW_DETAILS_MAX_CHARS,
 ) -> str:
     """Build the stable semantic document used for one product embedding.
 
-    Only selected canonical facts and the source title/description are used.
-    Raw JSON, prices, annotation metadata, and source ``features`` are omitted
-    so provenance and noisy marketing text cannot silently change the document
-    representation. Values from canonical arrays are de-duplicated and sorted.
+    Canonical Tier 1–3 semantic facts are combined with selected Tier 4 source
+    text. Prices, sizes, annotation metadata, and arbitrary raw JSON are not
+    included. Values from canonical arrays are de-duplicated and sorted, while
+    raw source fields retain their source order and are bounded for stability.
     """
     if not isinstance(product, Mapping):
         raise TypeError("product must be an object")
     if not isinstance(canonical_facts, Mapping):
         raise TypeError("canonical_facts must be an object")
-    if description_max_chars < 0:
-        raise ValueError("description_max_chars must be non-negative")
+    if (
+        description_max_chars < 0
+        or raw_features_max_chars < 0
+        or raw_details_max_chars < 0
+    ):
+        raise ValueError("text length limits must be non-negative")
 
     facts = _facts_payload(canonical_facts)
-    lines = [f"Title: {_clean_text(product.get('title'))}"]
+    source = normalize_tier4_source(raw_text if raw_text is not None else product)
+    lines = [f"Title: {_clean_text(source.get('title'))}"]
     for label, field in _FACT_TEXT_FIELDS:
         values = _clean_sequence(
             facts.get(field),
@@ -97,7 +142,14 @@ def build_product_text(
             sort_values=field != "brand",
         )
         lines.append(f"{label}: {', '.join(values)}")
+    lines.append(f"Description: {_source_description(source, description_max_chars)}")
+    raw_features = [
+        value
+        for value in source.get("features", [])
+        if isinstance(value, str) and value
+    ]
     lines.append(
-        f"Description: {_source_description(product, description_max_chars)}"
+        f"Raw features: {'; '.join(raw_features)[:raw_features_max_chars].rstrip()}"
     )
+    lines.append(f"Details: {_source_details(source, raw_details_max_chars)}")
     return "\n".join(lines)
