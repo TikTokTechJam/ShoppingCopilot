@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -252,6 +252,7 @@ def _process_product(
 
 def _write_line(handle: Any, value: Mapping[str, Any]) -> None:
     handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+    handle.flush()
 
 
 def run_annotation(
@@ -348,60 +349,101 @@ def run_annotation(
         }
 
     assert client is not None
-    with (
-        annotations_path.open("a", encoding="utf-8") as annotation_handle,
-        failures_path.open("a", encoding="utf-8") as failure_handle,
-        ThreadPoolExecutor(max_workers=concurrency) as executor,
-    ):
-        batch: list[tuple[dict[str, Any], int]] = []
+    stop_requested = False
+    executor = ThreadPoolExecutor(max_workers=concurrency)
+    try:
+        with (
+            annotations_path.open("a", encoding="utf-8") as annotation_handle,
+            failures_path.open("a", encoding="utf-8") as failure_handle,
+        ):
+            batch: list[tuple[dict[str, Any], int]] = []
 
-        def flush() -> None:
-            nonlocal new_successes, new_failures
-            if not batch:
-                return
-            batch_size = len(batch)
-            _emit_progress(
-                f"batch_start size={batch_size}",
-                enabled=progress,
-                lock=progress_lock,
-            )
-
-            def process(item: tuple[dict[str, Any], int]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-                product, attempt = item
-                return _process_product(
-                    product,
-                    attempt,
-                    client,
-                    model=model,
-                    prompt_version=prompt_version,
-                    retries=retries,
-                    progress=progress,
-                    progress_lock=progress_lock,
+            def flush() -> None:
+                nonlocal new_successes, new_failures, stop_requested
+                if not batch:
+                    return
+                batch_size = len(batch)
+                _emit_progress(
+                    f"batch_start size={batch_size}",
+                    enabled=progress,
+                    lock=progress_lock,
                 )
 
-            for record, failure in executor.map(process, batch):
-                if record is not None:
-                    _write_line(annotation_handle, record)
-                    completed.add(record["parent_asin"])
-                    new_successes += 1
-                else:
-                    assert failure is not None
-                    _write_line(failure_handle, failure)
-                    failure_attempts[failure["parent_asin"]] = failure["attempt"]
-                    new_failures += 1
-            _emit_progress(
-                f"batch_complete size={batch_size} new_successes={new_successes} "
-                f"new_failures={new_failures}",
-                enabled=progress,
-                lock=progress_lock,
-            )
-            batch.clear()
+                def process(item: tuple[dict[str, Any], int]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+                    product, attempt = item
+                    return _process_product(
+                        product,
+                        attempt,
+                        client,
+                        model=model,
+                        prompt_version=prompt_version,
+                        retries=retries,
+                        progress=progress,
+                        progress_lock=progress_lock,
+                    )
 
-        for item in pending_items():
-            batch.append(item)
-            if len(batch) >= max(1, concurrency * 4):
+                futures = {
+                    executor.submit(process, item): item
+                    for item in batch
+                }
+                batch.clear()
+                saved_in_batch = 0
+                try:
+                    for future in as_completed(futures):
+                        record, failure = future.result()
+                        if record is not None:
+                            _write_line(annotation_handle, record)
+                            completed.add(record["parent_asin"])
+                            new_successes += 1
+                            saved_in_batch += 1
+                        else:
+                            assert failure is not None
+                            _write_line(failure_handle, failure)
+                            failure_attempts[failure["parent_asin"]] = failure["attempt"]
+                            new_failures += 1
+                            saved_in_batch += 1
+                        _emit_progress(
+                            f"saved_in_batch={saved_in_batch}/{batch_size} "
+                            f"new_successes={new_successes} new_failures={new_failures}",
+                            enabled=progress,
+                            lock=progress_lock,
+                        )
+                except KeyboardInterrupt:
+                    stop_requested = True
+                    cancelled = sum(1 for future in futures if future.cancel())
+                    _emit_progress(
+                        f"stop_requested saved_in_batch={saved_in_batch}/{batch_size} "
+                        f"cancelled={cancelled} completed={len(completed)} "
+                        f"failed={len(set(failure_attempts) - completed)}",
+                        enabled=progress,
+                        lock=progress_lock,
+                    )
+                    raise
+
+                _emit_progress(
+                    f"batch_complete size={batch_size} new_successes={new_successes} "
+                    f"new_failures={new_failures}",
+                    enabled=progress,
+                    lock=progress_lock,
+                )
+
+            try:
+                for item in pending_items():
+                    batch.append(item)
+                    if len(batch) >= max(1, concurrency * 4):
+                        flush()
                 flush()
-        flush()
+            except KeyboardInterrupt:
+                stop_requested = True
+                batch.clear()
+                _emit_progress(
+                    f"stop_requested completed={len(completed)} "
+                    f"failed={len(set(failure_attempts) - completed)}",
+                    enabled=progress,
+                    lock=progress_lock,
+                )
+    finally:
+        executor.shutdown(wait=not stop_requested, cancel_futures=stop_requested)
 
     manifest = {
         "version": prompt_version,
@@ -417,6 +459,7 @@ def run_annotation(
         "successful": len(completed),
         "failed": len(set(failure_attempts) - completed),
         "failure_attempts": sum(failure_attempts.values()),
+        "stopped": stop_requested,
     }
     temporary_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
     temporary_manifest.write_text(
@@ -427,6 +470,7 @@ def run_annotation(
     _emit_progress(
         f"complete selected={selected_count} processed={new_successes + new_failures} "
         f"successful={len(completed)} failed={len(set(failure_attempts) - completed)} "
+        f"stopped={stop_requested} "
         f"elapsed={time.perf_counter() - run_started:.1f}s",
         enabled=progress,
         lock=progress_lock,
