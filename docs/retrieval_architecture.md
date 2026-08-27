@@ -1,7 +1,7 @@
 # Product retrieval architecture (Issue #9)
 
 Status: MVP proposal. This document is the Issue #9 architecture deliverable;
-it does not implement retrieval; the authoritative cross-issue document is `architecture.md`.
+it does not implement retrieval; the authoritative cross-issue document is `Architecture.md`.
 
 ## Boundary
 
