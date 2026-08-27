@@ -26,6 +26,7 @@ class SessionState:
     constraints: ShoppingConstraints = field(default_factory=ShoppingConstraints)
     asked_attributes: set[str] = field(default_factory=set)
     last_recommendations: tuple[str, ...] = ()
+    excluded_recommendations: set[str] = field(default_factory=set)
     last_user_message: str | None = None
     turn: int = 0
     messages: list[str] = field(default_factory=list)
@@ -221,6 +222,7 @@ class SessionManager:
         state.constraints = ShoppingConstraints()
         state.asked_attributes.clear()
         state.last_recommendations = ()
+        state.excluded_recommendations.clear()
         state.last_user_message = None
         state.turn = 0
         state.messages.clear()
@@ -256,6 +258,12 @@ class SessionManager:
     def set_recommendations(self, session_id: str, asins: Iterable[str]) -> None:
         state = self.get(session_id)
         state.last_recommendations = _unique(asins)
+
+    def promote_last_recommendations(self, session_id: str) -> None:
+        """Treat the prior turn's recommendations as misses for this goal."""
+
+        state = self.get(session_id)
+        state.excluded_recommendations.update(state.last_recommendations)
 
 
 __all__ = [

@@ -14,7 +14,9 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Collection, Iterable, Mapping
+
+from dictionary.registry import normalize_text
 
 from product_embeddings.layer2 import (
     Layer2EmbeddingIndex,
@@ -52,10 +54,24 @@ DEFAULT_LAYER2_ARTIFACT_PATHS = (
 )
 
 
+# One shared structured score is used by Buying and Browsing. Values are
+# relative weights, and the final structured score is normalized to [0, 1].
+STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
+    "category": 1.00,
+    "price": 1.00,
+    "brand": 0.90,
+    "size": 0.80,
+    "color": 0.70,
+    "material": 0.70,
+    "style": 0.30,
+    "feature": 0.30,
+    "use_case": 0.30,
+}
+DENSE_SCORE_WEIGHT = 0.20
+
+
 def _normalise_value(value: object) -> str:
-    text = str(value).strip().casefold()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_")
+    return normalize_text(str(value).strip())
 
 
 def _values(value: object) -> tuple[str, ...]:
@@ -127,18 +143,13 @@ def _record_facts(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
             found = ()
         if found:
             facts[field_name] = found
-
-    # Raw catalog categories are useful only as a conservative artifact
-    # fallback. The canonical annotation, when present, takes precedence.
-    if "category" in facts:
-        expanded: list[str] = []
-        for value in facts["category"]:
-            for item in (value, value[:-1] if value.endswith("s") and not value.endswith("ss") else ""):
-                if item and item not in expanded:
-                    expanded.append(item)
-        facts["category"] = tuple(expanded)
     return facts
 
+
+def _catalog_structured_facts(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    facts = _record_facts(record)
+    category = facts.get("category", ())
+    return {"category": category} if category else {}
 
 def _merge_facts(
     base: Mapping[str, tuple[str, ...]],
@@ -255,6 +266,17 @@ class ProductRetriever:
             self.layer2_index = index
             return
 
+    @property
+    def dense_available(self) -> bool:
+        encoder = self.query_encoder
+        return self.has_dense_index and (
+            callable(encoder)
+            or any(
+                callable(getattr(encoder, name, None))
+                for name in ("encode", "embed_documents", "embed")
+            )
+        )
+
     def _load_fact_artifact(
         self, facts_path: str | Path | None
     ) -> tuple[dict[str, Mapping[str, tuple[str, ...]]], dict[str, float | None]]:
@@ -264,6 +286,9 @@ class ProductRetriever:
         facts: dict[str, Mapping[str, tuple[str, ...]]] = {}
         prices: dict[str, float | None] = {}
         for row in _read_jsonl(selected):
+            annotation = row.get("annotation")
+            if isinstance(annotation, Mapping) and str(annotation.get("status", "")).casefold() != "success":
+                continue
             asin = str(row.get("parent_asin", "")).strip()
             if not asin:
                 continue
@@ -277,8 +302,14 @@ class ProductRetriever:
             asin = str(row.get("parent_asin", "")).strip()
             if not asin or asin in self.product_by_asin:
                 continue
-            catalog_facts = _record_facts(row)
-            facts = _merge_facts(catalog_facts, self._facts_by_asin.get(asin, {}))
+            annotation_facts = self._facts_by_asin.get(asin)
+            catalog_facts = _catalog_structured_facts(row)
+            if annotation_facts is None:
+                # The raw catalog remains the product-universe authority, but
+                # an unannotated product contributes only safe category data.
+                facts = catalog_facts
+            else:
+                facts = _merge_facts(catalog_facts, annotation_facts)
             raw_price = _price(row.get("price"))
             price = self._annotated_prices.get(asin, raw_price)
             if asin in self._annotated_prices and price is None and raw_price is not None:
@@ -410,52 +441,28 @@ class ProductRetriever:
                 labels.append(f"price_max:{price_max:g}")
         return tuple(labels)
 
-    def _strict_pool(self, constraints: object, relaxed: set[str] | None = None) -> list[str]:
-        relaxed = relaxed or set()
-        active_fields = [
-            field_name
-            for field_name in self._constraint_fields(constraints)
-            if field_name not in relaxed
-        ]
-        if not active_fields:
+    def _eligible_asins(self, constraints: object) -> list[str]:
+        price_min, price_max = self._price_bounds(constraints)
+        if price_min is None and price_max is None:
             return list(self._catalog_order)
+        return [
+            asin
+            for asin in self._catalog_order
+            if self._matches_price_bounds(asin, price_min, price_max)
+        ]
 
-        pool = set(self._catalog_order)
-        for field_name in active_fields:
-            if field_name == "price":
-                pool = {asin for asin in pool if self._matches_field(asin, field_name, constraints)}
-                continue
-            requested = self._constraint_values(constraints, field_name)
-            field_pool: set[str] = set()
-            for value in requested:
-                field_pool.update(self.inverted_index.get(field_name, {}).get(value, ()))
-            pool.intersection_update(field_pool)
-            if not pool:
-                break
-        return [asin for asin in self._catalog_order if asin in pool]
-
-    def _relaxation_order(self, constraints: object) -> tuple[str, ...]:
-        evidence_by_field: dict[str, list[tuple[str, float]]] = {}
-        for item in getattr(constraints, "evidence", ()) or ():
-            field_name = str(getattr(item, "attribute", ""))
-            if field_name:
-                method = str(getattr(item, "match_method", "exact"))
-                confidence = float(getattr(item, "confidence", 1.0))
-                evidence_by_field.setdefault(field_name, []).append((method, confidence))
-        soft_order = {name: index for index, name in enumerate((
-            "style", "use_case", "feature", "material", "color", "size", "brand", "category", "price",
-        ))}
-        fields = list(self._constraint_fields(constraints))
-        return tuple(sorted(
-            fields,
-            key=lambda field_name: (
-                field_name in {"category", "price"},
-                min((confidence for _method, confidence in evidence_by_field.get(field_name, (("exact", 1.0),))), default=1.0),
-                min((method != "semantic" for method, _confidence in evidence_by_field.get(field_name, (("exact", 1.0),))), default=True),
-                soft_order.get(field_name, len(soft_order)),
-                field_name,
-            ),
-        ))
+    def _matches_price_bounds(
+        self,
+        asin: str,
+        price_min: float | None,
+        price_max: float | None,
+    ) -> bool:
+        price = self.product_by_asin[asin].price
+        if price is None:
+            return False
+        return (price_min is None or price >= price_min) and (
+            price_max is None or price <= price_max
+        )
 
     def _dense_scores(self, query_text: str) -> dict[str, float]:
         if self.query_encoder is None:
@@ -536,35 +543,24 @@ class ProductRetriever:
         asin: str,
         mode: str,
         dense_score: float,
-        constraints: object,
-        relaxed: set[str],
-        total_fields: int,
+        structured_score: float,
+        matched_constraints: tuple[str, ...],
+        matched_fields: set[str],
+        constraint_fields: tuple[str, ...],
     ) -> Candidate:
-        matched = self._matched_labels(asin, constraints)
-        matched_fields = sum(
-            1 for field_name in self._constraint_fields(constraints)
-            if self._matches_field(asin, field_name, constraints)
-        )
         violated = tuple(
-            f"{field_name}:{'required'}"
-            for field_name in self._constraint_fields(constraints)
-            if field_name not in relaxed and not self._matches_field(asin, field_name, constraints)
+            f"{field_name}:required"
+            for field_name in constraint_fields
+            if field_name not in matched_fields
         )
-        relaxed_labels = tuple(
-            field_name
-            for field_name in self._constraint_fields(constraints)
-            if field_name in relaxed
-        )
-        constraint_score = matched_fields / total_fields if total_fields else 0.0
-        score = dense_score + 0.25 * constraint_score if mode == "BUYING" else 0.85 * dense_score + 0.15 * constraint_score
+        score = structured_score + DENSE_SCORE_WEIGHT * dense_score
         return Candidate(
             parent_asin=asin,
             score=float(score),
             dense_score=float(dense_score),
-            constraint_score=float(constraint_score),
-            matched_constraints=matched,
+            constraint_score=float(structured_score),
+            matched_constraints=matched_constraints,
             violated_constraints=violated,
-            relaxed_constraints=relaxed_labels,
             retrieval_mode=mode,
             attributes=self.product_by_asin[asin].facts,
         )
@@ -577,60 +573,156 @@ class ProductRetriever:
         *,
         limit: int = 100,
         minimum_candidates: int = 50,
+        excluded_asins: Collection[str] | None = None,
+        apply_budget: bool = True,
     ) -> list[Candidate]:
-        """Return one deterministic shared candidate pool for either mode."""
+        """Return one deterministic candidate ranking for either mode.
 
+        The shared ranker accumulates exact structured matches from the
+        inverted indexes. Non-budget fields are scored softly; an active
+        budget is the only eligibility filter.
+        """
+
+        del minimum_candidates
         limit = max(0, int(limit))
         if limit == 0 or not self.product_by_asin:
             return []
         mode = "BUYING" if str(mode).upper() == "BUYING" else "BROWSING"
-        dense_scores = self._dense_scores(query_text)
-        total_fields = len(self._constraint_fields(constraints))
+        excluded = {
+            str(asin).strip()
+            for asin in (excluded_asins or ())
+            if str(asin).strip()
+        }
+        dense_scores = self._dense_scores(query_text) if self.dense_available else {}
+        constraint_fields = self._constraint_fields(constraints)
+        requested_by_field = {
+            field_name: self._constraint_values(constraints, field_name)
+            for field_name in constraint_fields
+            if field_name != "price"
+        }
+        price_min, price_max = self._price_bounds(constraints)
+        price_eligible_asins = self._eligible_asins(constraints)
+        eligible_source = (
+            price_eligible_asins if apply_budget else self._catalog_order
+        )
+        eligible_asins = [
+            asin
+            for asin in eligible_source
+            if asin not in excluded
+        ]
+        price_match_asins = set(price_eligible_asins)
+        eligible_set = set(eligible_asins)
 
-        if mode == "BROWSING":
-            asins = list(self._catalog_order)
-            candidates = [
-                self._candidate(asin, mode, dense_scores.get(asin, 0.0), constraints, set(), total_fields)
-                for asin in asins
-            ]
-            return sorted(
-                candidates,
-                key=lambda item: (
-                    -item.score,
-                    -item.constraint_score,
-                    self.product_by_asin[item.parent_asin].catalog_order,
+        total_weight = sum(
+            STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
+            for field_name in constraint_fields
+        )
+        matched_weight: dict[str, float] = {}
+        matched_fields: dict[str, set[str]] = {}
+        matched_labels: dict[str, list[str]] = {}
+
+        for field_name in constraint_fields:
+            if field_name == "price":
+                field_matches = price_match_asins & eligible_set
+            else:
+                field_matches: set[str] = set()
+                for value in requested_by_field[field_name]:
+                    indexed = self.inverted_index.get(field_name, {}).get(value, set())
+                    if eligible_set is None:
+                        field_matches.update(indexed)
+                        for asin in indexed:
+                            matched_labels.setdefault(asin, []).append(
+                                f"{field_name}:{value}"
+                            )
+                    else:
+                        field_matches.update(indexed & eligible_set)
+                        for asin in indexed:
+                            if asin in eligible_set:
+                                matched_labels.setdefault(asin, []).append(
+                                    f"{field_name}:{value}"
+                                )
+            field_weight = STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
+            for asin in field_matches:
+                matched_weight[asin] = matched_weight.get(asin, 0.0) + field_weight
+                matched_fields.setdefault(asin, set()).add(field_name)
+
+        def structured_score(asin: str) -> float:
+            if total_weight <= 0.0:
+                return 0.0
+            return matched_weight.get(asin, 0.0) / total_weight
+
+        if not constraint_fields and not dense_scores:
+            ranked_asins = eligible_asins[:limit]
+        elif not dense_scores:
+            positive_asins = sorted(
+                matched_weight,
+                key=lambda asin: (
+                    -structured_score(asin),
+                    self.product_by_asin[asin].catalog_order,
+                ),
+            )
+            ranked_asins = positive_asins[:limit]
+            if len(ranked_asins) < limit:
+                selected = set(ranked_asins)
+                ranked_asins.extend(
+                    asin for asin in eligible_asins if asin not in selected
+                )
+                ranked_asins = ranked_asins[:limit]
+        else:
+            ranked_asins = sorted(
+                eligible_asins,
+                key=lambda asin: (
+                    -structured_score(asin),
+                    -dense_scores.get(asin, 0.0),
+                    self.product_by_asin[asin].catalog_order,
                 ),
             )[:limit]
 
-        relaxed: set[str] = set()
-        asins = self._strict_pool(constraints, relaxed)
-        target = min(len(self._catalog_order), max(int(minimum_candidates), limit))
-        relaxation_order = self._relaxation_order(constraints)
-        for field_name in relaxation_order:
-            if len(asins) >= target:
-                break
-            relaxed.add(field_name)
-            asins = self._strict_pool(constraints, relaxed)
+        price_labels: list[str] = []
+        if "price" in constraint_fields:
+            if price_min is not None:
+                price_labels.append(f"price_min:{price_min:g}")
+            if price_max is not None:
+                price_labels.append(f"price_max:{price_max:g}")
 
-        if not asins:
-            # A malformed/partial facts artifact must not turn into an invalid
-            # response. Dense search is the last fallback and remains optional.
-            asins = list(self._catalog_order)
-            relaxed = set(relaxation_order)
+        def labels_for(asin: str) -> tuple[str, ...]:
+            labels = list(matched_labels.get(asin, ()))
+            if "price" in constraint_fields and asin in price_match_asins:
+                labels.extend(price_labels)
+            return tuple(labels)
 
-        candidates = [
-            self._candidate(asin, mode, dense_scores.get(asin, 0.0), constraints, relaxed, total_fields)
-            for asin in asins
+        return [
+            self._candidate(
+                asin,
+                mode,
+                dense_scores.get(asin, 0.0),
+                structured_score(asin),
+                labels_for(asin),
+                matched_fields.get(asin, set()),
+                constraint_fields,
+            )
+            for asin in ranked_asins
         ]
-        return sorted(
-            candidates,
-            key=lambda item: (
-                bool(item.violated_constraints),
-                -item.score,
-                -item.constraint_score,
-                self.product_by_asin[item.parent_asin].catalog_order,
-            ),
-        )[:limit]
+
+    def debug_rank_all(
+        self,
+        mode: str,
+        query_text: str,
+        constraints: object,
+        *,
+        excluded_asins: Collection[str] | None = None,
+        apply_budget: bool = True,
+    ) -> list[Candidate]:
+        """Return the complete ranking using the production scorer."""
+
+        return self.retrieve(
+            mode,
+            query_text,
+            constraints,
+            limit=len(self.product_by_asin),
+            excluded_asins=excluded_asins,
+            apply_budget=apply_budget,
+        )
 
 
 InMemoryRetriever = ProductRetriever

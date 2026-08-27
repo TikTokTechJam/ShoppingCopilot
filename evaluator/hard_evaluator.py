@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from starter.agent import Agent
+from starter.retrieval import STRUCTURED_FIELD_WEIGHTS
 
 
 MAX_TURNS = 10
@@ -423,8 +424,16 @@ def evaluate(
     sessions: Iterable[Mapping[str, Any]],
     catalog_ids: set[str],
     strict: bool = True,
+    before_turn_callback: Any | None = None,
+    after_turn_callback: Any | None = None,
+    session_callback: Any | None = None,
+    validate: bool = True,
 ) -> dict[str, Any]:
-    rows = validate_sessions(sessions, catalog_ids)
+    rows = (
+        validate_sessions(sessions, catalog_ids)
+        if validate
+        else [dict(row) for row in sessions]
+    )
 
     results: list[dict[str, Any]] = []
     prompt_tokens = 0
@@ -475,6 +484,16 @@ def evaluate(
 
                 user_message = str(session["override_message"])
 
+            if before_turn_callback is not None:
+                before_turn_callback(
+                    session=session,
+                    session_id=session_id,
+                    turn=turn,
+                    user_message=user_message,
+                    agent=agent,
+                    override_applied=override_applied,
+                )
+
             try:
                 raw_response = agent.respond(
                     session_id,
@@ -503,6 +522,23 @@ def evaluate(
                 response.get("recommendations"),
                 catalog_ids,
             )
+
+            session_complete = (
+                (override_applied and target in ranked)
+                or turn == MAX_TURNS
+            )
+            if after_turn_callback is not None:
+                after_turn_callback(
+                    session=session,
+                    session_id=session_id,
+                    turn=turn,
+                    user_message=user_message,
+                    response=response,
+                    ranked=ranked,
+                    agent=agent,
+                    override_applied=override_applied,
+                    session_complete=session_complete,
+                )
 
             # Intent Override sessions cannot score before the override.
             if override_applied and target in ranked:
@@ -542,6 +578,13 @@ def evaluate(
                 ),
             }
         )
+
+        if session_callback is not None:
+            session_callback(
+                session=session,
+                result=results[-1],
+                completed_results=results,
+            )
 
     overall = add_score_fields(metric_summary(results))
 
@@ -591,6 +634,426 @@ def rounded_summary(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+DEBUG_FACT_FIELDS = (
+    "category",
+    "brand",
+    "color",
+    "material",
+    "style",
+    "feature",
+    "use_case",
+)
+
+
+def _debug_values(constraints: Any, field_name: str) -> list[str]:
+    value = getattr(constraints, field_name, ())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item) for item in value if str(item).strip()]
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _debug_constraints(state: Any) -> dict[str, Any]:
+    constraints = getattr(state, "constraints", None)
+    if constraints is None:
+        return {}
+
+    payload: dict[str, Any] = {}
+    for field_name in DEBUG_FACT_FIELDS + ("size",):
+        values = _debug_values(constraints, field_name)
+        if values:
+            payload[field_name] = values
+
+    price_min = getattr(constraints, "price_min", None)
+    price_max = getattr(constraints, "price_max", None)
+    budget: dict[str, float] = {}
+    if price_min is not None:
+        budget["min"] = float(price_min)
+    if price_max is not None:
+        budget["max"] = float(price_max)
+    if budget:
+        payload["budget"] = budget
+    return payload
+
+
+def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
+    sessions = getattr(agent, "sessions", None)
+    getter = getattr(sessions, "get", None)
+    if not callable(getter):
+        return {}
+    state = getter(session_id)
+    return {
+        "constraints": _debug_constraints(state),
+        "mode": getattr(state, "mode", None),
+        "excluded": sorted(
+            str(value)
+            for value in getattr(state, "excluded_recommendations", set())
+        ),
+        "last": list(getattr(state, "last_recommendations", ())),
+    }
+
+
+def _debug_target_facts(agent: Any, target: str) -> dict[str, Any]:
+    retriever = getattr(agent, "retriever", None)
+    products = getattr(retriever, "product_by_asin", {})
+    product = products.get(target)
+    if product is None:
+        return {"available": False}
+
+    facts = {
+        field_name: list(product.facts.get(field_name, ()))
+        for field_name in DEBUG_FACT_FIELDS
+    }
+    facts["price"] = product.price
+
+    annotation_facts = getattr(retriever, "_facts_by_asin", {})
+    if target not in annotation_facts:
+        facts["annotation_note"] = (
+            "V4 semantic annotation missing; showing available catalog facts only."
+        )
+    return facts
+
+
+def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[str, Any]:
+    state = agent.sessions.get(session_id)
+    retriever = agent.retriever
+    rank_all = getattr(retriever, "debug_rank_all", None)
+    if not callable(rank_all):
+        raise RuntimeError("ProductRetriever.debug_rank_all is required in debug mode")
+
+    mode = getattr(state, "mode", None) or "BROWSING"
+    query_text = getattr(state, "query_text", "")
+    constraints = getattr(state, "constraints", None)
+    exclusions = getattr(state, "excluded_recommendations", set())
+
+    eligible = rank_all(
+        mode,
+        query_text,
+        constraints,
+        excluded_asins=exclusions,
+        apply_budget=True,
+    )
+    global_ranking = rank_all(
+        mode,
+        query_text,
+        constraints,
+        excluded_asins=None,
+        apply_budget=False,
+    )
+    return {
+        "eligible": eligible,
+        "global": global_ranking,
+        "target_eligible": next(
+            (candidate for candidate in eligible if candidate.parent_asin == target),
+            None,
+        ),
+        "target_global": next(
+            (candidate for candidate in global_ranking if candidate.parent_asin == target),
+            None,
+        ),
+    }
+
+
+def _debug_rank(candidates: list[Any], target: str) -> int | None:
+    for index, candidate in enumerate(candidates, 1):
+        if candidate.parent_asin == target:
+            return index
+    return None
+
+
+def _debug_print_breakdown(constraints: Any, candidate: Any) -> None:
+    print("TARGET MATCH BREAKDOWN")
+    if candidate is None:
+        print("No target candidate was available.")
+        return
+
+    labels = set(candidate.matched_constraints)
+    active_fields = [
+        field_name
+        for field_name in STRUCTURED_FIELD_WEIGHTS
+        if (
+            field_name == "price"
+            and (
+                getattr(constraints, "price_min", None) is not None
+                or getattr(constraints, "price_max", None) is not None
+            )
+        )
+        or field_name != "price" and _debug_values(constraints, field_name)
+    ]
+    total_weight = sum(STRUCTURED_FIELD_WEIGHTS[field] for field in active_fields)
+
+    for field_name in active_fields:
+        weight = STRUCTURED_FIELD_WEIGHTS[field_name]
+        if field_name == "price":
+            price_min = getattr(constraints, "price_min", None)
+            price_max = getattr(constraints, "price_max", None)
+            bounds: list[str] = []
+            if price_min is not None:
+                bounds.append(f"min={float(price_min):g}")
+            if price_max is not None:
+                bounds.append(f"max={float(price_max):g}")
+            matched = "price:required" not in candidate.violated_constraints
+            status = "PASS" if matched else "MISS"
+            contribution = weight if matched else 0.0
+            print(
+                f"budget:{', '.join(bounds)}    {status}    "
+                f"+{contribution:.2f}"
+            )
+            continue
+
+        field_matched = False
+        for value in _debug_values(constraints, field_name):
+            label = f"{field_name}:{value}"
+            matched = label in labels
+            contribution = weight if matched and not field_matched else 0.0
+            if matched:
+                field_matched = True
+            status = "MATCH" if matched else "MISS"
+            print(f"{label}    {status}    +{contribution:.2f}")
+
+    raw_score = float(candidate.constraint_score) * total_weight
+    print(f"Structured raw total: {raw_score:.4f}")
+    print(f"Structured normalized: {float(candidate.constraint_score):.4f}")
+
+
+def _debug_print_metrics(results: list[Mapping[str, Any]]) -> None:
+    metrics = add_score_fields(metric_summary(results))
+    print(f"Completed sessions: {len(results)}")
+    print(f"HitRate@10:      {float(metrics['hit_rate_at_10']):.4f}")
+    print(f"MRR:             {float(metrics['mrr']):.4f}")
+    print(f"MTTC:            {float(metrics['mttc']):.4f}")
+    print(f"Efficiency:      {float(metrics['efficiency']):.4f}")
+    print(f"TechnicalScore:  {float(metrics['technical_score']):.4f}")
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for result in results:
+        grouped[str(result["scenario_type"])].append(dict(result))
+    print("Scenario running metrics:")
+    for scenario in SCENARIO_COUNTS:
+        scenario_results = grouped.get(scenario, [])
+        if not scenario_results:
+            continue
+        scenario_metrics = add_score_fields(metric_summary(scenario_results))
+        print(
+            f"  {scenario}: HitRate@10={float(scenario_metrics['hit_rate_at_10']):.4f} "
+            f"MRR={float(scenario_metrics['mrr']):.4f} "
+            f"MTTC={float(scenario_metrics['mttc']):.4f} "
+            f"TechnicalScore={float(scenario_metrics['technical_score']):.4f}"
+        )
+
+
+class InteractiveDebugPrinter:
+    def __init__(
+        self,
+        agent: Any,
+        catalog_ids: set[str],
+        input_fn: Any | None = None,
+    ) -> None:
+        self.agent = agent
+        self.catalog_ids = catalog_ids
+        self.input_fn = input_fn
+        self.before_states: dict[tuple[str, int], dict[str, Any]] = {}
+        self.first_hits: dict[str, int] = {}
+
+    def _pause(self, prompt: str) -> None:
+        if self.input_fn is None:
+            input(prompt)
+        else:
+            self.input_fn(prompt)
+
+    def before_turn(self, **kwargs: Any) -> None:
+        self.before_states[
+            (str(kwargs["session_id"]), int(kwargs["turn"]))
+        ] = _debug_state_snapshot(
+            kwargs["agent"],
+            str(kwargs["session_id"]),
+        )
+
+    def after_turn(self, **kwargs: Any) -> None:
+        session = kwargs["session"]
+        session_id = str(kwargs["session_id"])
+        turn = int(kwargs["turn"])
+        user_message = str(kwargs["user_message"])
+        response = kwargs["response"]
+        ranked = list(kwargs["ranked"])
+        agent = kwargs["agent"]
+        target = str(session["target_asin"])
+        override_applied = bool(kwargs["override_applied"])
+        state = agent.sessions.get(session_id)
+        scenario = str(session["scenario_type"])
+        override_turn = session.get("override_turn")
+        override_detected = (
+            scenario == "intent_override"
+            and override_turn is not None
+            and turn == int(override_turn)
+        )
+
+        print()
+        print("=" * 60)
+        print(f"Session: {session['sample_id']}")
+        print(f"Scenario: {scenario.upper()}")
+        print(f"Turn: {turn}")
+        print("=" * 60)
+        print("USER:")
+        print(user_message)
+        print()
+        print("AGENT CONSTRAINTS SO FAR")
+        print(json.dumps(_debug_constraints(state), indent=2, ensure_ascii=False))
+        print(f"Intent mode: {getattr(state, 'mode', None) or 'BROWSING'}")
+        print()
+        snapshot = _debug_state_snapshot(agent, session_id)
+        excluded = snapshot.get("excluded", [])
+        print("EXCLUDED FROM PREVIOUS FAILED TURNS:")
+        print(f"Count: {len(excluded)}")
+        if len(excluded) <= 20:
+            print(f"Excluded products: {excluded}")
+        print(f"Last recommendations: {snapshot.get('last', [])}")
+        print()
+        print("TARGET PRODUCT")
+        print(f"ASIN: {target}")
+        print("TARGET FACTS")
+        print(json.dumps(_debug_target_facts(agent, target), indent=2, ensure_ascii=False))
+        print()
+        print(f"OVERRIDE DETECTED: {'YES' if override_detected else 'NO'}")
+        if override_detected:
+            before = self.before_states.get((session_id, turn), {})
+            print("Constraints before reset:")
+            print(json.dumps(before.get("constraints", {}), indent=2, ensure_ascii=False))
+            print("Constraints after reset:")
+            print(json.dumps(snapshot.get("constraints", {}), indent=2, ensure_ascii=False))
+            print(f"Recommendation exclusions before: {before.get('excluded', [])}")
+            print(f"Recommendation exclusions after: {snapshot.get('excluded', [])}")
+        ranking = _debug_ranking_snapshot(agent, session_id, target)
+        eligible = ranking["eligible"]
+        global_ranking = ranking["global"]
+        target_eligible = ranking["target_eligible"]
+        target_global = ranking["target_global"]
+        eligible_rank = _debug_rank(eligible, target)
+        global_rank = _debug_rank(global_ranking, target)
+        budget_active = bool(
+            getattr(state.constraints, "price_min", None) is not None
+            or getattr(state.constraints, "price_max", None) is not None
+        )
+        print()
+        print("TARGET RANKING")
+        if budget_active and target_eligible is None:
+            print("Global rank: N/A")
+            print("Reason: violates active budget")
+        elif global_rank is None:
+            print("Global rank: N/A")
+        else:
+            print(f"Global rank: {global_rank} / {len(global_ranking)}")
+        if eligible_rank is None:
+            print("Eligible rank: N/A")
+            if not budget_active and target_global is not None:
+                print("Reason: excluded by current-goal recommendation history")
+        else:
+            print(f"Eligible rank: {eligible_rank} / {len(eligible)}")
+        target_candidate = target_eligible or target_global
+        if target_candidate is not None:
+            print(f"Structured score: {target_candidate.constraint_score:.4f}")
+            print(f"Dense score: {target_candidate.dense_score:.4f}")
+            print(f"Final score: {target_candidate.score:.4f}")
+        else:
+            print("Target score: N/A")
+        top10_rank = ranked.index(target) + 1 if target in ranked else None
+        print(f"Top10 rank: {top10_rank if top10_rank is not None else 'MISS'}")
+
+        print()
+        print("TOP 10")
+        candidate_by_asin = {candidate.parent_asin: candidate for candidate in eligible}
+        for index, asin in enumerate(ranked[:TOP_K], 1):
+            candidate = candidate_by_asin.get(asin)
+            if candidate is None:
+                print(f"{index}. {asin} (score unavailable)")
+                continue
+            print(
+                f"{index}. {asin} score={candidate.score:.4f} "
+                f"structured={candidate.constraint_score:.4f} "
+                f"dense={candidate.dense_score:.4f}"
+            )
+            print(f"   matched={list(candidate.matched_constraints)}")
+
+        print()
+        _debug_print_breakdown(state.constraints, target_candidate)
+        print()
+        print("TURN RESULT")
+        scoreable_hit = bool(override_applied and top10_rank is not None)
+        if top10_rank is not None:
+            suffix = "" if scoreable_hit else " (not scoreable before override)"
+            print(f"Target in Top10: YES{suffix}")
+            print(f"Target Top10 rank: {top10_rank}")
+        else:
+            print("Target in Top10: NO")
+            print("Target Top10 rank: MISS")
+        if scoreable_hit:
+            if session_id not in self.first_hits:
+                self.first_hits[session_id] = turn
+            print(f"Reciprocal rank: {1.0 / top10_rank:.4f}")
+            print(f"First successful turn: {self.first_hits[session_id]}")
+        else:
+            print("Reciprocal rank: 0.0000")
+            print(
+                f"First successful turn: "
+                f"{self.first_hits.get(session_id, '-')}"
+            )
+        print(f"Turn number: {turn}")
+        self._pause("[Press ENTER for next turn]")
+
+    def session_complete(self, **kwargs: Any) -> None:
+        print()
+        print("SESSION RESULT")
+        print(json.dumps(kwargs["result"], indent=2, ensure_ascii=False))
+        print()
+        print("RUNNING DEBUG BENCHMARK")
+        _debug_print_metrics(list(kwargs["completed_results"]))
+        self._pause("[Press ENTER for next random session]")
+
+
+def debug_session_order(
+    sessions: Iterable[Mapping[str, Any]],
+    *,
+    seed: int | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    if limit is not None and limit <= 0:
+        raise ValueError("debug session limit must be positive")
+    rows = [dict(session) for session in sessions]
+    random.Random(seed).shuffle(rows)
+    return rows if limit is None else rows[:limit]
+
+
+def debug_evaluate(
+    agent: Any,
+    sessions: Iterable[Mapping[str, Any]],
+    catalog_ids: set[str],
+    *,
+    seed: int | None = None,
+    debug_sessions: int | None = None,
+    strict: bool = True,
+    input_fn: Any | None = None,
+) -> dict[str, Any]:
+    rows = validate_sessions(sessions, catalog_ids)
+    selected = debug_session_order(rows, seed=seed, limit=debug_sessions)
+    seed_label = str(seed) if seed is not None else "random"
+    print(
+        f"Interactive hard-benchmark debug mode: "
+        f"{len(selected)} session(s), seed={seed_label}"
+    )
+    printer = InteractiveDebugPrinter(agent, catalog_ids, input_fn=input_fn)
+    return evaluate(
+        agent=agent,
+        sessions=selected,
+        catalog_ids=catalog_ids,
+        strict=strict,
+        before_turn_callback=printer.before_turn,
+        after_turn_callback=printer.after_turn,
+        session_callback=printer.session_complete,
+        validate=False,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate starter.agent.Agent against the fixed GPTAnnotation sessions."
@@ -615,12 +1078,45 @@ def main() -> None:
         action="store_true",
         help="Treat malformed Agent responses as empty instead of failing.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Interactively inspect randomly ordered benchmark sessions.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Random seed for debug session order; only valid with --debug.",
+    )
+    parser.add_argument(
+        "--debug-sessions",
+        type=int,
+        help="Number of random sessions to inspect; only valid with --debug.",
+    )
     args = parser.parse_args()
 
     sessions = load_jsonl(args.sessions)
     catalog_ids = load_catalog_ids(args.catalog)
 
+    if not args.debug and (args.seed is not None or args.debug_sessions is not None):
+        parser.error("--seed and --debug-sessions require --debug")
+    if args.debug_sessions is not None and args.debug_sessions <= 0:
+        parser.error("--debug-sessions must be positive")
+
     agent = Agent(args.catalog)
+    if args.debug:
+        try:
+            debug_evaluate(
+                agent=agent,
+                sessions=sessions,
+                catalog_ids=catalog_ids,
+                seed=args.seed,
+                debug_sessions=args.debug_sessions,
+                strict=not args.non_strict,
+            )
+        except (KeyboardInterrupt, EOFError):
+            print("\nInteractive debug mode stopped.")
+        return
 
     result = evaluate(
         agent=agent,
