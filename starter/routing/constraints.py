@@ -449,6 +449,8 @@ from pathlib import Path as _Path
 from typing import Callable as _Callable, Iterable as _Iterable, Mapping as _Mapping
 
 from dictionary.registry import AttributeDictionary as _AttributeDictionary
+from dictionary.registry import ATTRIBUTE_FIELDS as _DICTIONARY_ATTRIBUTES
+from dictionary.registry import CanonicalValue as _CanonicalValue
 from dictionary.registry import LookupMatch as _LookupMatch
 from dictionary.registry import normalize_text as _normalize_dictionary_text
 
@@ -498,6 +500,31 @@ class _SemanticCandidate:
 
 
 SemanticMatcher = _Callable[[str], _Iterable[object]]
+
+
+# Ambiguous exact surfaces are resolved only when the evidence is strong. The
+# values are centralized so the policy is easy to audit and test.
+AMBIGUITY_MIN_TOP_SHARE = 0.75
+AMBIGUITY_MIN_COUNT_RATIO = 3.0
+AMBIGUITY_CONTEXT_WINDOW = 3
+
+_AMBIGUITY_CONTEXT_CUES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "brand": (("brand",),),
+    "color": (("color",), ("colour",), ("in",)),
+    "material": (
+        ("material",),
+        ("fabric",),
+        ("made", "of"),
+        ("made", "from"),
+        ("made", "with"),
+    ),
+    "style": (("style",), ("fit",)),
+    "feature": (("feature",), ("features",)),
+    "use_case": (("for",), ("for", "use"), ("use", "for"), ("good", "for")),
+}
+_SHOPPING_FOR_CONTEXT_BLOCKERS = frozenset(
+    {"find", "looking", "need", "searching", "shopping", "show", "want"}
+)
 
 
 _RESIDUAL_STOPWORDS = frozenset(
@@ -596,6 +623,147 @@ def _dictionary_surface_matches(
     )
 
 
+def _utterance_tokens(value: str) -> tuple[tuple[str, int, int], ...]:
+    """Tokenize a message with dictionary normalization and source offsets."""
+
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    apostrophes = {"'", "’", "ʼ", "＇"}
+    found_tokens: list[tuple[str, int, int]] = []
+    current: list[str] = []
+    start: int | None = None
+
+    def finish(end: int) -> None:
+        nonlocal current, start
+        if current and start is not None:
+            token = _normalize_dictionary_text("".join(current))
+            if token:
+                found_tokens.append((token, start, end))
+        current = []
+        start = None
+
+    for index, character in enumerate(folded):
+        if character.isalnum():
+            if start is None:
+                start = index
+            current.append(character)
+        elif (
+            character in apostrophes
+            and start is not None
+            and index + 1 < len(folded)
+            and folded[index + 1].isalnum()
+        ):
+            # Keep a word such as Levi's as one lexical token.
+            continue
+        else:
+            finish(index)
+    finish(len(folded))
+    return tuple(found_tokens)
+
+
+def _has_context_cue(
+    token_values: tuple[str, ...],
+    span_index: int,
+    cue: tuple[str, ...],
+    *,
+    before: bool,
+) -> bool:
+    if before:
+        start = max(0, span_index - AMBIGUITY_CONTEXT_WINDOW)
+        end = span_index
+        window = token_values[start:end]
+        offset = start
+    else:
+        start = span_index + 1
+        end = min(len(token_values), start + AMBIGUITY_CONTEXT_WINDOW)
+        window = token_values[start:end]
+        offset = start
+    width = len(cue)
+    for index in range(0, len(window) - width + 1):
+        if window[index : index + width] != cue:
+            continue
+        absolute_index = offset + index
+        if (
+            cue == ("for",)
+            and absolute_index > 0
+            and token_values[absolute_index - 1] in _SHOPPING_FOR_CONTEXT_BLOCKERS
+        ):
+            continue
+        return True
+    return False
+
+
+def _context_attributes(
+    text: str,
+    match: _SpanMatch,
+    candidates: tuple[_CanonicalValue, ...],
+) -> tuple[str, ...]:
+    """Return candidate attributes supported by nearby lexical cues."""
+
+    tokens = _utterance_tokens(text)
+    span_indices = [
+        index
+        for index, (_, start, end) in enumerate(tokens)
+        if start >= match.start and end <= match.end
+    ]
+    if not span_indices:
+        return ()
+    first_span_index = span_indices[0]
+    last_span_index = span_indices[-1]
+    token_values = tuple(token[0] for token in tokens)
+    candidate_attributes = {candidate.attribute for candidate in candidates}
+    found: list[str] = []
+    for attribute in _DICTIONARY_ATTRIBUTES:
+        if attribute not in candidate_attributes:
+            continue
+        cues = _AMBIGUITY_CONTEXT_CUES.get(attribute, ())
+        if any(
+            _has_context_cue(token_values, first_span_index, cue, before=True)
+            or (
+                attribute != "use_case"
+                and _has_context_cue(token_values, last_span_index, cue, before=False)
+            )
+            for cue in cues
+        ):
+            found.append(attribute)
+    return tuple(found)
+
+
+def _resolve_ambiguous_dictionary_match(
+    text: str,
+    match: _SpanMatch,
+    dictionary: _AttributeDictionary,
+) -> _CanonicalValue | None:
+    candidates = dictionary.get_candidates(match.raw_text)
+    if len(candidates) == 1:
+        return candidates[0]
+
+    context_attributes = _context_attributes(text, match, candidates)
+    if len(context_attributes) == 1:
+        attribute = context_attributes[0]
+        return next(candidate for candidate in candidates if candidate.attribute == attribute)
+
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (
+            -candidate.count,
+            _DICTIONARY_ATTRIBUTES.index(candidate.attribute),
+            candidate.canonical_id,
+        ),
+    )
+    if len(ranked) < 2:
+        return None
+    total = sum(candidate.count for candidate in ranked)
+    top, second = ranked[0], ranked[1]
+    top_share = top.count / total
+    count_ratio = top.count / second.count
+    if (
+        top_share >= AMBIGUITY_MIN_TOP_SHARE
+        and count_ratio >= AMBIGUITY_MIN_COUNT_RATIO
+    ):
+        return top
+    return None
+
+
 def _residual_phrase(text: str, claimed: list[tuple[int, int]]) -> str:
     remaining = list(text)
     for start, end in claimed:
@@ -668,10 +836,13 @@ def _extract_dictionary_constraints(
         if any(match.start < end and match.end > start for start, end in claimed):
             continue
         claimed.append((match.start, match.end))
-        if len(match.canonical_ids) != 1:
-            unmapped.add(match.raw_text.strip().lower())
-            continue
-        entry = dictionary.get(match.canonical_ids[0])
+        if len(match.canonical_ids) == 1:
+            entry = dictionary.get(match.canonical_ids[0])
+        else:
+            entry = _resolve_ambiguous_dictionary_match(text, match, dictionary)
+            if entry is None:
+                unmapped.add(match.raw_text.strip().lower())
+                continue
         if entry is None:
             continue
         if entry.value not in values[entry.attribute]:

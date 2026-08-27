@@ -36,8 +36,11 @@ normalized:    "moisture wicking"
 ```
 
 Machine IDs are attribute-scoped and derived from the normalized surface. A
-normalized surface can map to more than one attribute; ambiguous matches are
-left unresolved by the runtime rather than assigned arbitrarily.
+normalized surface can map to more than one attribute. The runtime resolves
+those exact matches conservatively: explicit nearby attribute wording is preferred,
+then catalog-count dominance is accepted only when the leading attribute owns at
+least 75% of the candidate count and is at least 3 times the runner-up. Otherwise
+the surface remains unresolved rather than being assigned arbitrarily.
 
 Normalization is lexical only. It applies Unicode NFKC and case folding,
 converts separators to spaces, removes apostrophes inside words, collapses
