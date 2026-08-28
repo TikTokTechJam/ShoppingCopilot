@@ -10,9 +10,9 @@ Shopping Copilot runs over a frozen catalog of roughly 50,000 products. The runt
 
 The design optimizes for the competition objective:
 
-- return the best current Top-K recommendations on every scoreable turn;
-- find the exact target `parent_asin` as early and as high in the ranking as possible;
-- ask at most one useful structured clarification per turn;
+- release a Top-K ranking only once it is confident, because releasing it ends the session;
+- find the exact target `parent_asin` and place it as high in the released ranking as possible;
+- ask at most one useful structured clarification per withheld turn;
 - preserve good candidates while the user is still clarifying intent;
 - treat Buying as precision-first and Browsing as recall-first;
 - keep hidden evaluator information completely outside Agent logic.
@@ -980,17 +980,24 @@ Size and measurements should use typed structured indexes rather than pretending
 
 No Postgres, external vector database, or distributed serving layer is required for the first MVP.
 
-## 12. Per-turn recommendation and clarification strategy
+## 12. Per-turn gating and clarification strategy
 
-Every scoreable turn produces a candidate ranking, so recommendation output is decoupled from turn termination. The turn does not choose between recommending and asking; it does both, from one candidate pool, on two parallel paths.
+Emitting a Top-K list ends the session. The turn therefore does not do both things at once: it either releases the ranking and terminates, or it withholds the ranking and spends the turn on one clarification question. The Agent acts as a **gatekeeper** over a single candidate pool, holding the list back until the ranking is confident enough that the target is expected to land at rank 1–3, and releasing it as soon as another question is unlikely to pay for its turn.
 
-This alignment is deliberate:
+The objective this serves is the weighted competition score:
 
 ```text
-Hit Rate@10 + MRR   the user receives a ranked Top-K at turn 1, so a session can
-                    hit before any clarification is answered
-MTTC                a high-confidence top candidate can be presented directly with
-                    an optional prompt, letting the user stop or keep refining
+technical_score = 0.50 * HitRate@10 + 0.30 * MRR + 0.20 * Efficiency
+```
+
+That weighting is what makes gating worth its cost. Hit Rate@10 is already satisfied by a pool that still contains the target, so the marginal value of an extra turn is concentrated in MRR: moving the target from rank 10 to rank 1–3 is worth substantially more than the Efficiency the turn consumes, but only while the pool is still ambiguous. Once it is not, the turn is pure loss.
+
+```text
+HitRate@10   protected by never truncating the pool on an unresolved or
+             declined attribute
+MRR          earned by releasing only once the leader is separated
+Efficiency   protected by releasing immediately when the pool is already
+             small enough, or when no further question can pay for itself
 ```
 
 ```text
@@ -1009,29 +1016,59 @@ MTTC                a high-confidence top candidate can be presented directly wi
               |             attribute A*      |
               +---------------+---------------+
                               |
-              +---------------+---------------+
-              |                               |
-              v                               v
-     PATH A: RERANKING              PATH B: QUESTION SELECTOR
-     score every i in C_t           expected information gain
-     Score(i) = w1*S_sem            IG(A_k, C_t) over unasked
-              + w2*S_qual           askable attributes
-              + w3*S_price          A* = argmax Score(A_k)
-              |                               |
-              v                               v
-     Top-K recommendations          follow-up question on A*
-              |                               |
+                              v
+              +-------------------------------+
+              | RERANK C_t                    |
+              |  Score(i) = w1*S_sem          |
+              |           + w2*S_qual         |
+              |           + w3*S_price        |
+              |  sort -> [i_1, i_2, ..., i_K] |
               +---------------+---------------+
                               |
                               v
-                   combined turn response
-                   - Top-K recommendations
-                   - at most one follow-up question
+                   /----------------------\
+                  <   GateReady(C_t, t) ?   >
+                   \----------------------/
+                              |
+              +---------------+---------------+
+            TRUE                            FALSE
+              |                               |
+              v                               v
+     RELEASE AND TERMINATE          WITHHOLD AND ASK
+     expose final Top-K             hold the ranking back
+     ask_attribute = null           expected information gain
+     session ends                   IG(A_k, C_t) over unasked
+                                    askable attributes
+                                    A* = argmax Score(A_k)
+                                    ask one question on A*
 ```
 
-### 12.1 Candidate pool maintenance
+### 12.1 Confidence gate
 
-The pool `C_t` is the single population both paths read. It carries forward across turns rather than being rebuilt from scratch.
+After reranking on turn `t`, the gate reads three quantities off the sorted pool `C_t`.
+
+```text
+Score(i_1)      score of the leading candidate
+dS_1            top-item margin, Score(i_1) - Score(i_2)
+rho             top-K separation ratio, Score(i_1) / Score(i_K)
+```
+
+The margin `dS_1` measures whether the leader is actually separated from its nearest rival, which is what MRR pays for. The separation ratio `rho` measures whether the tail of the released list is meaningfully worse than its head, which distinguishes a converged ranking from a flat one that merely happens to have an ordering. A flat pool with a nominally high leading score is not confident; it is under-constrained, and another question is cheap relative to the MRR still on the table.
+
+```text
+GateReady(C_t, t) = true   if |C_t| <= top_k
+                  = true   if t == MAX_TURNS
+                  = true   if Score(i_1) >= tau_high AND dS_1 >= delta_margin
+                  = false  otherwise
+```
+
+The first condition is exhaustion: the pool can be enumerated in full, so no question can remove anything the list would not already contain. The second is the turn budget, and it is unconditional — the final turn must always release, because a withheld list scores nothing. The third is the confidence condition proper. `rho` enters as a calibration diagnostic and may tighten `tau_high` where the released tail is flat, but it must not by itself hold a separated leader back.
+
+The gate also releases whenever no live attribute remains under section 12.5, or when no further reply can arrive. Withholding is only justified by a question that can actually be asked and answered.
+
+### 12.2 Candidate pool maintenance
+
+The pool `C_t` is the single population the ranking and the question selector both read. It carries forward across turns rather than being rebuilt from scratch.
 
 **Turn 1 — initial category.** Hard filter the catalog on `category` using the Layer 1 exact index, then soft rank by Layer 2 multi-view similarity against the session semantic query, including any `preference_tags` resolved from the profile. The result is `C_1`.
 
@@ -1044,13 +1081,15 @@ no preference       C_t = C_(t-1), attribute A* retired for the session
 
 Exact filtering is bounded by the trust rules in section 10.1: only fields whose semantics and coverage make elimination safe may remove candidates, and absence of a sparse annotation is not contradiction. When an exact match would leave fewer than `top_k` candidates, fall back to soft filtering via attribute-scoped Layer 2 similarity rather than exhausting the pool. This is the same controlled relaxation described in section 10.2, applied at pool-update time.
 
+Because the session may run several turns before anything is released, pool preservation matters more here than under an always-recommend policy: a candidate wrongly eliminated on turn 2 cannot be recovered by a later turn's ranking. A declined attribute must therefore never narrow the pool.
+
 A reply that declines to state a preference must be recognized before constraint extraction runs. Such replies routinely name the attribute itself, so extracting them would invent a constraint from a refusal. A declining reply must not become a constraint, must not enter the semantic query text feeding Layer 2, and must retire the attribute for the rest of the session.
 
 An intent override is not a clarification reply. It retires the stale constraints it contradicts, but preferences gathered before the override remain valid, and attributes already spent remain spent.
 
-### 12.2 Path A — Top-K reranking
+### 12.3 Candidate reranking
 
-Rerank the active pool on every turn:
+Rerank the active pool on every turn, whether or not the turn will release it. The gate reads the ranking, so the ranking is computed first and unconditionally.
 
 ```text
 FinalScore(i) = w1 * S_semantic(i)
@@ -1067,13 +1106,21 @@ S_quality         catalog quality signal, principally average_rating and
 S_price_affinity  agreement with a stated or inferred budget
 ```
 
-Sort `C_t` descending by `FinalScore(i)` and return the first `top_k` items. Weights are benchmark-tuned and must not be hard-coded into this document.
+Sort `C_t` descending by `FinalScore(i)` to obtain `[i_1, i_2, ..., i_K]`. Weights are benchmark-tuned and must not be hard-coded into this document.
+
+Scores entering the gate must be comparable across turns. `dS_1` and `rho` are read off the same scale on every turn, so a scoring change that shifts the scale invalidates `tau_high` and `delta_margin` and requires recalibration under section 12.7.
 
 Roughly one fifth of the frozen catalog carries a price, so `S_price_affinity` is a tie-break among priced candidates only. A stated budget must not become a hard filter and must never penalize a product whose price is unknown; eliminating unpriced products would discard most of the catalog along with plausible targets.
 
-### 12.3 Path B — next-question selection
+### 12.4 Branch A — release and terminate
 
-In parallel with Path A, score every remaining askable attribute by the expected information gain of learning its value over the live pool:
+When `GateReady(C_t, t)` is true, the turn returns the first `top_k` items of the sorted pool with `ask_attribute` set to `null`, and the session ends.
+
+Release is final. There is no partial or provisional list, and nothing further is asked once the list is out, so the branch is taken only when the ranking is worth locking in — either because it is confident, or because the pool cannot be pruned further, or because the turn budget is exhausted and holding back would forfeit the session entirely.
+
+### 12.5 Branch B — withhold and ask
+
+When `GateReady(C_t, t)` is false, the ranking is withheld and the turn spends itself on one question. Score every remaining askable attribute by the expected information gain of learning its value over the live pool:
 
 ```text
 IG(A_k, C_t) = H(C_t) - sum_v ( |C_t,A_k=v| / |C_t| ) * H(C_t,A_k=v)
@@ -1096,9 +1143,9 @@ turn 2+     distribution restricted to the live candidate pool C_t
 
 The global table is built once at startup and cached. It exists because turn 1 is both the highest-leverage question and the one where pool-conditioned statistics are least reliable: the initial pool is wide and weakly ordered, so its split quality is mostly noise. Two askable attributes are absent from the canonical registry, because `price` remains numeric and `size` remains a structured runtime constraint; their distributions come from catalog price coverage and the Tier 1 structured size-label index respectively.
 
-Entropy over value counts overstates attributes whose answers cannot eliminate candidates. Section 3 forbids `style`, `feature`, and `use_case` from removing candidates at all, and section 10.1 forbids pushing unannotated candidates down, so for those attributes `IG` must be read as expected reordering bounded by annotation coverage inside `C_t`, not as expected pool reduction. An attribute whose answers land in unresolved residual text, or whose channel cannot act on them, is worth less than its raw split suggests.
+Entropy over value counts overstates attributes whose answers cannot eliminate candidates. Section 3 forbids `style`, `feature`, and `use_case` from removing candidates at all, and section 10.1 forbids pushing unannotated candidates down, so for those attributes `IG` must be read as expected reordering bounded by annotation coverage inside `C_t`, not as expected pool reduction. An attribute whose answers land in unresolved residual text, or whose channel cannot act on them, is worth less than its raw split suggests. Under gating this correction carries real cost: an attribute that cannot move the ranking buys a turn of Efficiency for nothing, because the list stays withheld either way.
 
-### 12.4 Asking discipline
+**Asking discipline.**
 
 ```text
 live(a)  =  a is supported by the response contract
@@ -1107,43 +1154,41 @@ live(a)  =  a is supported by the response contract
          &  a has not been reported as having no preference
 ```
 
-Ask the highest-scoring live attribute. Weak split quality should demote an attribute rather than veto it: a turn that asks nothing yields nothing, so declining to ask while a live attribute remains forfeits the turn's information for no compensating gain.
+Ask the highest-scoring live attribute. Weak split quality should demote an attribute rather than veto it: within Branch B the turn is already committed, so declining to ask while a live attribute remains forfeits the turn's information for no compensating gain. If no live attribute remains, the gate releases under section 12.1 rather than returning an empty turn.
 
-At most one attribute is asked per turn, and asking never replaces or shortens the Top-K. The prose in `message` is a human-facing courtesy; `ask_attribute` is the structured signal, and the two must agree.
+At most one attribute is asked per turn. The prose in `message` is a human-facing courtesy; `ask_attribute` is the structured signal, and the two must agree.
 
 The attribute that was asked is known, so the reply is resolved with that field pinned rather than re-classified from scratch. Field-pinned resolution follows the attribute-scoped policy in section 6: exact and normalized canonical matching first, high-threshold semantic fallback where the attribute permits it, numeric parsing for price and measurements, and residual text as the last resort. A resolved answer is routed to the channel matching its tier per section 8. Because Layer 1 and Layer 2 are independent paths that meet only at ranking, a constraint enforced at Layer 1 also remains present in the session query text feeding Layer 2; ranking must account for that double representation rather than treating the two contributions as independent evidence.
 
-### 12.5 Turn output
+### 12.6 Turn output
 
-Both paths converge into the single response defined by the Agent contract in section 13. Path A fills `recommendations`; Path B fills `ask_attribute` and the question text in `message`:
+Both branches emit the single response shape defined by the Agent contract in section 13. Branch A fills `recommendations` and leaves `ask_attribute` null; Branch B fills `ask_attribute` and the question text in `message`, and leaves `recommendations` empty.
 
 ```json
 {
   "message": "To narrow this down further, do you have a specific color preference?",
   "ask_attribute": "color",
+  "recommendations": []
+}
+```
+
+```json
+{
+  "message": "Here are the best matches I found.",
+  "ask_attribute": null,
   "recommendations": [
     {"parent_asin": "B0BZWZSM7D"}
   ]
 }
 ```
 
-Internal candidate records may carry rank, score, price, and rating for debugging and evaluation, but the published response shape is the one in section 13 and does not change.
-
-### 12.6 Early exit
-
-Because a Top-K is returned every turn, the conversation can terminate as soon as the ranking is confident enough that another question is unlikely to pay for its turn:
-
-```text
-FinalScore(i_1) >= tau_confidence    OR    |C_t| <= top_k
-```
-
-When either condition holds, return the Top-K with `ask_attribute` set to `null`. The pool is already small enough to enumerate, or the leader is already separated enough that further narrowing has little left to recover — in both cases the remaining turns are spent rather than saved. Withholding the question also follows when no live attribute remains or no further reply can arrive.
-
-`tau_confidence` is benchmark-tuned. It trades MTTC against Hit Rate@10 and MRR directly and must be measured, not assumed.
+Internal candidate records may carry rank, score, price, and rating for debugging and evaluation, and the withheld ranking is retained in session state, but the published response shape is the one in section 13 and does not change.
 
 ### 12.7 Calibration and boundaries
 
-`IG` is derived from catalog artifacts and is stable between runs. The reranking weights, `lambda`, and `tau_confidence` are calibration constants measured by replaying the benchmark, and must be re-measured when the catalog, the annotation pass, the embedding views, or the evaluation harness changes.
+`IG` is derived from catalog artifacts and is stable between runs. The reranking weights, `lambda`, `tau_high`, and `delta_margin` are calibration constants measured by replaying the benchmark, and must be re-measured when the catalog, the annotation pass, the embedding views, the scoring scale, or the evaluation harness changes.
+
+`tau_high` and `delta_margin` set the whole trade: raising them buys MRR with Efficiency and risks running out the turn budget, lowering them releases flat rankings early. They trade the three metrics against each other directly and must be measured, not assumed. Diagnostics should report the release-turn distribution and the target's rank at release, since a gate that releases confidently at rank 7 is miscalibrated in a way that aggregate score alone can hide.
 
 The policy may consume only the observable reply text and the published response contract. Hidden targets, hidden simulator state, and benchmark labels stay evaluator-side as required by section 15, and measured calibration rates must remain aggregate statistics rather than a channel for per-session evaluator knowledge.
 
@@ -1181,13 +1226,13 @@ Requirements:
 - recommendation IDs must be valid catalog `parent_asin` values;
 - recommendations are ordered best-first and unique;
 - return at most the requested `top_k`;
-- every scoreable turn returns the current best recommendations;
-- asking a clarification does not replace recommendations;
+- a released turn returns the current best recommendations and sets `ask_attribute` to `null`;
+- a withheld turn asks one clarification and returns no recommendations;
 - `ask_attribute` is one supported enum value or `null`;
 - optional usage values are non-negative;
 - hidden target or simulator-only information is never exposed to Agent logic.
 
-Partial parsing or missing artifacts must degrade to a valid best-effort response rather than an exception or ask-only turn.
+Partial parsing or missing artifacts must degrade to a valid best-effort response rather than an exception. When the gate cannot be evaluated, degrade toward releasing the current ranking rather than withholding it, since a withheld turn scores nothing if the session then fails.
 
 ## 14. Artifact and runtime boundaries
 
@@ -1231,8 +1276,9 @@ The fixed Manual400 benchmark is a development diagnostic set and must remain un
 Useful diagnostics include:
 
 ```text
-cumulative hit rate by turn
-first-hit turn distribution
+release-turn distribution
+target rank at release
+gate outcome by turn (released / withheld)
 target rank buckets
 structured parse success/failure
 Tier 2 exact matches and unresolved phrases
@@ -1264,8 +1310,8 @@ After repeated optimization on Manual400, treat it as a dev set and validate cha
 4. **Weight evidence according to trust.**
    A `size=10` exact match is not the same type of evidence as `use_case=hiking`.
 
-5. **Always recommend.**
-   Early Top-K hits directly improve the competition objective. Clarification is supplementary.
+5. **Release once, and release deliberately.**
+   Exposing a Top-K ends the session, so the list is withheld while a question can still move the target up the ranking, and released as soon as it cannot.
 
 6. **Ask according to what the ranking can use.**
    A question is worth a turn only if its answer can be resolved, is still undisclosed, and reaches a channel that actually moves candidates.
