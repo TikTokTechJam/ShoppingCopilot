@@ -22,8 +22,13 @@ except ImportError:  # pragma: no cover - exercised only without optional deps
 
 class ViewKeywordEmbedder:
     model_id = "test-layer2-embedder"
+    embedding_dimension = 2
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
 
     def embed_documents(self, texts: list[str]) -> Any:
+        self.calls.append(list(texts))
         vectors = []
         for text in texts:
             lowered = text.casefold()
@@ -37,6 +42,7 @@ class ViewKeywordEmbedder:
 
 class SemanticTargetEmbedder:
     model_id = "test-semantic-target-embedder"
+    embedding_dimension = 2
 
     def embed_documents(self, texts: list[str]) -> Any:
         return [
@@ -161,21 +167,76 @@ class Layer2EmbeddingTests(unittest.TestCase):
             root = Path(directory)
             catalog = self._catalog(root)
             output = root / "product_embeddings"
+            embedder = ViewKeywordEmbedder()
             build_layer2_embeddings(
                 catalog,
                 output,
-                ViewKeywordEmbedder(),
+                embedder,
                 generated_at_utc="2026-01-01T00:00:00Z",
             )
             retriever = ProductRetriever(
                 catalog,
-                query_encoder=ViewKeywordEmbedder(),
+                query_encoder=embedder,
                 layer2_artifact_dir=output,
             )
             self.assertTrue(retriever.has_dense_index)
             candidates = retriever.retrieve("BROWSING", "blue boots", {}, limit=2)
             self.assertEqual([item.parent_asin for item in candidates], ["A1", "A2"])
             self.assertGreater(candidates[0].dense_score, candidates[1].dense_score)
+            self.assertGreaterEqual(len(embedder.calls), 2)
+
+    def test_layer2_requires_matching_model_and_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._catalog(root)
+            output = root / "product_embeddings"
+            embedder = ViewKeywordEmbedder()
+            build_layer2_embeddings(catalog, output, embedder, generated_at_utc="2026-01-01T00:00:00Z")
+
+            compatible = ProductRetriever(
+                catalog,
+                query_encoder=embedder,
+                layer2_artifact_dir=output,
+            )
+            self.assertTrue(compatible.dense_available)
+
+            class WrongModel(ViewKeywordEmbedder):
+                model_id = "different-model"
+
+            wrong_model = ProductRetriever(
+                catalog,
+                query_encoder=WrongModel(),
+                layer2_artifact_dir=output,
+            )
+            self.assertFalse(wrong_model.dense_available)
+            self.assertIn("model", wrong_model.layer2_compatibility_error or "")
+
+            class WrongDimension(ViewKeywordEmbedder):
+                embedding_dimension = 3
+
+            wrong_dimension = ProductRetriever(
+                catalog,
+                query_encoder=WrongDimension(),
+                layer2_artifact_dir=output,
+            )
+            self.assertFalse(wrong_dimension.dense_available)
+            self.assertIn("dimension", wrong_dimension.layer2_compatibility_error or "")
+
+    def test_missing_query_encoder_disables_dense_without_rejecting_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = self._catalog(root)
+            output = root / "product_embeddings"
+            build_layer2_embeddings(
+                catalog,
+                output,
+                ViewKeywordEmbedder(),
+                generated_at_utc="2026-01-01T00:00:00Z",
+            )
+            retriever = ProductRetriever(catalog, layer2_artifact_dir=output)
+            self.assertTrue(retriever.has_dense_index)
+            self.assertFalse(retriever.dense_available)
+            self.assertIn("encoder", retriever.layer2_compatibility_error or "")
 
     def test_combined_score_controls_dense_ranking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
