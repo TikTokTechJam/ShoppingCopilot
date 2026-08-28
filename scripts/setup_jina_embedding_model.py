@@ -11,7 +11,7 @@ from product_embeddings.pipeline import load_local_sentence_transformer
 
 MODEL_ID = "jinaai/jina-embeddings-v5-text-nano"
 EXPECTED_DIMENSION = 768
-DEFAULT_MODEL_DIR = Path("models") / "jina-embeddings-v5-text-nano"
+DEFAULT_MODEL_DIR = Path("model") / "jina-embeddings-v5-text-nano"
 VALIDATION_QUERY = "jumpsuits for cosplay"
 
 

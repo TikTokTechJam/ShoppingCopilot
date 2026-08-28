@@ -10,10 +10,20 @@ changing the session protocol.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any, Iterable, Mapping
 
 from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
+from starter.routing import lexicon
+
+
+class OverrideKind(str, Enum):
+    """Scope of an explicit change to the active shopping request."""
+
+    NONE = "NONE"
+    FULL_GOAL = "FULL_GOAL"
+    PREFERENCE = "PREFERENCE"
 
 
 @dataclass
@@ -31,6 +41,13 @@ class SessionState:
     turn: int = 0
     messages: list[str] = field(default_factory=list)
     last_asked: str | None = None
+    # Value-level provenance is deliberately small: it only distinguishes
+    # facts from the initial request, later clarifications, and an override.
+    # This is enough to remove an obsolete initial preference without creating
+    # a second session-state system.
+    constraint_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
+    last_override_kind: str | None = None
+    last_override_delta: ShoppingConstraints | None = None
 
     @property
     def query_text(self) -> str:
@@ -134,10 +151,6 @@ _CORRECTION_MARKER = re.compile(
     r"\b(?:actually|instead|rather|change|changed|switch(?:ing)?|not)\b",
     re.IGNORECASE,
 )
-_OVERRIDE_MARKER = re.compile(
-    r"\b(?:forget|disregard|ignore|start over|new search|different search)\b",
-    re.IGNORECASE,
-)
 _GOAL_LANGUAGE = re.compile(
     r"\b(?:need|want|looking for|search(?:ing)? for|show me|find me|shopping for)\b",
     re.IGNORECASE,
@@ -169,32 +182,45 @@ def correction_fields(
     return tuple(fields)
 
 
+def detect_override_kind(
+    message: str,
+    current: ShoppingConstraints,
+    delta: ShoppingConstraints,
+) -> OverrideKind:
+    """Classify an explicit change without conflating it with reset scope."""
+
+    text = message or ""
+    lowered = text.casefold()
+    if not lexicon.OVERRIDE_MARKER.search(text):
+        return OverrideKind.NONE
+
+    old_categories = set(_field_values(current, "category"))
+    new_categories = set(_field_values(delta, "category"))
+    category_replacement = bool(
+        new_categories
+        and _GOAL_LANGUAGE.search(text)
+        and (not old_categories or new_categories.isdisjoint(old_categories))
+        and _CORRECTION_MARKER.search(text)
+    )
+
+    if lexicon.FULL_GOAL_OVERRIDE_MARKER.search(text) or category_replacement:
+        return OverrideKind.FULL_GOAL
+
+    # Marker-only messages are not enough to mutate state. A preference
+    # override must carry at least one extracted current-turn fact.
+    if delta.populated_fields():
+        return OverrideKind.PREFERENCE
+    return OverrideKind.NONE
+
+
 def is_intent_override(
     message: str,
     current: ShoppingConstraints,
     delta: ShoppingConstraints,
 ) -> bool:
-    """Recognize an explicit new shopping goal, not an ordinary answer."""
+    """Backward-compatible boolean view of :func:`detect_override_kind`."""
 
-    text = message or ""
-    lowered = text.casefold()
-    if _OVERRIDE_MARKER.search(text) and (
-        re.search(r"\b(?:earlier|previous|old|that|those)\b", lowered)
-        or _GOAL_LANGUAGE.search(text)
-    ):
-        return True
-    if re.search(r"\bstart over\b|\bnew search\b", lowered):
-        return True
-
-    old_categories = set(_field_values(current, "category"))
-    new_categories = set(_field_values(delta, "category"))
-    if not new_categories or not _GOAL_LANGUAGE.search(text):
-        return False
-    if old_categories and new_categories - old_categories and (
-        _CORRECTION_MARKER.search(text) or "forget" in lowered
-    ):
-        return True
-    return bool(old_categories and new_categories.isdisjoint(old_categories) and "instead" in lowered)
+    return detect_override_kind(message, current, delta) is not OverrideKind.NONE
 
 
 class SessionManager:
@@ -227,6 +253,65 @@ class SessionManager:
         state.turn = 0
         state.messages.clear()
         state.last_asked = None
+        state.constraint_provenance.clear()
+        state.last_override_kind = None
+        state.last_override_delta = None
+        return state
+
+    def reset_preference(self, session_id: str) -> SessionState:
+        """Replace stale preference state while retaining the active goal.
+
+        Category, mode, profile, and an explicit budget remain active. Values
+        recorded on the initial turn are treated as the obsolete priority;
+        facts learned during later clarification turns survive unless the
+        current override explicitly replaces their field.
+        """
+
+        state = self.get(session_id)
+        kept_values: dict[str, tuple[str, ...]] = {}
+        kept_provenance: dict[str, dict[str, str]] = {}
+        for field_name in CATEGORICAL_FIELDS:
+            values = _field_values(state.constraints, field_name)
+            origins = state.constraint_provenance.get(field_name, {})
+            if field_name == "category":
+                kept = values
+            else:
+                kept = tuple(
+                    value
+                    for value in values
+                    # Unknown provenance is preserved conservatively. The
+                    # Agent records provenance for all normal updates, while
+                    # this protects callers that construct state directly.
+                    if origins.get(value) != "initial"
+                )
+            kept_values[field_name] = kept
+            if kept:
+                kept_provenance[field_name] = {
+                    value: origins[value]
+                    for value in kept
+                    if value in origins
+                }
+
+        payload: dict[str, object] = {
+            **kept_values,
+            "price_min": getattr(state.constraints, "price_min", None),
+            "price_max": getattr(state.constraints, "price_max", None),
+            # Unresolved text belongs to the old semantic goal and must not be
+            # carried into the new query context.
+            "unmapped": (),
+        }
+        try:
+            state.constraints = replace(state.constraints, **payload, evidence=())
+        except TypeError:
+            state.constraints = replace(state.constraints, **payload)
+
+        state.constraint_provenance = kept_provenance
+        state.asked_attributes.clear()
+        state.last_recommendations = ()
+        state.excluded_recommendations.clear()
+        state.last_user_message = None
+        state.messages.clear()
+        state.last_asked = None
         return state
 
     def record_message(self, session_id: str, message: str) -> None:
@@ -242,11 +327,23 @@ class SessionManager:
         delta: ShoppingConstraints,
         *,
         replace_fields: Iterable[str] = (),
+        source: str | None = None,
     ) -> ShoppingConstraints:
         state = self.get(session_id)
+        replacements = set(replace_fields)
+        update_source = source or ("initial" if not state.messages else "clarification")
+        for field_name in replacements:
+            state.constraint_provenance.pop(field_name, None)
         state.constraints = merge_constraints(
-            state.constraints, delta, replace_fields=replace_fields
+            state.constraints, delta, replace_fields=replacements
         )
+        for field_name in CATEGORICAL_FIELDS:
+            incoming = _field_values(delta, field_name)
+            if not incoming:
+                continue
+            provenance = state.constraint_provenance.setdefault(field_name, {})
+            for value in incoming:
+                provenance[value] = update_source
         return state.constraints
 
     def mark_asked(self, session_id: str, attribute: str | None) -> None:
@@ -269,7 +366,9 @@ class SessionManager:
 __all__ = [
     "SessionManager",
     "SessionState",
+    "OverrideKind",
     "correction_fields",
+    "detect_override_kind",
     "is_intent_override",
     "merge_constraints",
 ]

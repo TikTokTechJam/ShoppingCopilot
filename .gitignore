@@ -31,3 +31,7 @@ data/derived/annotations/
 data/derived/dictionary/
 data/derived/product_embeddings/
 data/derived/product_embeddings_jina/
+
+# Local embedding model weights. Download into this path; never commit them.
+model/*
+!model/.gitkeep

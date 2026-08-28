@@ -687,6 +687,11 @@ def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
     return {
         "constraints": _debug_constraints(state),
         "mode": getattr(state, "mode", None),
+        "override_kind": getattr(state, "last_override_kind", None),
+        "override_delta": _debug_constraints(
+            getattr(state, "last_override_delta", None)
+        ),
+        "query_text": getattr(state, "query_text", ""),
         "excluded": sorted(
             str(value)
             for value in getattr(state, "excluded_recommendations", set())
@@ -906,11 +911,8 @@ class InteractiveDebugPrinter:
         state = agent.sessions.get(session_id)
         scenario = str(session["scenario_type"])
         override_turn = session.get("override_turn")
-        override_detected = (
-            scenario == "intent_override"
-            and override_turn is not None
-            and turn == int(override_turn)
-        )
+        override_kind = getattr(state, "last_override_kind", None)
+        override_detected = override_kind in {"FULL_GOAL", "PREFERENCE"}
 
         print()
         print("=" * 60)
@@ -924,6 +926,17 @@ class InteractiveDebugPrinter:
         print("AGENT CONSTRAINTS SO FAR")
         print(json.dumps(_debug_constraints(state), indent=2, ensure_ascii=False))
         print(f"Intent mode: {getattr(state, 'mode', None) or 'BROWSING'}")
+        print(f"Override kind: {override_kind or 'NONE'}")
+        if override_detected:
+            print("CURRENT-TURN OVERRIDE DELTA")
+            print(
+                json.dumps(
+                    _debug_constraints(getattr(state, "last_override_delta", None)),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+        print(f"Semantic query: {getattr(state, 'query_text', '')}")
         retriever = agent.retriever
         layer2_index = getattr(retriever, "layer2_index", None)
         query_encoder = getattr(retriever, "query_encoder", None)

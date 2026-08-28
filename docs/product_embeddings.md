@@ -31,7 +31,7 @@ Use a local or injected embedding model for benchmark artifacts:
 python -m scripts.build_layer2_embeddings \
   --catalog data/catalog.jsonl \
   --output-dir data/derived/product_embeddings \
-  --model path/to/local/sentence-transformer
+  --model model/jina-embeddings-v5-text-nano
 ```
 
 The builder loads local SentenceTransformers models with
@@ -80,7 +80,7 @@ Windows PowerShell:
 ```powershell
 pip install -r requirements-embeddings.txt
 python -m scripts.setup_jina_embedding_model
-$env:SHOPPING_EMBEDDING_MODEL="models/jina-embeddings-v5-text-nano"
+$env:SHOPPING_EMBEDDING_MODEL="model/jina-embeddings-v5-text-nano"
 python -m evaluator.hard_evaluator
 ```
 
@@ -89,14 +89,14 @@ Git Bash:
 ```bash
 pip install -r requirements-embeddings.txt
 python -m scripts.setup_jina_embedding_model
-export SHOPPING_EMBEDDING_MODEL="models/jina-embeddings-v5-text-nano"
+export SHOPPING_EMBEDDING_MODEL="model/jina-embeddings-v5-text-nano"
 python -m evaluator.hard_evaluator
 ```
 
 The setup helper downloads only
 `jinaai/jina-embeddings-v5-text-nano`, loads it with the Jina retrieval task
 and query prompt, and validates the query `jumpsuits for cosplay` as a finite,
-non-zero 768-dimensional vector. Downloaded files go under `models/`, which is
+non-zero 768-dimensional vector. Downloaded files go under `model/`, which is
 ignored by Git.
 
 ## Runtime search
@@ -148,14 +148,14 @@ local/cached Jina model explicitly:
 PowerShell:
 
 ```powershell
-$env:SHOPPING_EMBEDDING_MODEL="models/jina-embeddings-v5-text-nano"
+$env:SHOPPING_EMBEDDING_MODEL="model/jina-embeddings-v5-text-nano"
 python -m evaluator.hard_evaluator
 ```
 
 Git Bash:
 
 ```bash
-export SHOPPING_EMBEDDING_MODEL="models/jina-embeddings-v5-text-nano"
+export SHOPPING_EMBEDDING_MODEL="model/jina-embeddings-v5-text-nano"
 python -m evaluator.hard_evaluator
 ```
 
@@ -176,7 +176,7 @@ matrices together without using evaluator targets:
 
 ```bash
 python -m scripts.smoke_layer2_query \
-  --embedding-model models/jina-embeddings-v5-text-nano \
+  --embedding-model model/jina-embeddings-v5-text-nano \
   --layer2-artifact-dir data/derived/product_embeddings_jina
 ```
 
@@ -202,5 +202,36 @@ python -m scripts.smoke_layer2_agent \
   --hash-dimension 384
 ```
 
+The hash model is available only for plumbing tests and must not be used as the
+semantic benchmark model:
+
+```bash
+python -m evaluator.hard_evaluator \
+  --catalog data/catalog.jsonl \
+  --sessions data/derived/gptannotation/sessions.jsonl \
+  --layer2-artifact-dir data/derived/product_embeddings_jina \
+  --hash-dimension 384 \
+  --output results_layer1_layer2_hash.json
+```
+Use `--disable-layer2` for an explicit Layer 1-only run. For a semantic run,
+pass the Jina artifact directory; the evaluator will use the repository-local
+model automatically:
+
+```bash
+python -m evaluator.hard_evaluator \
+  --catalog data/catalog.jsonl \
+  --sessions data/derived/gptannotation/sessions.jsonl \
+  --layer2-artifact-dir data/derived/product_embeddings_jina \
+  --output results_layer1_layer2_jina.json
+```
+
+You can still override the model location with
+`--embedding-model /path/to/local/model`.
+
+The repository convention for the Jina model is
+`model/jina-embeddings-v5-text-nano`. The model weights are intentionally
+ignored by Git. Download or copy the complete local model into that directory
+on each checkout. When Layer 2 is enabled through the evaluator with no
+explicit `--embedding-model`, this path is used automatically.
 The hash model is available only for plumbing tests and must not be mixed with
 the Jina artifact or used for benchmark retrieval.

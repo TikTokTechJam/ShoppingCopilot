@@ -52,6 +52,11 @@ def _manifest_embedding_model(artifact_dir: Path) -> str | None:
     return model.strip()
 
 
+# Keep the benchmark model outside Git while giving every checkout one stable
+# location for the locally downloaded Jina weights.
+DEFAULT_JINA_MODEL_PATH = Path("model/jina-embeddings-v5-text-nano")
+
+
 def build_evaluator_agent(
     catalog_path: str | Path,
     *,
@@ -97,6 +102,12 @@ def build_evaluator_agent(
     auto_model = configured_model is None and hash_dimension is None
     if auto_model:
         configured_model = _manifest_embedding_model(selected_artifact_dir)
+        if (
+            configured_model is not None
+            and is_jina_v5_text_nano(configured_model)
+            and DEFAULT_JINA_MODEL_PATH.is_dir()
+        ):
+            configured_model = DEFAULT_JINA_MODEL_PATH.as_posix()
 
     if configured_model is not None and hash_dimension is not None:
         raise ValueError("choose --embedding-model or --hash-dimension, not both")

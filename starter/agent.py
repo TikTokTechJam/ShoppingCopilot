@@ -10,7 +10,12 @@ from starter.retrieval import ProductRetriever
 from starter.routing import constraints as constraint_module
 from starter.routing.constraints import ShoppingConstraints
 from starter.routing.intent_router import LexicalIntentRouter, TwoPhaseIntentRouter
-from starter.session import SessionManager, correction_fields, is_intent_override
+from starter.session import (
+    OverrideKind,
+    SessionManager,
+    correction_fields,
+    detect_override_kind,
+)
 
 
 class Agent:
@@ -88,17 +93,40 @@ class Agent:
         state = self.sessions.get(session_id)
         message = user_message or ""
         delta = self._extract(message)
+        had_messages = bool(state.messages)
+        override_kind = OverrideKind.NONE
 
-        if state.mode is not None and is_intent_override(message, state.constraints, delta):
+        if state.mode is not None:
+            override_kind = detect_override_kind(message, state.constraints, delta)
+
+        if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)
+        elif override_kind is OverrideKind.PREFERENCE:
+            state = self.sessions.reset_preference(session_id)
         else:
             self.sessions.promote_last_recommendations(session_id)
+
+        # Keep evaluator/debug tooling informed using only Agent-visible
+        # information. This is state metadata, not benchmark knowledge.
+        state.last_override_kind = override_kind.value if override_kind is not OverrideKind.NONE else None
+        state.last_override_delta = delta if override_kind is not OverrideKind.NONE else None
 
         if state.mode is None:
             state.mode = self._route(message)
 
         replacements = correction_fields(message, state.constraints, delta)
-        self.sessions.update_constraints(session_id, delta, replace_fields=replacements)
+        if override_kind is OverrideKind.FULL_GOAL:
+            source = "initial"
+        elif override_kind is OverrideKind.PREFERENCE:
+            source = "override"
+        else:
+            source = "initial" if not had_messages else "clarification"
+        self.sessions.update_constraints(
+            session_id,
+            delta,
+            replace_fields=replacements,
+            source=source,
+        )
         self.sessions.record_message(session_id, message)
         state.turn = int(turn)
 

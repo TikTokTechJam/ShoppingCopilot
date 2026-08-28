@@ -92,7 +92,7 @@ class JinaSetupTests(unittest.TestCase):
         fake_module = SimpleNamespace(SentenceTransformer=FakeSentenceTransformer)
         with patch.dict(sys.modules, {"sentence_transformers": fake_module}):
             encoder = load_local_sentence_transformer(
-                "models/jina-embeddings-v5-text-nano",
+                "model/jina-embeddings-v5-text-nano",
                 task="retrieval",
                 document_prompt_name="document",
                 query_prompt_name="query",
@@ -100,13 +100,13 @@ class JinaSetupTests(unittest.TestCase):
             )
 
         self.assertEqual(calls, [{
-            "path": "models/jina-embeddings-v5-text-nano",
+            "path": "model/jina-embeddings-v5-text-nano",
             "device": None,
             "local_files_only": True,
             "trust_remote_code": True,
         }])
         self.assertEqual(encoder.embedding_dimension, 768)
-        self.assertEqual(encoder.model_id, "models/jina-embeddings-v5-text-nano")
+        self.assertEqual(encoder.model_id, "model/jina-embeddings-v5-text-nano")
 
 
 if __name__ == "__main__":

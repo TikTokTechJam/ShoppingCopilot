@@ -204,15 +204,35 @@ ATTRIBUTE_SIGNALS: dict[str, str] = {
 # Turn-level markers, used by the session tracker rather than by the scorer
 # --------------------------------------------------------------------------
 
-OVERRIDE_MARKER = _compile(
+# These markers are shared by the session override detector and the routing
+# tracker.  They indicate a possible change of direction; the session layer
+# separately decides whether the change is a full goal replacement or only a
+# preference correction.
+OVERRIDE_MARKER_PATTERNS: tuple[str, ...] = (
     r"\bactually\b",
     r"\binstead\b",
     r"\bchanged my mind\b",
     r"\b(?:my )?priority changed\b",
     r"\bon second thought\b",
     r"\bscratch that\b",
-    r"\bforget (?:the|what|about|my)\b",
-    r"\b(?:ignore|disregard)\b.{0,45}\b(?:earlier|previous|old|last|that)\b",
+    r"\bforget (?:that|it|the|what|about|my)\b",
+    r"\b(?:ignore|disregard)\b(?:.{0,45}\b(?:earlier|previous|old|last|that)\b|\s+(?:that|it))",
+    r"\bstart over\b",
+    r"\bnew search\b",
+)
+
+OVERRIDE_MARKER = _compile(*OVERRIDE_MARKER_PATTERNS)
+
+# Strong reset language is intentionally a separate view of the same shared
+# vocabulary.  "actually black" and "my priority changed" are still
+# overrides, but are preference-level changes unless the message also names a
+# replacement product goal.
+FULL_GOAL_OVERRIDE_MARKER = _compile(
+    r"\bscratch that\b",
+    r"\bforget (?:that|it|the|what|about|my)\b",
+    r"\b(?:ignore|disregard)\b(?:.{0,45}\b(?:earlier|previous|old|last|that)\b|\s+(?:that|it))",
+    r"\bstart over\b",
+    r"\bnew search\b",
 )
 
 NO_PREFERENCE_MARKER = _compile(

@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import importlib
 import re
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -162,13 +164,32 @@ def load_local_sentence_transformer(
             "--model requires the optional sentence-transformers dependency; "
             "inject a local embedder or use the hashing fallback instead"
         ) from exc
+    # Some SentenceTransformer snapshots (including Jina v5) declare a
+    # custom module such as ``custom_st.Transformer`` in ``modules.json``.
+    # SentenceTransformers imports that name as a top-level module, so make
+    # the local snapshot directory importable while it is being constructed.
+    model_directory = Path(model_path).expanduser()
+    added_model_path = False
+    resolved_model_directory: str | None = None
+    if model_directory.is_dir():
+        resolved_model_directory = str(model_directory.resolve())
+        if resolved_model_directory not in sys.path:
+            sys.path.insert(0, resolved_model_directory)
+            added_model_path = True
     try:
-        model = SentenceTransformer(
-            model_path,
-            device=device,
-            local_files_only=True,
-            trust_remote_code=trust_remote_code,
-        )
+        try:
+            model = SentenceTransformer(
+                model_path,
+                device=device,
+                local_files_only=True,
+                trust_remote_code=trust_remote_code,
+            )
+        finally:
+            if added_model_path and resolved_model_directory is not None:
+                try:
+                    sys.path.remove(resolved_model_directory)
+                except ValueError:
+                    pass
     except TypeError as exc:  # pragma: no cover - old optional dependency
         raise RuntimeError(
             "the installed sentence-transformers version does not support "

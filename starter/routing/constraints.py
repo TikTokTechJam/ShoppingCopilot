@@ -133,6 +133,10 @@ CANONICAL_VOCAB: dict[str, tuple[tuple[str, str], ...]] = {
         ("ankle_support", r"ankle support"),
         ("non_slip", r"non[- ]slip|anti[- ]slip|slip[- ]resistant|good grip|grip|traction"),
         ("adjustable", r"adjustable"),
+        ("zipper_closure", r"zipper closure|zip closure"),
+        ("buckle_closure", r"buckle closure|buckle fastening"),
+        ("removable", r"removable|can be removed"),
+        ("reflective", r"reflective"),
         ("hypoallergenic", r"hypoallergenic"),
         ("pockets", r"pockets?"),
         ("hooded", r"hooded|with a hood"),
@@ -185,7 +189,8 @@ CANONICAL_VOCAB: dict[str, tuple[tuple[str, str], ...]] = {
         ("camping", r"camping"),
         ("skiing", r"skiing|snowboarding"),
         ("cycling", r"cycling|biking"),
-        ("work", r"the office|at work|for work|office wear"),
+        ("office", r"the office|at the office|office wear"),
+        ("work", r"at work|for work"),
         ("wedding", r"weddings?"),
         ("party", r"parties|a party"),
         ("travel", r"travel(?:ling|ing)?|vacation|holiday|trip"),
@@ -383,9 +388,47 @@ def _extract_prices(text: str) -> tuple[float | None, float | None]:
     return price_min, price_max
 
 
+_KNOWN_PHRASE_REWRITES: tuple[tuple[str, str], ...] = (
+    # The catalog dictionary is intentionally broad and contains many noisy
+    # surfaces. These user-facing phrases are stable concepts whose useful
+    # canonical value is clearer than a literal substring match.
+    (r"\bwould\s+work\s+best\b", "would be ideal"),
+    (r"\bpractical\s+storage\s+pockets?\b", "feature pockets"),
+    (r"\bstorage\s+pockets?\b", "feature pockets"),
+    (r"\bsun\s+protection\b", "feature uv protection"),
+    (r"\beasy\s+to\s+machine\s+wash\b", "feature machine washable"),
+    (r"\bmachine\s+wash(?:ing)?\b", "feature machine washable"),
+    (r"\bmachine\s+washability\b", "feature machine washable"),
+    (r"\bgive\s+in\s+the\s+material\b", "feature stretch"),
+    (r"\bzip\s+closure\b", "feature zipper closure"),
+    (r"\bbuckle\s+fastening\b", "feature buckle closure"),
+    (r"\bslip[- ]resistant\s+design\b", "feature non slip"),
+    (r"\bgood\s+grip\b", "feature non slip"),
+    (r"\bgood\s+protection\s+from\s+wind\b", "feature windproof"),
+    (r"\bkeep\s+water\s+out\b", "feature waterproof"),
+    (r"\bbreathability\b", "feature breathable"),
+    (r"\bkeep\s+it\s+light\b", "feature lightweight"),
+    (r"\bfit\s+i\s+can\s+adjust\b", "feature adjustable"),
+    (r"\bparts\s+that\s+can\s+be\s+removed\s+when\s+needed\b", "feature removable"),
+    (r"\bvisibility[- ]enhancing\s+reflective\s+details?\b", "feature reflective"),
+    (r"\bmemory[- ]foam\s+cushioning\b", "feature memory foam"),
+    (r"\bquick[- ]drying\b", "feature quick drying"),
+    (r"\bdry\s+quickly\b", "feature quick drying"),
+    (r"\b(?:something|a|an)\s+adjustable\b", "feature adjustable"),
+    (r"\bfor\s+weddings?\b", "for wedding"),
+)
+
+
+def _normalise_known_phrases(message: str) -> str:
+    text = message
+    for pattern, replacement in _KNOWN_PHRASE_REWRITES:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
 def extract_constraints(message: str) -> ShoppingConstraints:
     """Map one utterance onto the canonical vocabulary. Never invents values."""
-    text = message or ""
+    text = _normalise_known_phrases(message or "")
 
     # Collect every candidate match, then award overlapping spans to the
     # longest one. Without this, "dark blue" records both navy and blue, and
@@ -531,7 +574,7 @@ _SHOPPING_FOR_CONTEXT_BLOCKERS = frozenset(
 # Keep this catalog-derived set limited to obvious single-word brand/query
 # collisions. Multi-word brands and all non-brand attributes are unaffected.
 COMMON_BRAND_COLLISION_TERMS = frozenset(
-    {"find", "it", "make", "on"}
+    {"find", "it", "machine", "wash", "make", "on"}
 )
 
 
@@ -830,7 +873,7 @@ def _extract_dictionary_constraints(
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = 0.70,
 ) -> CanonicalShoppingConstraints:
-    text = message or ""
+    text = _normalise_known_phrases(message or "")
     values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
     evidence: list[ConstraintEvidence] = []
     unmapped: set[str] = set()
@@ -930,11 +973,12 @@ def extract_constraints(
     Until a generated dictionary artifact exists, the legacy offline vocabulary
     is used so the starter remains runnable without Issue #5 data.
     """
+    text = _normalise_known_phrases(message or "")
     active_dictionary = dictionary if dictionary is not None else _load_default_dictionary()
     if active_dictionary is None:
-        return _legacy_extract_constraints(message)
+        return _legacy_extract_constraints(text)
     return _extract_dictionary_constraints(
-        message,
+        text,
         active_dictionary,
         semantic_matcher=semantic_matcher,
         semantic_threshold=semantic_threshold,
