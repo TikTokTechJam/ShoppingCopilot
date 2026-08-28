@@ -270,6 +270,13 @@ BUYING_TAG_THRESHOLD = 2
 # principle that gives category keywords zero weight in the ledger below.
 TAG_COUNT_EXCLUDE: tuple[str, ...] = ("category",)
 
+# Phase 1 asserts BUYING from the tag count alone, which is sound only while
+# extraction is precise. When the ledger reads the same message as browsing at
+# least this confidently, the tag count is treated as noise and the message
+# falls through to Phase 2. Same asymmetry as DECISION_CONFIDENCE below: a
+# wrongly confident BUYING has no natural way back.
+BROWSING_VETO_CONFIDENCE = 0.70
+
 # Terminal rule: a message the pipeline cannot decide with at least this much
 # confidence is routed BROWSING. Browsing is the recoverable error -- broad
 # retrieval plus a clarifying question still converges, whereas a wrongly
