@@ -28,7 +28,7 @@ Three pieces live here:
     intent override. The tracker does neither.
 
 The tracker stores its own decision and nothing else. Shopping-constraint
-state belongs to issue #7.
+Constraint state belongs to the constraint/session layer.
 """
 
 from __future__ import annotations
@@ -374,7 +374,7 @@ class TwoPhaseIntentRouter:
     Phase 1 asks a factual question: how many distinct canonical constraint
     fields did the customer actually fill in? A message carrying two or more
     -- a colour and a price, a brand and a size -- has committed to enough
-    that no further reading is needed. This is issue #7's extractor doing the
+    that no further reading is needed. The constraint extractor does the
     work, and it is the cheapest evidence available -- but not an unarguable
     one. The count is only as good as the extractor's precision, so Phase 1 is
     vetoed when the ledger reads the same message as confidently exploratory.

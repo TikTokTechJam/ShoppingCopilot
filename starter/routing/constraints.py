@@ -1,6 +1,6 @@
-"""Extract canonical shopping constraints from one user utterance (issue #7).
+"""Extract canonical shopping constraints from one user utterance.
 
-Produces the record shape issue #7 specifies:
+Produces the runtime constraint record shape:
 
     {"category": [], "brand": [], "price_min": None, "price_max": None,
      "color": [], "material": [], "size": [], "style": [], "feature": [],
@@ -16,12 +16,11 @@ bare attribute word as weak evidence.
 
 **Nothing is invented.** Values that look like constraints but map to no
 canonical entry are preserved in `unmapped` rather than being forced onto the
-nearest vocabulary item, as issue #7 requires.
+nearest vocabulary item.
 
-The vocabulary here is a curated starting point. Issue #5 (canonical catalog
-facts) and issue #8 (canonical attribute dictionary) are the intended owners;
-`CANONICAL_VOCAB` is deliberately a plain data structure so it can be replaced
-wholesale by a generated dictionary without touching the extraction code.
+The generated attribute dictionary is the source of truth for categorical
+values. Price and size remain structured runtime fields; size is intentionally
+outside the semantic dictionary contract.
 """
 
 from __future__ import annotations
@@ -32,247 +31,49 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 
-# Field -> ((canonical_value, alias_pattern), ...). Order matters: the first
-# match wins, so more specific aliases must precede more general ones.
-CANONICAL_VOCAB: dict[str, tuple[tuple[str, str], ...]] = {
-    "category": (
-        ("hiking_boots", r"hiking boots?|walking boots?"),
-        ("running_shoes", r"running shoes?|running sneakers?|trainers?"),
-        ("walking_shoes", r"walking shoes?"),
-        ("sneakers", r"sneakers?|plimsolls?"),
-        ("boots", r"boots?"),
-        ("sandals", r"sandals?"),
-        ("slippers", r"slippers?"),
-        ("heels", r"heels?|pumps?"),
-        ("handbag", r"handbags?|purses?|totes?"),
-        ("backpack", r"backpacks?|rucksacks?"),
-        ("jacket", r"jackets?|windbreakers?|parkas?"),
-        ("coat", r"coats?|peacoats?|overcoats?"),
-        ("hoodie", r"hoodies?|sweatshirts?"),
-        ("cardigan", r"cardigans?"),
-        ("sweater", r"sweaters?|jumpers?|pullovers?"),
-        ("shirt", r"shirts?|blouses?|tees?|t-shirts?|tops?"),
-        ("dress", r"dresses|dress"),
-        ("skirt", r"skirts?"),
-        ("trousers", r"trousers|pants|chinos|slacks"),
-        ("jeans", r"jeans|denims"),
-        ("shorts", r"shorts"),
-        ("swimsuit", r"swimsuits?|bikinis?|swimwear|bathing suits?"),
-        ("socks", r"socks?"),
-        ("hat", r"hats?|caps?|beanies?"),
-        ("scarf", r"scarves|scarf"),
-        ("gloves", r"gloves?|mittens?"),
-        ("belt", r"belts?"),
-        ("watch", r"watch(?:es)?"),
-        ("necklace", r"necklaces?"),
-        ("bracelet", r"bracelets?"),
-        ("ring", r"rings?"),
-        ("earrings", r"earrings?"),
-        ("blazer", r"blazers?"),
-        ("vest", r"vests?|waistcoats?"),
-        ("pyjamas", r"pyjamas|pajamas|nightgowns?"),
-        ("bra", r"bras?"),
-    ),
-    "color": (
-        ("navy", r"navy|dark blue|midnight blue"),
-        ("black", r"black|jet black"),
-        ("white", r"white|off[- ]white"),
-        ("grey", r"gr[ae]y|charcoal|slate"),
-        ("blue", r"blue|cobalt|sky blue"),
-        ("red", r"red|crimson|scarlet"),
-        ("pink", r"pink|blush|rose"),
-        ("green", r"green|olive|emerald|sage"),
-        ("brown", r"brown|chocolate|chestnut"),
-        ("beige", r"beige|tan|khaki|camel|nude"),
-        ("cream", r"cream|ivory|off white"),
-        ("purple", r"purple|violet|lilac|lavender"),
-        ("yellow", r"yellow|mustard"),
-        ("orange", r"orange|rust"),
-        ("burgundy", r"burgundy|maroon|wine"),
-        ("gold", r"gold|golden"),
-        ("silver", r"silver"),
-        ("teal", r"teal|turquoise|aqua"),
-    ),
-    "material": (
-        ("faux_leather", r"faux leather|vegan leather|pleather"),
-        ("leather", r"leather|suede|nubuck"),
-        ("cotton", r"cotton"),
-        ("polyester", r"polyester"),
-        ("nylon", r"nylon"),
-        ("wool", r"wool|merino"),
-        ("cashmere", r"cashmere"),
-        ("silk", r"silk|satin"),
-        ("denim", r"denim"),
-        ("linen", r"linen"),
-        ("rayon", r"rayon|viscose"),
-        ("spandex", r"spandex|elastane|lycra"),
-        ("fleece", r"fleece|sherpa"),
-        ("rubber", r"rubber"),
-        ("mesh", r"mesh"),
-        ("canvas", r"canvas"),
-        ("corduroy", r"corduroy|cord"),
-        ("flannel", r"flannel"),
-        ("velvet", r"velvet"),
-        ("lace", r"lace(?!s)"),
-        ("down", r"goose down|duck down|down[- ](?:filled|insulated)"),
-        ("stainless_steel", r"stainless steel"),
-        ("sterling_silver", r"sterling silver"),
-        ("gore_tex", r"gore[- ]?tex"),
-    ),
-    "feature": (
-        ("waterproof", r"waterproof|water[- ]resistant|water[- ]repellent|weatherproof"),
-        ("windproof", r"windproof|protection from wind|wind protection"),
-        ("breathable", r"breathable|breathability"),
-        ("quick_dry", r"quick[- ]?dry(?:ing)?|dries quickly|dry quickly"),
-        ("moisture_wicking", r"moisture[- ]wicking|moisture management|handles? sweat"),
-        ("insulated", r"insulated|insulation|thermal|warmth"),
-        ("lightweight", r"lightweight|light[- ]weight"),
-        ("machine_washable", r"machine washable|machine wash"),
-        ("memory_foam", r"memory foam"),
-        ("arch_support", r"arch support"),
-        ("ankle_support", r"ankle support"),
-        ("non_slip", r"non[- ]slip|anti[- ]slip|slip[- ]resistant|good grip|grip|traction"),
-        ("adjustable", r"adjustable"),
-        ("zipper_closure", r"zipper closure|zip closure"),
-        ("buckle_closure", r"buckle closure|buckle fastening"),
-        ("removable", r"removable|can be removed"),
-        ("reflective", r"reflective"),
-        ("hypoallergenic", r"hypoallergenic"),
-        ("pockets", r"pockets?"),
-        ("hooded", r"hooded|with a hood"),
-        ("reversible", r"reversible"),
-        ("padded", r"padded|cushioning|cushioned"),
-        ("long_sleeve", r"long sleeves?"),
-        ("short_sleeve", r"short sleeves?"),
-        ("uv_protection", r"uv protection|sun protection"),
-        ("stretchy", r"stretchy|stretch"),
-        ("wrinkle_free", r"wrinkle[- ]free"),
-        ("touchscreen", r"touchscreen"),
-    ),
-    "size": (
-        ("xxs", r"\bxxs\b"),
-        ("xs", r"\bxs\b|extra small"),
-        ("small", r"\bsmall\b|\bsize s\b"),
-        ("medium", r"\bmedium\b|\bsize m\b"),
-        ("large", r"\blarge\b|\bsize l\b"),
-        ("xl", r"\bxl\b|extra large"),
-        ("xxl", r"\bxxl\b"),
-        ("petite", r"\bpetite\b"),
-        ("plus_size", r"plus[- ]size"),
-        ("wide_fit", r"wide (?:fit|width)"),
-        ("narrow_fit", r"narrow (?:fit|width)"),
-        ("big_and_tall", r"big and tall"),
-    ),
-    "style": (
-        ("casual", r"casual"),
-        ("formal", r"formal"),
-        ("classic", r"classic"),
-        ("vintage", r"vintage|retro"),
-        ("bohemian", r"boho|bohemian"),
-        ("sporty", r"sporty|athletic"),
-        ("elegant", r"elegant"),
-        ("minimalist", r"minimalist"),
-        ("slim_fit", r"slim fit"),
-        ("relaxed_fit", r"relaxed fit|loose fit"),
-        ("oversized", r"oversized"),
-        ("preppy", r"preppy"),
-    ),
-    "use_case": (
-        ("hiking", r"hiking|trekking"),
-        ("running", r"running|jogging"),
-        ("walking", r"walking"),
-        ("gym", r"the gym|gym|workouts?|working out"),
-        ("swimming", r"swimming|swim laps"),
-        ("tennis", r"tennis"),
-        ("golf", r"golf"),
-        ("yoga", r"yoga"),
-        ("camping", r"camping"),
-        ("skiing", r"skiing|snowboarding"),
-        ("cycling", r"cycling|biking"),
-        ("office", r"the office|at the office|office wear"),
-        ("work", r"at work|for work"),
-        ("wedding", r"weddings?"),
-        ("party", r"parties|a party"),
-        ("travel", r"travel(?:ling|ing)?|vacation|holiday|trip"),
-        ("beach", r"the beach|beach"),
-        ("winter", r"winter"),
-        ("summer", r"summer"),
-        ("halloween", r"halloween"),
-        ("christmas", r"christmas"),
-        ("everyday", r"everyday (?:wear|use)|daily wear|every day"),
-        ("outdoor", r"outdoors?|outdoor activities"),
-    ),
-    "brand": (
-        ("nike", r"nike"),
-        ("adidas", r"adidas"),
-        ("puma", r"puma"),
-        ("reebok", r"reebok"),
-        ("new_balance", r"new balance"),
-        ("under_armour", r"under armou?r"),
-        ("columbia", r"columbia"),
-        ("carhartt", r"carhartt"),
-        ("levis", r"levi'?s"),
-        ("skechers", r"skechers"),
-        ("crocs", r"crocs"),
-        ("timberland", r"timberland"),
-        ("clarks", r"clarks"),
-        ("vans", r"vans"),
-        ("converse", r"converse"),
-        ("asics", r"asics"),
-        ("merrell", r"merrell"),
-        ("patagonia", r"patagonia"),
-        ("north_face", r"north face"),
-        ("dr_martens", r"dr\.? martens|doc martens"),
-    ),
-}
-
 CATEGORICAL_FIELDS: tuple[str, ...] = (
-    "category", "brand", "color", "material", "size", "style", "feature", "use_case",
+    "category",
+    "brand",
+    "color",
+    "material",
+    "size",
+    "style",
+    "feature",
+    "use_case",
 )
 
-def _bounded(alias: str) -> str:
-    """Wrap one alias so it cannot match inside a longer word."""
-    return rf"(?<![a-z]){alias}(?![a-z])"
-
-
-def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
-    """A compiled union of every alias for `field`, plus any extra fragments.
-
-    This is the single source of attribute vocabulary in the package. The
-    signal ledger in `lexicon.py` builds its brand / budget / size / colour /
-    material / feature / use-case / style patterns from here rather than
-    restating them, so the two components can never disagree about what
-    "navy" or "water resistant" means.
-    """
-    alternatives = [_bounded(alias) for _canonical, alias in CANONICAL_VOCAB[field]]
-    return re.compile("|".join([*extra, *alternatives]), re.IGNORECASE)
-
-
-_COMPILED: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
-    name: tuple(
-        (canonical, re.compile(_bounded(alias), re.IGNORECASE))
-        for canonical, alias in entries
-    )
-    for name, entries in CANONICAL_VOCAB.items()
-}
-
-_NUMBER = r"\$?\s?(\d[\d,]*(?:\.\d+)?)"
+_PLAIN_NUMBER = r"\d[\d,]*(?:\.\d+)?"
+_NUMBER = rf"\$?\s?({_PLAIN_NUMBER})"
+_NON_PRICE_TAIL = (
+    r"(?!\s*(?:years?|yrs?|year[-\s]?old|inches?|inch|centimeters?|cm|"
+    r"millimeters?|mm|kilograms?|kg|pounds?|lbs?)\b)"
+    rf"(?!\s*(?:to|and|-)\s*{_PLAIN_NUMBER}\s*(?:years?|yrs?|year[-\s]?old)\b)"
+)
 
 PRICE_MAX = re.compile(
-    rf"(?:under|below|less than|no more than|cheaper than|up to|within|max(?:imum)?(?:\s+of)?|nothing over|not more than)\s*{_NUMBER}",
+    rf"(?:under|below|less than|no more than|cheaper than|up to|within|max(?:imum)?(?:\s+of)?|nothing over|not more than)\s*{_NUMBER}{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
 PRICE_MIN = re.compile(
-    rf"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?|starting (?:at|from)|from)\s*{_NUMBER}",
+    rf"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?|starting (?:at|from)|from)\s*{_NUMBER}{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
 PRICE_RANGE = re.compile(
-    rf"(?:between\s+)?{_NUMBER}\s*(?:-|–|to|and)\s*{_NUMBER}\s*(?:dollars|usd|bucks)?",
+    rf"(?<!size )(?<!sizes )(?<!sizing )(?:between\s+)?{_NUMBER}\s*(?:-|–|to|and)\s*{_NUMBER}\s*(?:dollars|usd|bucks)?{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
-PRICE_AROUND = re.compile(rf"(?:around|about|approximately|roughly)\s*{_NUMBER}", re.IGNORECASE)
-# A price only counts as a price when it is written as one.
-CURRENCY = re.compile(r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost", re.IGNORECASE)
+PRICE_AROUND = re.compile(
+    rf"(?:around|about|approximately|roughly)\s*{_NUMBER}{_NON_PRICE_TAIL}",
+    re.IGNORECASE,
+)
+PRICE_DIRECT = re.compile(
+    rf"(?:\$\s?({_PLAIN_NUMBER})|({_PLAIN_NUMBER})\s*(?:dollars?|usd|bucks)\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_PRICE_MARKER = re.compile(
+    r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost\b",
+    re.IGNORECASE,
+)
 
 # Any expression that states a price at all. The ledger uses this as its
 # budget signal; the extractor above uses the individual bounds to normalise.
@@ -283,7 +84,7 @@ PRICE_EXPRESSION = re.compile(
             PRICE_MIN.pattern,
             PRICE_RANGE.pattern,
             PRICE_AROUND.pattern,
-            r"\$\s?\d[\d,]*(?:\.\d+)?",
+            PRICE_DIRECT.pattern,
         ]
     ),
     re.IGNORECASE,
@@ -304,7 +105,7 @@ ATTRIBUTE_TOPIC = re.compile(
 
 @dataclass(frozen=True)
 class ShoppingConstraints:
-    """Canonical constraints from one utterance, in issue #7's shape."""
+    """Canonical constraints from one utterance in the runtime shape."""
 
     category: tuple[str, ...] = ()
     brand: tuple[str, ...] = ()
@@ -355,35 +156,62 @@ class ShoppingConstraints:
 
 
 def _extract_prices(text: str) -> tuple[float | None, float | None]:
-    if not CURRENCY.search(text):
-        # "size 10" and "10 to 12 years" are not prices.
-        return None, None
-
     def number(raw: str) -> float:
         return float(raw.replace(",", ""))
 
+    def allowed(match: re.Match[str]) -> bool:
+        window_start = max(0, match.start() - 24)
+        window_end = min(len(text), match.end() + 24)
+        window = text[window_start:window_end]
+        explicit_price = bool(_EXPLICIT_PRICE_MARKER.search(window))
+        before = text[window_start:match.start()]
+        after = text[match.end():window_end]
+        if not explicit_price and re.search(
+            r"\b(?:size|sizes|sizing)\s*(?:is|:)?\s*$|\b(?:waist|inseam|length|width|height|diameter)\s*$",
+            before,
+            re.IGNORECASE,
+        ):
+            return False
+        if not explicit_price and re.match(
+            r"\s*(?:years?|yrs?|year[-\s]?old|inches?|inch|centimeters?|cm|"
+            r"millimeters?|mm|kilograms?|kg|pounds?|lbs?)\b",
+            after,
+            re.IGNORECASE,
+        ):
+            return False
+        if not explicit_price:
+            raw_values = [
+                group
+                for group in match.groups()
+                if group is not None
+            ]
+            if any(1900 <= number(raw_value) <= 2099 for raw_value in raw_values):
+                return False
+        return True
+
     match = PRICE_RANGE.search(text)
-    if match is not None:
+    if match is not None and allowed(match):
         low, high = sorted((number(match.group(1)), number(match.group(2))))
         return low, high
 
     price_min = price_max = None
     match = PRICE_MAX.search(text)
-    if match is not None:
+    if match is not None and allowed(match):
         price_max = number(match.group(1))
     match = PRICE_MIN.search(text)
-    if match is not None:
+    if match is not None and allowed(match):
         price_min = number(match.group(1))
 
     if price_min is None and price_max is None:
         match = PRICE_AROUND.search(text)
-        if match is not None:
+        if match is not None and allowed(match):
             # "around $60" is a soft bound in both directions.
             centre = number(match.group(1))
             return centre * 0.8, centre * 1.2
-        match = re.search(rf"\${_NUMBER[2:]}", text)
-        if match is not None:
-            price_max = number(match.group(1))
+        match = PRICE_DIRECT.search(text)
+        if match is not None and allowed(match):
+            raw_value = next(group for group in match.groups() if group is not None)
+            price_max = number(raw_value)
 
     return price_min, price_max
 
@@ -426,57 +254,6 @@ def _normalise_known_phrases(message: str) -> str:
     return text
 
 
-def extract_constraints(message: str) -> ShoppingConstraints:
-    """Map one utterance onto the canonical vocabulary. Never invents values."""
-    text = _normalise_known_phrases(message or "")
-
-    # Collect every candidate match, then award overlapping spans to the
-    # longest one. Without this, "dark blue" records both navy and blue, and
-    # "running shoes" records the category *and* a use case the customer never
-    # stated -- both of which inflate the tag count the router keys off.
-    candidates: list[tuple[int, int, str, str]] = []
-    for name in CATEGORICAL_FIELDS:
-        for canonical, pattern in _COMPILED[name]:
-            for match in pattern.finditer(text):
-                candidates.append((match.start(), match.end(), name, canonical))
-
-    candidates.sort(key=lambda item: (item[0] - item[1], item[0]))
-    claimed: list[tuple[int, int]] = []
-    values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
-    for start, end, name, canonical in candidates:
-        if any(start < taken_end and end > taken_start for taken_start, taken_end in claimed):
-            continue
-        claimed.append((start, end))
-        if canonical not in values[name]:
-            values[name].append(canonical)
-    values = {name: tuple(found) for name, found in values.items()}
-
-    numeric_sizes = tuple(dict.fromkeys(SIZE_NUMERIC.findall(text)))
-    if numeric_sizes:
-        values["size"] = values["size"] + numeric_sizes
-
-    price_min, price_max = _extract_prices(text)
-
-    # An attribute named without a value is a topic, not a constraint. Keep it
-    # so a later component can ask about it; never count it as commitment.
-    unmapped = tuple(
-        sorted(
-            {
-                word.lower()
-                for word in ATTRIBUTE_TOPIC.findall(text)
-                if not values.get(_TOPIC_FIELD.get(word.lower(), ""), ())
-            }
-        )
-    )
-
-    return ShoppingConstraints(
-        price_min=price_min,
-        price_max=price_max,
-        unmapped=unmapped,
-        **values,
-    )
-
-
 _TOPIC_FIELD = {
     "color": "color", "colour": "color", "material": "material",
     "fabric": "material", "size": "size", "sizing": "size", "style": "style",
@@ -484,9 +261,7 @@ _TOPIC_FIELD = {
     "budget": "price", "price": "price",
 }
 
-# Issue #7/#8 integration.  The original extractor remains available as an
-# offline compatibility fallback until Issue #5 facts have produced a
-# dictionary artifact.
+# Generated dictionary integration.
 from dataclasses import dataclass as _dataclass, field as _field
 from pathlib import Path as _Path
 from typing import Callable as _Callable, Iterable as _Iterable, Mapping as _Mapping
@@ -511,7 +286,7 @@ class ConstraintEvidence:
 
 @_dataclass(frozen=True)
 class CanonicalShoppingConstraints(ShoppingConstraints):
-    """Issue #7 output with optional resolver provenance."""
+    """Runtime constraint output with optional resolver provenance."""
 
     evidence: tuple[ConstraintEvidence, ...] = _field(default=())
 
@@ -597,6 +372,45 @@ def _load_default_dictionary() -> _AttributeDictionary | None:
     if not (directory / "normalized_lookup.json").exists():
         return None
     return _AttributeDictionary.load(directory)
+
+
+def _dictionary_pattern_surface(value: str) -> str:
+    """Build a separator-tolerant regex from a normalized dictionary value."""
+
+    parts = value.split()
+    return r"[\s_-]+".join(re.escape(part) for part in parts)
+
+
+def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
+    """Build an intent-signal pattern from the generated dictionary.
+
+    ``size`` is a structured runtime field rather than a dictionary attribute,
+    so its callers supply the numeric/topic patterns explicitly. All other
+    attribute values come from the required generated registry. The optional
+    expressions are retained for attribute-topic and contextual signal words.
+    """
+
+    if field == "size":
+        return re.compile("|".join(extra), re.IGNORECASE)
+    if field not in _DICTIONARY_ATTRIBUTES:
+        raise ValueError(f"unknown canonical attribute: {field}")
+
+    dictionary = _load_default_dictionary()
+    if dictionary is None:
+        raise RuntimeError(
+            "generated attribute dictionary is required at "
+            "data/derived/dictionary"
+        )
+
+    alternatives = tuple(
+        rf"(?<![A-Za-z0-9]){_dictionary_pattern_surface(value.normalized)}"
+        rf"(?![A-Za-z0-9])"
+        for value in dictionary.values
+        if value.attribute == field and value.normalized
+    )
+    if not alternatives and not extra:
+        raise RuntimeError(f"generated attribute dictionary has no values for {field}")
+    return re.compile("|".join((*extra, *alternatives)), re.IGNORECASE)
 
 
 def _dictionary_surface_matches(
@@ -863,9 +677,6 @@ def _semantic_items(
     return tuple(sorted(items, key=lambda item: (-item.score, item.canonical_id)))
 
 
-_legacy_extract_constraints = extract_constraints
-
-
 def _extract_dictionary_constraints(
     message: str,
     dictionary: _AttributeDictionary,
@@ -965,18 +776,20 @@ def extract_constraints(
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = 0.70,
 ) -> ShoppingConstraints:
-    """Extract constraints using #8 exact lookup and optional semantic fallback.
+    """Extract constraints using the generated dictionary and exact lookup.
 
     Structured price/size parsing runs first. Exact dictionary values are then
     matched longest-first, and only the unmatched meaningful phrase reaches the
     injected semantic matcher. Results below the threshold remain unresolved.
-    Until a generated dictionary artifact exists, the legacy offline vocabulary
-    is used so the starter remains runnable without Issue #5 data.
+    The generated dictionary is required for categorical extraction.
     """
     text = _normalise_known_phrases(message or "")
     active_dictionary = dictionary if dictionary is not None else _load_default_dictionary()
     if active_dictionary is None:
-        return _legacy_extract_constraints(text)
+        raise RuntimeError(
+            "generated attribute dictionary is required at "
+            "data/derived/dictionary"
+        )
     return _extract_dictionary_constraints(
         text,
         active_dictionary,

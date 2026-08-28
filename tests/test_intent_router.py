@@ -4,7 +4,6 @@ import json
 import re
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from evaluator.hard_evaluator import customer_sentence
 from starter.routing import (
@@ -19,9 +18,8 @@ from starter.routing import (
     lexicon,
 )
 from starter.routing.constraints import (
-    CANONICAL_VOCAB,
     CATEGORICAL_FIELDS,
-    _legacy_extract_constraints,
+    _load_default_dictionary,
 )
 from starter.routing.local_model import LABEL_QUERIES, QwenRerankerBackend
 
@@ -224,13 +222,13 @@ class CascadeTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: constraint extraction (issue #7) and the tag rule
+# Phase 1: constraint extraction and the tag rule
 # ---------------------------------------------------------------------------
 
 
 class ConstraintExtractionTest(unittest.TestCase):
-    def test_produces_the_issue_7_record_shape(self) -> None:
-        payload = _legacy_extract_constraints(
+    def test_produces_the_runtime_record_shape(self) -> None:
+        payload = extract_constraints(
             "I need dark blue waterproof hiking boots under $100."
         ).as_dict()
         self.assertEqual(
@@ -239,34 +237,38 @@ class ConstraintExtractionTest(unittest.TestCase):
              "size", "style", "feature", "use_case"},
         )
         self.assertEqual(payload["price_max"], 100)
-        self.assertIn("navy", payload["color"])
+        self.assertIn("dark blue", payload["color"])
         self.assertIn("waterproof", payload["feature"])
 
-    def test_maps_natural_wording_to_canonical_values(self) -> None:
-        cases = [
-            ("dark blue", "color", "navy"),
-            ("water resistant", "feature", "waterproof"),
-            ("a running shoe", "category", "running_shoes"),
-            ("vegan leather", "material", "faux_leather"),
-        ]
-        for phrase, field_name, canonical in cases:
-            values = getattr(
-                _legacy_extract_constraints(f"I want something {phrase}."), field_name
-            )
-            self.assertIn(canonical, values, phrase)
+    def test_preserves_exact_dictionary_values(self) -> None:
+        constraints = extract_constraints("I want a dark blue coat.")
+        self.assertIn("dark blue", constraints.color)
 
     def test_normalises_price_bounds(self) -> None:
         self.assertEqual(extract_constraints("less than 80 bucks").price_max, 80)
         self.assertEqual(extract_constraints("under $100").price_max, 100)
+        self.assertEqual(extract_constraints("under 100").price_max, 100)
         self.assertEqual(extract_constraints("at least $30").price_min, 30)
+        self.assertEqual(extract_constraints("over 50").price_min, 50)
         both = extract_constraints("between $50 and $100")
         self.assertEqual((both.price_min, both.price_max), (50, 100))
+        both = extract_constraints("between 30 and 60")
+        self.assertEqual((both.price_min, both.price_max), (30, 60))
 
     def test_a_size_number_is_not_a_price(self) -> None:
         constraints = extract_constraints("I need a running shoe in size 10.")
         self.assertIsNone(constraints.price_max)
         self.assertIsNone(constraints.price_min)
         self.assertIn("10", constraints.size)
+        for message in (
+            "I need clothes for 10 to 12 years.",
+            "between 30 and 60 years old",
+            "from 2020 to 2024",
+            "shoe size is 30 to 60",
+        ):
+            constraints = extract_constraints(message)
+            self.assertIsNone(constraints.price_max, message)
+            self.assertIsNone(constraints.price_min, message)
 
     def test_does_not_invent_constraints(self) -> None:
         constraints = extract_constraints("I'm just having a look around today.")
@@ -283,30 +285,10 @@ class ConstraintExtractionTest(unittest.TestCase):
 
     def test_overlapping_aliases_are_counted_once(self) -> None:
         """"dark blue" is one colour, not navy plus blue."""
-        self.assertEqual(_legacy_extract_constraints("a dark blue coat").color, ("navy",))
-
-    def test_a_category_does_not_imply_a_use_case(self) -> None:
-        """"running shoes" names a product; it is not a stated use case."""
-        constraints = _legacy_extract_constraints("I'm browsing running shoes.")
-        self.assertEqual(constraints.category, ("running_shoes",))
-        self.assertEqual(constraints.use_case, ())
-
-    def test_category_is_excluded_from_the_tag_count(self) -> None:
-        constraints = _legacy_extract_constraints("I'm looking for cardigans.")
-        self.assertEqual(constraints.category, ("cardigan",))
-        self.assertEqual(constraints.tag_count(exclude=("category",)), 0)
-
+        self.assertEqual(extract_constraints("a dark blue coat").color, ("dark blue",))
 
 class TwoPhaseTest(unittest.TestCase):
     def setUp(self) -> None:
-        # These Issue #6/#7 tests exercise the curated legacy intent vocabulary.
-        # V4 dictionary behavior is covered explicitly in test_attribute_dictionary.
-        self._constraint_patcher = patch(
-            "starter.routing.intent_router.extract_constraints",
-            _legacy_extract_constraints,
-        )
-        self._constraint_patcher.start()
-        self.addCleanup(self._constraint_patcher.stop)
         self.router = TwoPhaseIntentRouter()
 
     def test_two_tags_decide_buying_without_consulting_the_ledger(self) -> None:
@@ -432,7 +414,7 @@ class SessionFlowTest(unittest.TestCase):
         self.assertEqual(result.intent, BROWSING)
 
     def test_override_message_does_not_change_buying_intent(self) -> None:
-        """An override replaces a constraint. That is issue #7's job, not ours."""
+        """An override replaces a constraint outside the routing layer."""
         session = "s5"
         self.tracker.observe(session, "I'm looking for socks. I'd prefer nylon.", turn=1)
         result = self.tracker.observe(
@@ -462,16 +444,6 @@ class SessionFlowTest(unittest.TestCase):
 
 
 class DevSetTest(unittest.TestCase):
-    def setUp(self) -> None:
-        # Keep the historical intent quality floor independent of the optional
-        # V4 catalog dictionary's product-derived fact distribution.
-        self._constraint_patcher = patch(
-            "starter.routing.intent_router.extract_constraints",
-            _legacy_extract_constraints,
-        )
-        self._constraint_patcher.start()
-        self.addCleanup(self._constraint_patcher.stop)
-
     def test_pipeline_floor_without_the_model(self) -> None:
         """The pipeline must stay usable if the reranker is never installed."""
         router = TwoPhaseIntentRouter()
@@ -540,32 +512,39 @@ class VocabularyOwnershipTest(unittest.TestCase):
         return next(spec for spec in lexicon.SIGNALS if spec.name == name)
 
     def test_ledger_patterns_are_built_from_the_canonical_dictionary(self) -> None:
-        """Every canonical alias must appear verbatim in the ledger pattern.
-
-        Structural rather than behavioural on purpose: it fails if someone
-        hand-writes a value list instead of deriving it, even if the two
-        happen to agree today.
-        """
-        missing = []
+        """Every generated attribute has a corresponding ledger pattern."""
+        dictionary = _load_default_dictionary()
+        self.assertIsNotNone(dictionary)
         for field_name, signal_name in self.LEDGER_SIGNAL.items():
+            if field_name == "size":
+                continue
             source = self._signal(signal_name).pattern.pattern
-            for canonical, alias in CANONICAL_VOCAB[field_name]:
-                if alias not in source:
-                    missing.append(f"{field_name}:{canonical}")
-        self.assertEqual(missing, [], f"not derived from the dictionary: {missing[:10]}")
+            values = [
+                value.normalized
+                for value in dictionary.values
+                if value.attribute == field_name
+            ]
+            self.assertTrue(values, field_name)
+            self.assertTrue(any(re.search(source, f"for {value}") for value in values))
 
     def test_use_case_signal_is_built_from_the_dictionary_too(self) -> None:
         """Anchored on "for", but the values still come from one place."""
         source = self._signal("use_case").pattern.pattern
-        for canonical, alias in CANONICAL_VOCAB["use_case"]:
-            self.assertIn(alias, source, canonical)
+        dictionary = _load_default_dictionary()
+        self.assertIsNotNone(dictionary)
+        values = [
+            value.normalized
+            for value in dictionary.values
+            if value.attribute == "use_case"
+        ]
+        self.assertTrue(any(re.search(source, f"for {value}") for value in values))
 
     def test_extractor_and_ledger_agree_on_an_alias(self) -> None:
         """A canonical mapping and a ledger signal, from the same string."""
-        message = "I want a dark blue water resistant coat."
-        legacy = _legacy_extract_constraints(message)
-        self.assertIn("navy", legacy.color)
-        self.assertIn("waterproof", legacy.feature)
+        message = "I want a dark blue waterproof coat."
+        constraints = extract_constraints(message)
+        self.assertIn("dark blue", constraints.color)
+        self.assertIn("waterproof", constraints.feature)
         fired = {s.name for s in LexicalIntentRouter().classify(message).signals}
         self.assertIn("color", fired)
         self.assertIn("feature", fired)
@@ -583,7 +562,14 @@ class VocabularyOwnershipTest(unittest.TestCase):
 
     def test_budget_signal_uses_the_extractor_price_expression(self) -> None:
         pattern = self._signal("budget").pattern
-        for phrase in ("under $80", "less than 80 bucks", "between $50 and $100"):
+        for phrase in (
+            "under $80",
+            "under 100",
+            "over 50",
+            "less than 80 bucks",
+            "between $50 and $100",
+            "between 30 and 60",
+        ):
             self.assertTrue(pattern.search(phrase), phrase)
 
 

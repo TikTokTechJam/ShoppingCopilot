@@ -8,13 +8,11 @@ product says which shelf the customer is standing at, not whether they have
 decided. What separates the two intents is whether the message commits to
 anything.
 
-Vocabulary ownership: the attribute vocabularies -- brand, budget, size,
-colour, material, feature, use case and style -- are **not** defined here.
-They come from `constraints.CANONICAL_VOCAB`, the canonical dictionary issue
-#7 produces, via `constraints.alias_pattern()`. Keeping a second copy in this
-file meant two lists that could disagree about what "navy" or "water
-resistant" means; now there is one, and replacing it with the generated
-dictionary from issues #5 and #8 updates both components at once.
+Vocabulary ownership: categorical attribute vocabularies come from the
+generated dictionary loaded by `constraints.alias_pattern()`. Size remains a
+structured runtime field and uses the compact size matcher in that helper;
+price signals come from structured price expressions. Keeping values in the
+generated dictionary ensures the extractor and intent ledger use one source.
 
 What this file still owns is everything that is *not* a product attribute:
 the hesitation signals, the request verbs, the weights, and the rules for how
@@ -57,7 +55,6 @@ class SignalSpec:
     hard: bool = False
     requires_buying_evidence: bool = False
     suppressed_by_hard_evidence: bool = False
-    sourced_from: str | None = None
 
 
 def _compile(*alternatives: str) -> re.Pattern[str]:
@@ -79,11 +76,10 @@ _BUDGET = _compile(
 
 _BRAND = alias_pattern("brand", r"\bbrands?\b")
 
-# Sizes: the canonical vocabulary plus numeric sizes, which are values rather
-# than dictionary entries. Note what is *not* here -- bare single letters. An
-# unanchored \bm\b matches the "m" in "I'm" and invents a hard constraint out
-# of a contraction, flipping the label confidently wrong. `SIZE_NUMERIC` and
-# the canonical `size s` / `size m` aliases both require the word "size".
+# Size is structured runtime evidence rather than a dictionary value. Numeric
+# sizes and the topic word are matched explicitly; bare single letters are not.
+# An unanchored \bm\b matches the "m" in "I'm" and invents a hard constraint
+# out of a contraction, flipping the label confidently wrong.
 _SIZE = alias_pattern("size", SIZE_NUMERIC.pattern, r"\bsizes?\b")
 
 _COLOR = alias_pattern("color", r"\bcolou?rs?\b")
@@ -167,13 +163,13 @@ _HEDGED = _compile(r"\byet\b", r"\bfor now\b", r"\bat this point\b")
 
 SIGNALS: tuple[SignalSpec, ...] = (
     SignalSpec("budget", +1, 1.50, _BUDGET, hard=True),
-    SignalSpec("brand", +1, 1.20, _BRAND, hard=True, sourced_from="#8"),
-    SignalSpec("size", +1, 1.00, _SIZE, hard=True, sourced_from="#8"),
-    SignalSpec("color", +1, 1.00, _COLOR, hard=True, sourced_from="#8"),
-    SignalSpec("material", +1, 1.00, _MATERIAL, hard=True, sourced_from="#8"),
-    SignalSpec("feature", +1, 1.00, _FEATURE, hard=True, sourced_from="#8"),
-    SignalSpec("use_case", +1, 0.60, _USE_CASE, sourced_from="#8"),
-    SignalSpec("style", +1, 0.70, _STYLE, sourced_from="#8"),
+    SignalSpec("brand", +1, 1.20, _BRAND, hard=True),
+    SignalSpec("size", +1, 1.00, _SIZE, hard=True),
+    SignalSpec("color", +1, 1.00, _COLOR, hard=True),
+    SignalSpec("material", +1, 1.00, _MATERIAL, hard=True),
+    SignalSpec("feature", +1, 1.00, _FEATURE, hard=True),
+    SignalSpec("use_case", +1, 0.60, _USE_CASE),
+    SignalSpec("style", +1, 0.70, _STYLE),
     SignalSpec("request_verb", +1, 0.45, _REQUEST_VERB, requires_buying_evidence=True),
     SignalSpec("undecided", -1, 1.40, _UNDECIDED),
     SignalSpec("explore_verb", -1, 1.10, _EXPLORE_VERB),
