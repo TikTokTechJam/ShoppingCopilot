@@ -247,15 +247,28 @@ class ConstraintExtractionTest(unittest.TestCase):
     def test_normalises_price_bounds(self) -> None:
         self.assertEqual(extract_constraints("less than 80 bucks").price_max, 80)
         self.assertEqual(extract_constraints("under $100").price_max, 100)
+        self.assertEqual(extract_constraints("under 100").price_max, 100)
         self.assertEqual(extract_constraints("at least $30").price_min, 30)
+        self.assertEqual(extract_constraints("over 50").price_min, 50)
         both = extract_constraints("between $50 and $100")
         self.assertEqual((both.price_min, both.price_max), (50, 100))
+        both = extract_constraints("between 30 and 60")
+        self.assertEqual((both.price_min, both.price_max), (30, 60))
 
     def test_a_size_number_is_not_a_price(self) -> None:
         constraints = extract_constraints("I need a running shoe in size 10.")
         self.assertIsNone(constraints.price_max)
         self.assertIsNone(constraints.price_min)
         self.assertIn("10", constraints.size)
+        for message in (
+            "I need clothes for 10 to 12 years.",
+            "between 30 and 60 years old",
+            "from 2020 to 2024",
+            "shoe size is 30 to 60",
+        ):
+            constraints = extract_constraints(message)
+            self.assertIsNone(constraints.price_max, message)
+            self.assertIsNone(constraints.price_min, message)
 
     def test_does_not_invent_constraints(self) -> None:
         constraints = extract_constraints("I'm just having a look around today.")
@@ -549,7 +562,14 @@ class VocabularyOwnershipTest(unittest.TestCase):
 
     def test_budget_signal_uses_the_extractor_price_expression(self) -> None:
         pattern = self._signal("budget").pattern
-        for phrase in ("under $80", "less than 80 bucks", "between $50 and $100"):
+        for phrase in (
+            "under $80",
+            "under 100",
+            "over 50",
+            "less than 80 bucks",
+            "between $50 and $100",
+            "between 30 and 60",
+        ):
             self.assertTrue(pattern.search(phrase), phrase)
 
 

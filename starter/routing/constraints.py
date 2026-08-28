@@ -42,23 +42,38 @@ CATEGORICAL_FIELDS: tuple[str, ...] = (
     "use_case",
 )
 
-_NUMBER = r"\$?\s?(\d[\d,]*(?:\.\d+)?)"
+_PLAIN_NUMBER = r"\d[\d,]*(?:\.\d+)?"
+_NUMBER = rf"\$?\s?({_PLAIN_NUMBER})"
+_NON_PRICE_TAIL = (
+    r"(?!\s*(?:years?|yrs?|year[-\s]?old|inches?|inch|centimeters?|cm|"
+    r"millimeters?|mm|kilograms?|kg|pounds?|lbs?)\b)"
+    rf"(?!\s*(?:to|and|-)\s*{_PLAIN_NUMBER}\s*(?:years?|yrs?|year[-\s]?old)\b)"
+)
 
 PRICE_MAX = re.compile(
-    rf"(?:under|below|less than|no more than|cheaper than|up to|within|max(?:imum)?(?:\s+of)?|nothing over|not more than)\s*{_NUMBER}",
+    rf"(?:under|below|less than|no more than|cheaper than|up to|within|max(?:imum)?(?:\s+of)?|nothing over|not more than)\s*{_NUMBER}{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
 PRICE_MIN = re.compile(
-    rf"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?|starting (?:at|from)|from)\s*{_NUMBER}",
+    rf"(?:over|above|more than|at least|min(?:imum)?(?:\s+of)?|starting (?:at|from)|from)\s*{_NUMBER}{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
 PRICE_RANGE = re.compile(
-    rf"(?:between\s+)?{_NUMBER}\s*(?:-|–|to|and)\s*{_NUMBER}\s*(?:dollars|usd|bucks)?",
+    rf"(?<!size )(?<!sizes )(?<!sizing )(?:between\s+)?{_NUMBER}\s*(?:-|–|to|and)\s*{_NUMBER}\s*(?:dollars|usd|bucks)?{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
-PRICE_AROUND = re.compile(rf"(?:around|about|approximately|roughly)\s*{_NUMBER}", re.IGNORECASE)
-# A price only counts as a price when it is written as one.
-CURRENCY = re.compile(r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost", re.IGNORECASE)
+PRICE_AROUND = re.compile(
+    rf"(?:around|about|approximately|roughly)\s*{_NUMBER}{_NON_PRICE_TAIL}",
+    re.IGNORECASE,
+)
+PRICE_DIRECT = re.compile(
+    rf"(?:\$\s?({_PLAIN_NUMBER})|({_PLAIN_NUMBER})\s*(?:dollars?|usd|bucks)\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_PRICE_MARKER = re.compile(
+    r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost\b",
+    re.IGNORECASE,
+)
 
 # Any expression that states a price at all. The ledger uses this as its
 # budget signal; the extractor above uses the individual bounds to normalise.
@@ -69,7 +84,7 @@ PRICE_EXPRESSION = re.compile(
             PRICE_MIN.pattern,
             PRICE_RANGE.pattern,
             PRICE_AROUND.pattern,
-            r"\$\s?\d[\d,]*(?:\.\d+)?",
+            PRICE_DIRECT.pattern,
         ]
     ),
     re.IGNORECASE,
@@ -141,35 +156,62 @@ class ShoppingConstraints:
 
 
 def _extract_prices(text: str) -> tuple[float | None, float | None]:
-    if not CURRENCY.search(text):
-        # "size 10" and "10 to 12 years" are not prices.
-        return None, None
-
     def number(raw: str) -> float:
         return float(raw.replace(",", ""))
 
+    def allowed(match: re.Match[str]) -> bool:
+        window_start = max(0, match.start() - 24)
+        window_end = min(len(text), match.end() + 24)
+        window = text[window_start:window_end]
+        explicit_price = bool(_EXPLICIT_PRICE_MARKER.search(window))
+        before = text[window_start:match.start()]
+        after = text[match.end():window_end]
+        if not explicit_price and re.search(
+            r"\b(?:size|sizes|sizing)\s*(?:is|:)?\s*$|\b(?:waist|inseam|length|width|height|diameter)\s*$",
+            before,
+            re.IGNORECASE,
+        ):
+            return False
+        if not explicit_price and re.match(
+            r"\s*(?:years?|yrs?|year[-\s]?old|inches?|inch|centimeters?|cm|"
+            r"millimeters?|mm|kilograms?|kg|pounds?|lbs?)\b",
+            after,
+            re.IGNORECASE,
+        ):
+            return False
+        if not explicit_price:
+            raw_values = [
+                group
+                for group in match.groups()
+                if group is not None
+            ]
+            if any(1900 <= number(raw_value) <= 2099 for raw_value in raw_values):
+                return False
+        return True
+
     match = PRICE_RANGE.search(text)
-    if match is not None:
+    if match is not None and allowed(match):
         low, high = sorted((number(match.group(1)), number(match.group(2))))
         return low, high
 
     price_min = price_max = None
     match = PRICE_MAX.search(text)
-    if match is not None:
+    if match is not None and allowed(match):
         price_max = number(match.group(1))
     match = PRICE_MIN.search(text)
-    if match is not None:
+    if match is not None and allowed(match):
         price_min = number(match.group(1))
 
     if price_min is None and price_max is None:
         match = PRICE_AROUND.search(text)
-        if match is not None:
+        if match is not None and allowed(match):
             # "around $60" is a soft bound in both directions.
             centre = number(match.group(1))
             return centre * 0.8, centre * 1.2
-        match = re.search(rf"\${_NUMBER[2:]}", text)
-        if match is not None:
-            price_max = number(match.group(1))
+        match = PRICE_DIRECT.search(text)
+        if match is not None and allowed(match):
+            raw_value = next(group for group in match.groups() if group is not None)
+            price_max = number(raw_value)
 
     return price_min, price_max
 
