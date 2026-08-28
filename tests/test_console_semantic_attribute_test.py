@@ -28,15 +28,10 @@ class FakeLayer2Index:
         return []
 
 
-class FakeRetriever:
-    def __init__(self, index: FakeLayer2Index) -> None:
-        self.layer2_index = index
-        self.product_by_asin = {}
-
-    def _query_embedding(self, query, dimension):
+class FakeEncoder:
+    def embed_query(self, query):
         assert query == "something that won't slip in the rain"
-        assert dimension == 768
-        return [1.0] * dimension
+        return [1.0] * 768
 
 
 class ConsoleSemanticAttributeTests(unittest.TestCase):
@@ -62,8 +57,9 @@ class ConsoleSemanticAttributeTests(unittest.TestCase):
     def test_search_uses_query_encoder_and_selected_view_only(self) -> None:
         index = FakeLayer2Index()
         context = SemanticSearchContext(
-            retriever=FakeRetriever(index),
             index=index,
+            query_encoder=FakeEncoder(),
+            products={},
             model_id="jinaai/jina-embeddings-v5-text-nano",
             dimension=768,
         )
@@ -80,13 +76,11 @@ class ConsoleSemanticAttributeTests(unittest.TestCase):
         self.assertEqual(index.weights, view_weights("features"))
 
     def test_results_show_asin_score_and_selected_view_text(self) -> None:
-        product = SimpleNamespace(
-            raw={"features": ["non slip", "waterproof"]},
-        )
-        retriever = SimpleNamespace(product_by_asin={"A1": product})
+        product = {"features": ["non slip", "waterproof"]}
         context = SemanticSearchContext(
-            retriever=retriever,
             index=SimpleNamespace(),
+            query_encoder=SimpleNamespace(),
+            products={"A1": product},
             model_id="model",
             dimension=768,
         )

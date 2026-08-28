@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
-from evaluator.agent_factory import build_evaluator_agent
 from product_embeddings.layer2 import (
     LAYER2_VIEWS,
     Layer2EmbeddingIndex,
     Layer2EmbeddingMatch,
     build_layer2_view_text,
+    load_layer2_embedding_index,
+)
+from product_embeddings.pipeline import (
+    embedding_models_compatible,
+    is_jina_v5_text_nano,
+    load_local_sentence_transformer,
 )
 
 
@@ -33,8 +39,8 @@ VIEW_OPTIONS = (
     ("description", "description"),
 )
 VIEW_BY_NAME = {
-    name: view
-    for name, view in VIEW_OPTIONS
+    label: view
+    for label, view in VIEW_OPTIONS
 }
 VIEW_BY_NAME.update(
     {
@@ -47,22 +53,77 @@ VIEW_BY_NAME.update(
 
 @dataclass(frozen=True)
 class SemanticSearchContext:
-    retriever: Any
     index: Layer2EmbeddingIndex
+    query_encoder: Any
+    products: Mapping[str, Mapping[str, Any]]
     model_id: str
     dimension: int
 
 
-def _embedding_model_override(explicit: str | None) -> str | None:
-    if explicit and explicit.strip():
-        return explicit.strip()
-    configured = os.environ.get("SHOPPING_EMBEDDING_MODEL", "").strip()
+def _print(message: str) -> None:
+    print(message, flush=True)
+
+
+def _read_manifest(artifact_dir: Path) -> Mapping[str, Any]:
+    path = artifact_dir / "manifest.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"unable to read Layer 2 manifest: {path}") from exc
+    if not isinstance(payload, Mapping):
+        raise RuntimeError(f"Layer 2 manifest must be an object: {path}")
+    return payload
+
+
+def _catalog_products(
+    catalog_path: str | Path,
+    progress_fn: Callable[[str], None],
+) -> tuple[dict[str, Mapping[str, Any]], tuple[str, ...]]:
+    source = Path(catalog_path)
+    products: dict[str, Mapping[str, Any]] = {}
+    order: list[str] = []
+    try:
+        handle = source.open(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"unable to read catalog: {source}") from exc
+    with handle:
+        for row_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                product = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"invalid catalog JSON at {source}:{row_number}") from exc
+            if not isinstance(product, Mapping):
+                raise RuntimeError(f"catalog row {row_number} is not an object")
+            asin = product.get("parent_asin")
+            if not isinstance(asin, str) or not asin.strip():
+                raise RuntimeError(f"catalog row {row_number} has no parent_asin")
+            asin = asin.strip()
+            if asin in products:
+                raise RuntimeError(f"duplicate parent_asin in catalog: {asin}")
+            products[asin] = product
+            order.append(asin)
+            if len(order) % 10000 == 0:
+                progress_fn(f"Catalog rows loaded: {len(order):,}")
+    if not order:
+        raise RuntimeError(f"catalog is empty: {source}")
+    progress_fn(f"Catalog loaded: {len(order):,} products")
+    return products, tuple(order)
+
+
+def _model_path(explicit: str | None, manifest_model: str) -> str:
+    configured = (explicit or os.environ.get("SHOPPING_EMBEDDING_MODEL", "")).strip()
     if configured:
         return configured
     for path in DEFAULT_MODEL_DIRS:
         if path.is_dir():
             return path.as_posix()
-    return None
+    if manifest_model:
+        return manifest_model
+    raise RuntimeError(
+        "no local query encoder configured; set SHOPPING_EMBEDDING_MODEL"
+    )
 
 
 def load_search_context(
@@ -70,40 +131,72 @@ def load_search_context(
     artifact_dir: str | Path = DEFAULT_ARTIFACT_DIR,
     *,
     embedding_model: str | None = None,
+    progress_fn: Callable[[str], None] = _print,
 ) -> SemanticSearchContext:
-    """Load the current Agent retriever and its existing Layer 2 index."""
+    """Load only the current Layer 2 index, catalog text, and query encoder."""
 
     artifact = Path(artifact_dir)
     if not artifact.is_dir():
         raise RuntimeError(f"Layer 2 artifact directory is unavailable: {artifact}")
-
-    agent = build_evaluator_agent(
-        catalog_path,
-        layer2_artifact_dir=artifact,
-        embedding_model=_embedding_model_override(embedding_model),
-    )
-    retriever = agent.retriever
-    index = retriever.layer2_index
-    if index is None:
-        raise RuntimeError(f"Layer 2 index could not be loaded from {artifact}")
-    if not retriever.dense_available:
-        reason = getattr(retriever, "layer2_compatibility_error", None)
-        raise RuntimeError(reason or "Layer 2 semantic retrieval is unavailable")
-
-    query_encoder = retriever.query_encoder
-    model_id = str(
-        getattr(
-            query_encoder,
-            "model_id",
-            index.manifest.get("embedding_model", index.manifest.get("model", "")),
-        )
-    )
-    if model_id.casefold() == "hashing-fallback-v1":
+    manifest = _read_manifest(artifact)
+    expected_model = manifest.get("embedding_model", manifest.get("model"))
+    if not isinstance(expected_model, str) or not expected_model.strip():
+        raise RuntimeError("Layer 2 manifest does not declare an embedding model")
+    expected_model = expected_model.strip()
+    if expected_model.casefold() == "hashing-fallback-v1":
         raise RuntimeError("hashing-fallback-v1 is not allowed for semantic search")
+
+    progress_fn("Loading catalog row order and view text...")
+    products, catalog_order = _catalog_products(catalog_path, progress_fn)
+    progress_fn("Loading Layer 2 category/title/features/description matrices...")
+    try:
+        index = load_layer2_embedding_index(
+            artifact,
+            expected_asins=catalog_order,
+        )
+    except (ImportError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"unable to load Layer 2 artifact from {artifact}: {exc}") from exc
+    progress_fn(
+        f"Layer 2 loaded: {len(index.asins):,} products, "
+        f"{index.dimension}-dimensional vectors"
+    )
+
+    model_path = _model_path(embedding_model, expected_model)
+    progress_fn(f"Loading local query encoder: {model_path}")
+    jina = is_jina_v5_text_nano(expected_model) or is_jina_v5_text_nano(model_path)
+    try:
+        query_encoder = load_local_sentence_transformer(
+            model_path,
+            task="retrieval" if jina else None,
+            document_prompt_name="document" if jina else None,
+            query_prompt_name="query" if jina else None,
+            trust_remote_code=jina,
+        )
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"unable to load local query encoder {model_path!r}: {exc}"
+        ) from exc
+
+    actual_model = str(getattr(query_encoder, "model_id", model_path))
+    if not embedding_models_compatible(expected_model, actual_model):
+        raise RuntimeError(
+            "query encoder does not match the Layer 2 model: "
+            f"{actual_model} != {expected_model}"
+        )
+    encoder_dimension = getattr(query_encoder, "embedding_dimension", None)
+    if encoder_dimension is not None and int(encoder_dimension) != index.dimension:
+        raise RuntimeError(
+            "query encoder dimension does not match Layer 2: "
+            f"{encoder_dimension} != {index.dimension}"
+        )
+    if not callable(getattr(query_encoder, "embed_query", None)):
+        raise RuntimeError("local query encoder does not expose embed_query()")
+    progress_fn("Query encoder loaded.")
     return SemanticSearchContext(
-        retriever=retriever,
         index=index,
-        model_id=model_id,
+        query_encoder=query_encoder,
+        products=products,
+        model_id=actual_model,
         dimension=index.dimension,
     )
 
@@ -119,6 +212,34 @@ def view_weights(selected_view: str) -> dict[str, float]:
     }
 
 
+def _query_embedding(
+    query_encoder: Any,
+    query: str,
+    dimension: int,
+) -> Any:
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("NumPy is required for Layer 2 semantic search") from exc
+    try:
+        query_value = query_encoder.embed_query(query)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"query encoder failed: {exc}") from exc
+    query_array = np.asarray(query_value, dtype=np.float32)
+    if query_array.ndim == 2 and query_array.shape[0] == 1:
+        query_array = query_array[0]
+    if query_array.ndim != 1 or query_array.size != dimension:
+        raise RuntimeError(
+            "query encoder returned an invalid vector dimension: "
+            f"{tuple(query_array.shape)}, expected ({dimension},)"
+        )
+    if not np.isfinite(query_array).all():
+        raise RuntimeError("query encoder returned non-finite values")
+    if float(np.linalg.norm(query_array.astype(np.float64))) == 0.0:
+        raise RuntimeError("query encoder returned a zero vector")
+    return query_array
+
+
 def search_view(
     context: SemanticSearchContext,
     selected_view: str,
@@ -126,18 +247,15 @@ def search_view(
     *,
     top_k: int = TOP_K,
 ) -> list[Layer2EmbeddingMatch]:
-    """Encode and search using only the selected existing Layer 2 view."""
+    """Search only the selected existing Layer 2 product-view matrix."""
 
     if top_k < 1:
         raise ValueError("top_k must be positive")
-    query_embedding = context.retriever._query_embedding(
+    query_embedding = _query_embedding(
+        context.query_encoder,
         query,
         context.dimension,
     )
-    if query_embedding is None:
-        raise RuntimeError(
-            "the current query encoder did not return a valid Layer 2 vector"
-        )
     return context.index.search(
         query_embedding,
         top_k=top_k,
@@ -150,10 +268,10 @@ def product_view_text(
     match: Layer2EmbeddingMatch,
     selected_view: str,
 ) -> str:
-    product = context.retriever.product_by_asin.get(match.parent_asin)
+    product = context.products.get(match.parent_asin)
     if product is None:
         return ""
-    return build_layer2_view_text(product.raw, selected_view)
+    return build_layer2_view_text(product, selected_view)
 
 
 def print_results(
@@ -161,7 +279,7 @@ def print_results(
     selected_view: str,
     matches: Iterable[Layer2EmbeddingMatch],
     *,
-    output_fn: Callable[[str], None] = print,
+    output_fn: Callable[[str], None] = _print,
 ) -> None:
     rows = list(matches)
     if not rows:
@@ -171,8 +289,7 @@ def print_results(
         f"#  product ASIN          similarity    {selected_view} view text"
     )
     for rank, match in enumerate(rows, 1):
-        text = product_view_text(context, match, selected_view)
-        text = " ".join(text.split())
+        text = " ".join(product_view_text(context, match, selected_view).split())
         if len(text) > 100:
             text = text[:97] + "..."
         output_fn(
@@ -222,7 +339,7 @@ def run_console(
     embedding_model: str | None = None,
     top_k: int = TOP_K,
     input_fn: Callable[[str], str] = input,
-    output_fn: Callable[[str], None] = print,
+    output_fn: Callable[[str], None] = _print,
 ) -> None:
     if top_k < 1:
         raise ValueError("top_k must be positive")
@@ -230,10 +347,8 @@ def run_console(
         catalog_path,
         artifact_dir,
         embedding_model=embedding_model,
+        progress_fn=output_fn,
     )
-    output_fn("Loaded the current Layer 2 product embedding index.")
-    output_fn(f"Model: {context.model_id}")
-    output_fn(f"Embedding dimension: {context.dimension}")
     output_fn("Type q to quit.")
 
     while True:
