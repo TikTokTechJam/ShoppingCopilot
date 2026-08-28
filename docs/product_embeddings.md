@@ -83,3 +83,31 @@ weights.
 is supplied. Layer 1 constraints still run independently and are combined only
 at candidate scoring. A compatibility loader can still read previously
 generated single-matrix `product_embeddings.npy` artifacts.
+
+## End-to-end smoke and evaluation
+
+The deterministic hash model can exercise the complete Agent path without a
+semantic model:
+
+```bash
+python -m scripts.smoke_layer2_agent \
+  --catalog data/catalog.jsonl \
+  --layer2-artifact-dir data/derived/product_embeddings \
+  --hash-dimension 384
+```
+
+The evaluators default to the Layer 1-only baseline. Enable Layer 2 by passing
+the artifact directory and the same model used to build it. The hash model is
+also available for plumbing tests:
+
+```bash
+python -m evaluator.hard_evaluator \
+  --catalog data/catalog.jsonl \
+  --sessions data/derived/gptannotation/sessions.jsonl \
+  --layer2-artifact-dir data/derived/product_embeddings \
+  --hash-dimension 384 \
+  --output results_layer1_layer2_hash.json
+```
+
+Use `--disable-layer2` for an explicit Layer 1-only run. For a semantic run,
+replace `--hash-dimension 384` with `--embedding-model path/to/local/model`.

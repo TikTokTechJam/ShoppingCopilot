@@ -509,7 +509,9 @@ class ProductRetriever:
         encoder = self.query_encoder
         if encoder is None:
             return None
-        if hasattr(encoder, "encode"):
+        if hasattr(encoder, "embed_query"):
+            query_value = encoder.embed_query(query_text)
+        elif hasattr(encoder, "encode"):
             method = encoder.encode
             try:
                 query_value = method(
@@ -672,8 +674,10 @@ class ProductRetriever:
             ranked_asins = sorted(
                 eligible_asins,
                 key=lambda asin: (
-                    -structured_score(asin),
-                    -dense_scores.get(asin, 0.0),
+                    -(
+                        structured_score(asin)
+                        + DENSE_SCORE_WEIGHT * dense_scores.get(asin, 0.0)
+                    ),
                     self.product_by_asin[asin].catalog_order,
                 ),
             )[:limit]

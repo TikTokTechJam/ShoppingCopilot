@@ -1,0 +1,3649 @@
+{
+  "sample_count": 400,
+  "hit_rate_at_10": 0.3675,
+  "mrr": 0.1343402777777778,
+  "mttc": 8.515,
+  "efficiency": 0.24849999999999994,
+  "technical_score": 0.27375208333333334,
+  "scenario_metrics": {
+    "buying": {
+      "sample_count": 160,
+      "hit_rate_at_10": 0.50625,
+      "mrr": 0.17890625,
+      "mttc": 7.3125,
+      "efficiency": 0.36875,
+      "technical_score": 0.38054687499999995
+    },
+    "browsing": {
+      "sample_count": 160,
+      "hit_rate_at_10": 0.30625,
+      "mrr": 0.11884672619047618,
+      "mttc": 9.13125,
+      "efficiency": 0.18687500000000004,
+      "technical_score": 0.22615401785714287
+    },
+    "intent_override": {
+      "sample_count": 60,
+      "hit_rate_at_10": 0.15,
+      "mrr": 0.05375,
+      "mttc": 10.2,
+      "efficiency": 0.08000000000000007,
+      "technical_score": 0.10712500000000001
+    },
+    "boundary": {
+      "sample_count": 20,
+      "hit_rate_at_10": 0.4,
+      "mrr": 0.14353174603174604,
+      "mttc": 8.15,
+      "efficiency": 0.285,
+      "technical_score": 0.30005952380952383
+    }
+  },
+  "reported_token_usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
+  "sessions": [
+    {
+      "sample_id": "manual400_0001",
+      "scenario_type": "browsing",
+      "target_asin": "B07H7PGKFD",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0002",
+      "scenario_type": "browsing",
+      "target_asin": "B0C6BL4RNN",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0003",
+      "scenario_type": "buying",
+      "target_asin": "B097422HPR",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0004",
+      "scenario_type": "browsing",
+      "target_asin": "B00N9QC802",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0005",
+      "scenario_type": "browsing",
+      "target_asin": "B07ZVF8S3X",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0006",
+      "scenario_type": "buying",
+      "target_asin": "B0BS2JD1DG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0007",
+      "scenario_type": "browsing",
+      "target_asin": "B0BDDXMB8G",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0008",
+      "scenario_type": "browsing",
+      "target_asin": "B09WQY8456",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0009",
+      "scenario_type": "browsing",
+      "target_asin": "B07K4PLJ66",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0010",
+      "scenario_type": "browsing",
+      "target_asin": "B0111RB1SU",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0011",
+      "scenario_type": "intent_override",
+      "target_asin": "B07YHBF835",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0012",
+      "scenario_type": "intent_override",
+      "target_asin": "B0C7PVY6C5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0013",
+      "scenario_type": "browsing",
+      "target_asin": "B073J4WJ38",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0014",
+      "scenario_type": "browsing",
+      "target_asin": "B0728BTKPB",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0015",
+      "scenario_type": "intent_override",
+      "target_asin": "B07YLZLPMQ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0016",
+      "scenario_type": "browsing",
+      "target_asin": "B09TT3XKNF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0017",
+      "scenario_type": "browsing",
+      "target_asin": "B09TN9J1BK",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0018",
+      "scenario_type": "boundary",
+      "target_asin": "B082P5MBV4",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0019",
+      "scenario_type": "intent_override",
+      "target_asin": "B07CPRSTH5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0020",
+      "scenario_type": "buying",
+      "target_asin": "B077XMSB1S",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0021",
+      "scenario_type": "boundary",
+      "target_asin": "B085GL5ZP2",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0022",
+      "scenario_type": "intent_override",
+      "target_asin": "B09GL52KHY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0023",
+      "scenario_type": "intent_override",
+      "target_asin": "B076VQQ962",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0024",
+      "scenario_type": "intent_override",
+      "target_asin": "B0739P14SB",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0025",
+      "scenario_type": "buying",
+      "target_asin": "B0877B9T5G",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0026",
+      "scenario_type": "browsing",
+      "target_asin": "B08DHTCSWM",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0027",
+      "scenario_type": "browsing",
+      "target_asin": "B07L6RCMN6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0028",
+      "scenario_type": "buying",
+      "target_asin": "B07NNMZZ1K",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0029",
+      "scenario_type": "buying",
+      "target_asin": "B07DL5FDQT",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0030",
+      "scenario_type": "buying",
+      "target_asin": "B094N89W3N",
+      "hit": true,
+      "first_hit_turn": 8,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0031",
+      "scenario_type": "browsing",
+      "target_asin": "B09C5K3NJZ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0032",
+      "scenario_type": "browsing",
+      "target_asin": "B082QVXS5Y",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0033",
+      "scenario_type": "buying",
+      "target_asin": "B076P9H38P",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0034",
+      "scenario_type": "buying",
+      "target_asin": "B00O7RSNP6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0035",
+      "scenario_type": "browsing",
+      "target_asin": "B0B4D3YNXP",
+      "hit": true,
+      "first_hit_turn": 8,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0036",
+      "scenario_type": "buying",
+      "target_asin": "B076SJG2NT",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0037",
+      "scenario_type": "boundary",
+      "target_asin": "B095BM7Z5L",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0038",
+      "scenario_type": "buying",
+      "target_asin": "B086166WVZ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0039",
+      "scenario_type": "intent_override",
+      "target_asin": "B006Y680TC",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0040",
+      "scenario_type": "buying",
+      "target_asin": "B09X9NL34K",
+      "hit": true,
+      "first_hit_turn": 8,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0041",
+      "scenario_type": "buying",
+      "target_asin": "B08Z8H22VL",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0042",
+      "scenario_type": "buying",
+      "target_asin": "B07KXP7G3Y",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0043",
+      "scenario_type": "buying",
+      "target_asin": "B01KPFK9ZA",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0044",
+      "scenario_type": "browsing",
+      "target_asin": "B07WT1F1DF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0045",
+      "scenario_type": "browsing",
+      "target_asin": "B07JWJBHKJ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0046",
+      "scenario_type": "browsing",
+      "target_asin": "B0747Z6J47",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0047",
+      "scenario_type": "buying",
+      "target_asin": "B08359RQZT",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0048",
+      "scenario_type": "buying",
+      "target_asin": "B07DZCFPX7",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0049",
+      "scenario_type": "buying",
+      "target_asin": "B07Q6YRB76",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0050",
+      "scenario_type": "browsing",
+      "target_asin": "B07FCGDBJF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0051",
+      "scenario_type": "intent_override",
+      "target_asin": "B07Q3VH8PM",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0052",
+      "scenario_type": "buying",
+      "target_asin": "B07VNT2VJL",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0053",
+      "scenario_type": "buying",
+      "target_asin": "B07BWD14JD",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0054",
+      "scenario_type": "buying",
+      "target_asin": "B074ZTFX43",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0055",
+      "scenario_type": "buying",
+      "target_asin": "B09NNXKKG7",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0056",
+      "scenario_type": "buying",
+      "target_asin": "B07DVQQFWB",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0057",
+      "scenario_type": "buying",
+      "target_asin": "B0BSFGB48M",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0058",
+      "scenario_type": "boundary",
+      "target_asin": "B0738JQHD3",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0059",
+      "scenario_type": "boundary",
+      "target_asin": "B07WMNW459",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0060",
+      "scenario_type": "browsing",
+      "target_asin": "B097GQQMPX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0061",
+      "scenario_type": "browsing",
+      "target_asin": "B076454NTJ",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0062",
+      "scenario_type": "browsing",
+      "target_asin": "B07S7Z3CMK",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0063",
+      "scenario_type": "buying",
+      "target_asin": "B0C377NMF4",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0064",
+      "scenario_type": "buying",
+      "target_asin": "B09CHDM72F",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0065",
+      "scenario_type": "buying",
+      "target_asin": "B07GXHPWTJ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0066",
+      "scenario_type": "browsing",
+      "target_asin": "B07GXDVV4Z",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0067",
+      "scenario_type": "browsing",
+      "target_asin": "B00IS00054",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0068",
+      "scenario_type": "browsing",
+      "target_asin": "B093GJJMYH",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0069",
+      "scenario_type": "buying",
+      "target_asin": "B0963V1PYN",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0070",
+      "scenario_type": "browsing",
+      "target_asin": "B07BCP8DG5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0071",
+      "scenario_type": "intent_override",
+      "target_asin": "B0886DFK61",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0072",
+      "scenario_type": "intent_override",
+      "target_asin": "B091BQP5RY",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0073",
+      "scenario_type": "buying",
+      "target_asin": "B01B2497IS",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0074",
+      "scenario_type": "boundary",
+      "target_asin": "B01L2N2ITE",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0075",
+      "scenario_type": "buying",
+      "target_asin": "B09CD68H2K",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0076",
+      "scenario_type": "browsing",
+      "target_asin": "B07WRV215D",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0077",
+      "scenario_type": "intent_override",
+      "target_asin": "B01IMTL81U",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0078",
+      "scenario_type": "buying",
+      "target_asin": "B07HNRSJHB",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0079",
+      "scenario_type": "buying",
+      "target_asin": "B07X1J54ZN",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0080",
+      "scenario_type": "buying",
+      "target_asin": "B08P46TVJW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0081",
+      "scenario_type": "browsing",
+      "target_asin": "B09MVLZYV6",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0082",
+      "scenario_type": "browsing",
+      "target_asin": "B00BCHDM14",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0083",
+      "scenario_type": "buying",
+      "target_asin": "B0792TWF7C",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0084",
+      "scenario_type": "intent_override",
+      "target_asin": "B01DLTHCGQ",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0085",
+      "scenario_type": "browsing",
+      "target_asin": "B08JGCSHXP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0086",
+      "scenario_type": "browsing",
+      "target_asin": "B07BBH8R7Q",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0087",
+      "scenario_type": "intent_override",
+      "target_asin": "B07F8NKWG3",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0088",
+      "scenario_type": "buying",
+      "target_asin": "B087R4DZTY",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0089",
+      "scenario_type": "buying",
+      "target_asin": "B075LPBBP6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0090",
+      "scenario_type": "boundary",
+      "target_asin": "B07BJFXSR1",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0091",
+      "scenario_type": "buying",
+      "target_asin": "B09TXBS2T6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0092",
+      "scenario_type": "browsing",
+      "target_asin": "B082NP2T2V",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0093",
+      "scenario_type": "browsing",
+      "target_asin": "B0B8J3X7P8",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0094",
+      "scenario_type": "intent_override",
+      "target_asin": "B0BHRYRKNP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0095",
+      "scenario_type": "buying",
+      "target_asin": "B0BLRY959B",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0096",
+      "scenario_type": "browsing",
+      "target_asin": "B07H7BHH23",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0097",
+      "scenario_type": "browsing",
+      "target_asin": "B07VGBQ6QN",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0098",
+      "scenario_type": "intent_override",
+      "target_asin": "B00YE17M16",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0099",
+      "scenario_type": "intent_override",
+      "target_asin": "B07D27WMB6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0100",
+      "scenario_type": "intent_override",
+      "target_asin": "B08C7BPQ44",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0101",
+      "scenario_type": "buying",
+      "target_asin": "B07QZWWJVR",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0102",
+      "scenario_type": "browsing",
+      "target_asin": "B07TD4GFS5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0103",
+      "scenario_type": "buying",
+      "target_asin": "B076RCCP4Y",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0104",
+      "scenario_type": "buying",
+      "target_asin": "B07C1SL9CS",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0105",
+      "scenario_type": "browsing",
+      "target_asin": "B09BN7KM2L",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0106",
+      "scenario_type": "browsing",
+      "target_asin": "B09NR6KTX5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0107",
+      "scenario_type": "buying",
+      "target_asin": "B06Y65SLST",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0108",
+      "scenario_type": "browsing",
+      "target_asin": "B0C5K1LH6B",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0109",
+      "scenario_type": "buying",
+      "target_asin": "B07MFJTN3W",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0110",
+      "scenario_type": "boundary",
+      "target_asin": "B07TC3DRF2",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0111",
+      "scenario_type": "buying",
+      "target_asin": "B01NBPGZYA",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0112",
+      "scenario_type": "buying",
+      "target_asin": "B07JLHNGL9",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0113",
+      "scenario_type": "intent_override",
+      "target_asin": "B09MBNPJRD",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0114",
+      "scenario_type": "browsing",
+      "target_asin": "B09251WRDY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0115",
+      "scenario_type": "browsing",
+      "target_asin": "B0991FQTNP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0116",
+      "scenario_type": "buying",
+      "target_asin": "B074VHW93Y",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0117",
+      "scenario_type": "buying",
+      "target_asin": "B08F5HBMTW",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0118",
+      "scenario_type": "intent_override",
+      "target_asin": "B0C7SMTSMT",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0119",
+      "scenario_type": "buying",
+      "target_asin": "B09G9BXJZM",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0120",
+      "scenario_type": "browsing",
+      "target_asin": "B0BR9TPRRP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0121",
+      "scenario_type": "buying",
+      "target_asin": "B07K6CB5MW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0122",
+      "scenario_type": "buying",
+      "target_asin": "B081WX2TQR",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0123",
+      "scenario_type": "browsing",
+      "target_asin": "B07BT1RJMV",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0124",
+      "scenario_type": "buying",
+      "target_asin": "B07JG61GD4",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0125",
+      "scenario_type": "browsing",
+      "target_asin": "B07FSCJ7FP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0126",
+      "scenario_type": "browsing",
+      "target_asin": "B09PMPGNVP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0127",
+      "scenario_type": "intent_override",
+      "target_asin": "B078HG9KCY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0128",
+      "scenario_type": "buying",
+      "target_asin": "B09448XXSP",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0129",
+      "scenario_type": "browsing",
+      "target_asin": "B01GR4GK7E",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0130",
+      "scenario_type": "browsing",
+      "target_asin": "B07FML83G6",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0131",
+      "scenario_type": "intent_override",
+      "target_asin": "B0154G0RVG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0132",
+      "scenario_type": "browsing",
+      "target_asin": "B0102XW246",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0133",
+      "scenario_type": "browsing",
+      "target_asin": "B07CZ9QK7R",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0134",
+      "scenario_type": "buying",
+      "target_asin": "B07GB66VPD",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0135",
+      "scenario_type": "browsing",
+      "target_asin": "B07CK79Z58",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0136",
+      "scenario_type": "buying",
+      "target_asin": "B07N3Z8CX7",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0137",
+      "scenario_type": "intent_override",
+      "target_asin": "B09JSQ86LH",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0138",
+      "scenario_type": "buying",
+      "target_asin": "B07TN1845M",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0139",
+      "scenario_type": "intent_override",
+      "target_asin": "B07PK31PGX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0140",
+      "scenario_type": "buying",
+      "target_asin": "B0BVV7BCNX",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0141",
+      "scenario_type": "browsing",
+      "target_asin": "B003ZH1UG8",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0142",
+      "scenario_type": "buying",
+      "target_asin": "B08C4SWQZL",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0143",
+      "scenario_type": "buying",
+      "target_asin": "B08QR3C2ZS",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0144",
+      "scenario_type": "buying",
+      "target_asin": "B0B1MQ6268",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0145",
+      "scenario_type": "buying",
+      "target_asin": "B0BVT6SP97",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0146",
+      "scenario_type": "buying",
+      "target_asin": "B083VHP6BM",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0147",
+      "scenario_type": "intent_override",
+      "target_asin": "B08FM6CPTL",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0148",
+      "scenario_type": "buying",
+      "target_asin": "B07C2XPZ6D",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0149",
+      "scenario_type": "browsing",
+      "target_asin": "B08JQD3G74",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0150",
+      "scenario_type": "browsing",
+      "target_asin": "B092V5XB23",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0151",
+      "scenario_type": "buying",
+      "target_asin": "B0BL2F87HF",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0152",
+      "scenario_type": "buying",
+      "target_asin": "B08JLQWNM8",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0153",
+      "scenario_type": "browsing",
+      "target_asin": "B08T84NF3N",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0154",
+      "scenario_type": "browsing",
+      "target_asin": "B085FQSZVR",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0155",
+      "scenario_type": "buying",
+      "target_asin": "B00E1ITZIA",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0156",
+      "scenario_type": "browsing",
+      "target_asin": "B004C438U4",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0157",
+      "scenario_type": "buying",
+      "target_asin": "B08MCH6YCV",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0158",
+      "scenario_type": "buying",
+      "target_asin": "B06XJ4VYG3",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0159",
+      "scenario_type": "buying",
+      "target_asin": "B07XTG1J28",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0160",
+      "scenario_type": "browsing",
+      "target_asin": "B08FFGQF72",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0161",
+      "scenario_type": "browsing",
+      "target_asin": "B0C371CSNQ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0162",
+      "scenario_type": "browsing",
+      "target_asin": "B00LOVUZLS",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0163",
+      "scenario_type": "browsing",
+      "target_asin": "B08BZ4PLD6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0164",
+      "scenario_type": "browsing",
+      "target_asin": "B094V5WTH1",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0165",
+      "scenario_type": "intent_override",
+      "target_asin": "B08SQRKPBB",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0166",
+      "scenario_type": "intent_override",
+      "target_asin": "B07WTC9D5S",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0167",
+      "scenario_type": "intent_override",
+      "target_asin": "B07BZD89WX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0168",
+      "scenario_type": "browsing",
+      "target_asin": "B0936ZJJ68",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0169",
+      "scenario_type": "browsing",
+      "target_asin": "B08QT8FSFQ",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0170",
+      "scenario_type": "buying",
+      "target_asin": "B09WJZRQ77",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0171",
+      "scenario_type": "buying",
+      "target_asin": "B085LYRJK2",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0172",
+      "scenario_type": "buying",
+      "target_asin": "B09PH72JM2",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0173",
+      "scenario_type": "intent_override",
+      "target_asin": "B07SYGDSYY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0174",
+      "scenario_type": "buying",
+      "target_asin": "B01KU1DY7E",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0175",
+      "scenario_type": "buying",
+      "target_asin": "B08D6J17MQ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0176",
+      "scenario_type": "browsing",
+      "target_asin": "B0B4YZ2PGL",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0177",
+      "scenario_type": "browsing",
+      "target_asin": "B0762GHFTC",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0178",
+      "scenario_type": "browsing",
+      "target_asin": "B07RC122XL",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0179",
+      "scenario_type": "browsing",
+      "target_asin": "B07XHQDJWN",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0180",
+      "scenario_type": "buying",
+      "target_asin": "B07TGH64XN",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0181",
+      "scenario_type": "buying",
+      "target_asin": "B01N288UVS",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0182",
+      "scenario_type": "browsing",
+      "target_asin": "B00TIYQDLO",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0183",
+      "scenario_type": "browsing",
+      "target_asin": "B0777KNK6S",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0184",
+      "scenario_type": "browsing",
+      "target_asin": "B00Z91DYPI",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0185",
+      "scenario_type": "boundary",
+      "target_asin": "B08K8HVG2F",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0186",
+      "scenario_type": "browsing",
+      "target_asin": "B00QQLPZAW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0187",
+      "scenario_type": "browsing",
+      "target_asin": "B07RFKNLZV",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0188",
+      "scenario_type": "browsing",
+      "target_asin": "B081JVBKGY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0189",
+      "scenario_type": "browsing",
+      "target_asin": "B0749967DB",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0190",
+      "scenario_type": "browsing",
+      "target_asin": "B08DNBCM7Z",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0191",
+      "scenario_type": "buying",
+      "target_asin": "B089Q72WWS",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0192",
+      "scenario_type": "intent_override",
+      "target_asin": "B07PCRXPQ6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0193",
+      "scenario_type": "buying",
+      "target_asin": "B0BT8WNL4Y",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0194",
+      "scenario_type": "browsing",
+      "target_asin": "B09M3V6C58",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0195",
+      "scenario_type": "buying",
+      "target_asin": "B082PKZ7DP",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0196",
+      "scenario_type": "browsing",
+      "target_asin": "B010LVBVKA",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0197",
+      "scenario_type": "browsing",
+      "target_asin": "B0735V67KT",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0198",
+      "scenario_type": "buying",
+      "target_asin": "B09FYFWC8S",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0199",
+      "scenario_type": "buying",
+      "target_asin": "B06XF3JSW3",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0200",
+      "scenario_type": "browsing",
+      "target_asin": "B0BVG7TSSF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0201",
+      "scenario_type": "buying",
+      "target_asin": "B085W2SDBV",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0202",
+      "scenario_type": "intent_override",
+      "target_asin": "B0924JF9ST",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0203",
+      "scenario_type": "boundary",
+      "target_asin": "B08NXKWF2R",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0204",
+      "scenario_type": "intent_override",
+      "target_asin": "B07GN8HSBW",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0205",
+      "scenario_type": "buying",
+      "target_asin": "B009E8EPQO",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0206",
+      "scenario_type": "intent_override",
+      "target_asin": "B0788B9245",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0207",
+      "scenario_type": "browsing",
+      "target_asin": "B0BMWSD77X",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0208",
+      "scenario_type": "buying",
+      "target_asin": "B09R9FXWDQ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0209",
+      "scenario_type": "browsing",
+      "target_asin": "B0164G5HR4",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0210",
+      "scenario_type": "intent_override",
+      "target_asin": "B07KQ585WJ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0211",
+      "scenario_type": "buying",
+      "target_asin": "B01HT7YNVI",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0212",
+      "scenario_type": "intent_override",
+      "target_asin": "B00K31CHFW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0213",
+      "scenario_type": "browsing",
+      "target_asin": "B08N5GRF1F",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0214",
+      "scenario_type": "browsing",
+      "target_asin": "B00VRC25PS",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0215",
+      "scenario_type": "browsing",
+      "target_asin": "B09ZL3RTXD",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0216",
+      "scenario_type": "buying",
+      "target_asin": "B0B7L4FGH3",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0217",
+      "scenario_type": "browsing",
+      "target_asin": "B07R8WVBTW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0218",
+      "scenario_type": "intent_override",
+      "target_asin": "B00NXH02LO",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0219",
+      "scenario_type": "browsing",
+      "target_asin": "B000R4JP7S",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0220",
+      "scenario_type": "buying",
+      "target_asin": "B0BYVFWJ35",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0221",
+      "scenario_type": "boundary",
+      "target_asin": "B081CML5WK",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0222",
+      "scenario_type": "boundary",
+      "target_asin": "B09MKL5TBK",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0223",
+      "scenario_type": "browsing",
+      "target_asin": "B0C5F4BMLV",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0224",
+      "scenario_type": "buying",
+      "target_asin": "B07DS4SFL2",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0225",
+      "scenario_type": "browsing",
+      "target_asin": "B07R5D462C",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0226",
+      "scenario_type": "browsing",
+      "target_asin": "B08FSZNYY8",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0227",
+      "scenario_type": "intent_override",
+      "target_asin": "B08P53R3CN",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0228",
+      "scenario_type": "boundary",
+      "target_asin": "B07H24XVP7",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0229",
+      "scenario_type": "browsing",
+      "target_asin": "B00GTW0YGS",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0230",
+      "scenario_type": "buying",
+      "target_asin": "B010FE6MMK",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0231",
+      "scenario_type": "browsing",
+      "target_asin": "B0BNL36ZCG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0232",
+      "scenario_type": "intent_override",
+      "target_asin": "B08ZMT8S77",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0233",
+      "scenario_type": "intent_override",
+      "target_asin": "B0BNLLJGZX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0234",
+      "scenario_type": "browsing",
+      "target_asin": "B07H9XQZ6X",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0235",
+      "scenario_type": "browsing",
+      "target_asin": "B076LC2JHG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0236",
+      "scenario_type": "buying",
+      "target_asin": "B07PH33837",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0237",
+      "scenario_type": "boundary",
+      "target_asin": "B07DY7N18D",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0238",
+      "scenario_type": "browsing",
+      "target_asin": "B07CBYYHTL",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0239",
+      "scenario_type": "buying",
+      "target_asin": "B07BZ6T96P",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0240",
+      "scenario_type": "buying",
+      "target_asin": "B08GH7X646",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0241",
+      "scenario_type": "buying",
+      "target_asin": "B08R3HGMHX",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0242",
+      "scenario_type": "buying",
+      "target_asin": "B0925MM7CD",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0243",
+      "scenario_type": "browsing",
+      "target_asin": "B07J296Q54",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0244",
+      "scenario_type": "buying",
+      "target_asin": "B08K3R1DG9",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0245",
+      "scenario_type": "buying",
+      "target_asin": "B091745XYC",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 3,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "sample_id": "manual400_0246",
+      "scenario_type": "browsing",
+      "target_asin": "B0BPRQY4CF",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0247",
+      "scenario_type": "buying",
+      "target_asin": "B09FGPDL81",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0248",
+      "scenario_type": "intent_override",
+      "target_asin": "B09S11CHMC",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0249",
+      "scenario_type": "browsing",
+      "target_asin": "B00AZL4VT0",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0250",
+      "scenario_type": "browsing",
+      "target_asin": "B01ES403ZA",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0251",
+      "scenario_type": "boundary",
+      "target_asin": "B00DUEJEQE",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0252",
+      "scenario_type": "buying",
+      "target_asin": "B08YJV7B6K",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0253",
+      "scenario_type": "intent_override",
+      "target_asin": "B07Q5SNZ2Z",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0254",
+      "scenario_type": "browsing",
+      "target_asin": "B07XWDJ7PL",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0255",
+      "scenario_type": "browsing",
+      "target_asin": "B08H8FPJQT",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0256",
+      "scenario_type": "buying",
+      "target_asin": "B07MVTB5GW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0257",
+      "scenario_type": "browsing",
+      "target_asin": "B00GK61KXY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0258",
+      "scenario_type": "buying",
+      "target_asin": "B07QYB2W1Q",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0259",
+      "scenario_type": "buying",
+      "target_asin": "B0BQJTN1HZ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0260",
+      "scenario_type": "buying",
+      "target_asin": "B008K7HBLG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0261",
+      "scenario_type": "browsing",
+      "target_asin": "B0792VGQV1",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0262",
+      "scenario_type": "browsing",
+      "target_asin": "B086ZRQDKM",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0263",
+      "scenario_type": "browsing",
+      "target_asin": "B075CGGCHK",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0264",
+      "scenario_type": "buying",
+      "target_asin": "B07J3C2Y2X",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0265",
+      "scenario_type": "buying",
+      "target_asin": "B09ZTWSM7B",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0266",
+      "scenario_type": "buying",
+      "target_asin": "B09KLWQSZP",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0267",
+      "scenario_type": "buying",
+      "target_asin": "B09FLDVFPW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0268",
+      "scenario_type": "buying",
+      "target_asin": "B07WRRXZJ9",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0269",
+      "scenario_type": "browsing",
+      "target_asin": "B07YWBTYNT",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0270",
+      "scenario_type": "browsing",
+      "target_asin": "B01N6GQYJ5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0271",
+      "scenario_type": "intent_override",
+      "target_asin": "B07TZPFQ9N",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0272",
+      "scenario_type": "buying",
+      "target_asin": "B0BG4G4R72",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0273",
+      "scenario_type": "buying",
+      "target_asin": "B09VL1SBKN",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0274",
+      "scenario_type": "intent_override",
+      "target_asin": "B00LG83FIE",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0275",
+      "scenario_type": "buying",
+      "target_asin": "B07PFRTVJF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0276",
+      "scenario_type": "buying",
+      "target_asin": "B095233S9C",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0277",
+      "scenario_type": "buying",
+      "target_asin": "B01DNWXD3C",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0278",
+      "scenario_type": "browsing",
+      "target_asin": "B0BBC5MYGY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0279",
+      "scenario_type": "browsing",
+      "target_asin": "B08X282C6C",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0280",
+      "scenario_type": "buying",
+      "target_asin": "B0895QFNSJ",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0281",
+      "scenario_type": "buying",
+      "target_asin": "B06WRQSNNY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0282",
+      "scenario_type": "intent_override",
+      "target_asin": "B01BE5BU3A",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0283",
+      "scenario_type": "buying",
+      "target_asin": "B00QT1AZ90",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0284",
+      "scenario_type": "browsing",
+      "target_asin": "B078M1TQ68",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0285",
+      "scenario_type": "buying",
+      "target_asin": "B08ZZTW7PT",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0286",
+      "scenario_type": "browsing",
+      "target_asin": "B095BKZBRQ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0287",
+      "scenario_type": "buying",
+      "target_asin": "B0B6CDMGVX",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0288",
+      "scenario_type": "browsing",
+      "target_asin": "B07LCLCXPG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0289",
+      "scenario_type": "intent_override",
+      "target_asin": "B09YYHM6JX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0290",
+      "scenario_type": "buying",
+      "target_asin": "B08KSWRJCS",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0291",
+      "scenario_type": "browsing",
+      "target_asin": "B0C6Q7FDJV",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0292",
+      "scenario_type": "buying",
+      "target_asin": "B0BLBFQ9BG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0293",
+      "scenario_type": "browsing",
+      "target_asin": "B078PY26VB",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0294",
+      "scenario_type": "buying",
+      "target_asin": "B0B8CY4P7J",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0295",
+      "scenario_type": "browsing",
+      "target_asin": "B00LOVTU8C",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0296",
+      "scenario_type": "buying",
+      "target_asin": "B09Y4CHYYL",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0297",
+      "scenario_type": "browsing",
+      "target_asin": "B0BQ6NFR7Q",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0298",
+      "scenario_type": "buying",
+      "target_asin": "B084F6P762",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0299",
+      "scenario_type": "buying",
+      "target_asin": "B093L5MMPP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0300",
+      "scenario_type": "intent_override",
+      "target_asin": "B07V5JK8N4",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0301",
+      "scenario_type": "browsing",
+      "target_asin": "B00KNQXSTQ",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0302",
+      "scenario_type": "browsing",
+      "target_asin": "B08V4GZBDV",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0303",
+      "scenario_type": "intent_override",
+      "target_asin": "B097DLPK6W",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0304",
+      "scenario_type": "browsing",
+      "target_asin": "B07D7G7YSG",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 7,
+      "reciprocal_rank": 0.14285714285714285
+    },
+    {
+      "sample_id": "manual400_0305",
+      "scenario_type": "boundary",
+      "target_asin": "B00ME7Z07A",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0306",
+      "scenario_type": "buying",
+      "target_asin": "B016N49SZO",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0307",
+      "scenario_type": "boundary",
+      "target_asin": "B08ZJDHBDQ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0308",
+      "scenario_type": "buying",
+      "target_asin": "B076H7YQPV",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0309",
+      "scenario_type": "browsing",
+      "target_asin": "B0C69DZZCR",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0310",
+      "scenario_type": "browsing",
+      "target_asin": "B081P4CJHH",
+      "hit": true,
+      "first_hit_turn": 2,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0311",
+      "scenario_type": "browsing",
+      "target_asin": "B0BZJG18G6",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0312",
+      "scenario_type": "buying",
+      "target_asin": "B099J4PJV8",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0313",
+      "scenario_type": "boundary",
+      "target_asin": "B01HQAMJ8W",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0314",
+      "scenario_type": "browsing",
+      "target_asin": "B01M69TDJS",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0315",
+      "scenario_type": "buying",
+      "target_asin": "B07K2L8BMC",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0316",
+      "scenario_type": "buying",
+      "target_asin": "B08N6D5FXX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0317",
+      "scenario_type": "browsing",
+      "target_asin": "B08HCNGM1G",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0318",
+      "scenario_type": "buying",
+      "target_asin": "B0787WC8VY",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0319",
+      "scenario_type": "buying",
+      "target_asin": "B0815L9YHT",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0320",
+      "scenario_type": "browsing",
+      "target_asin": "B0C3VH2Z1N",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0321",
+      "scenario_type": "browsing",
+      "target_asin": "B086GLDC1L",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0322",
+      "scenario_type": "browsing",
+      "target_asin": "B09DQ5C6Z6",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0323",
+      "scenario_type": "boundary",
+      "target_asin": "B0773SJQFT",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0324",
+      "scenario_type": "browsing",
+      "target_asin": "B074G1JP8Z",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0325",
+      "scenario_type": "buying",
+      "target_asin": "B07MQWL98P",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0326",
+      "scenario_type": "browsing",
+      "target_asin": "B07MR3H7H1",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0327",
+      "scenario_type": "browsing",
+      "target_asin": "B00D4KGMUA",
+      "hit": true,
+      "first_hit_turn": 8,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0328",
+      "scenario_type": "buying",
+      "target_asin": "B08PY8KZCP",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0329",
+      "scenario_type": "buying",
+      "target_asin": "B0B8227GB9",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0330",
+      "scenario_type": "buying",
+      "target_asin": "B07YNHZDY2",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0331",
+      "scenario_type": "buying",
+      "target_asin": "B074WDLGK3",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0332",
+      "scenario_type": "buying",
+      "target_asin": "B00GSTR88O",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0333",
+      "scenario_type": "browsing",
+      "target_asin": "B089W24DWN",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0334",
+      "scenario_type": "buying",
+      "target_asin": "B07VNCRHMF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0335",
+      "scenario_type": "buying",
+      "target_asin": "B07WP4KG63",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0336",
+      "scenario_type": "browsing",
+      "target_asin": "B083LWMLT9",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0337",
+      "scenario_type": "buying",
+      "target_asin": "B0143IZ252",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0338",
+      "scenario_type": "intent_override",
+      "target_asin": "B07XKTFLD5",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0339",
+      "scenario_type": "browsing",
+      "target_asin": "B00HQ389WK",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0340",
+      "scenario_type": "buying",
+      "target_asin": "B07K79VFCD",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0341",
+      "scenario_type": "buying",
+      "target_asin": "B07KJHJJJ8",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0342",
+      "scenario_type": "buying",
+      "target_asin": "B07HNXZG3M",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0343",
+      "scenario_type": "buying",
+      "target_asin": "B07LCFBWWN",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0344",
+      "scenario_type": "buying",
+      "target_asin": "B07CJBCHMB",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0345",
+      "scenario_type": "browsing",
+      "target_asin": "B08FHGLW7M",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0346",
+      "scenario_type": "browsing",
+      "target_asin": "B086ZNJY8K",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0347",
+      "scenario_type": "browsing",
+      "target_asin": "B0BWJZZ69B",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0348",
+      "scenario_type": "buying",
+      "target_asin": "B0BR7NSYLQ",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0349",
+      "scenario_type": "buying",
+      "target_asin": "B0B1DRXCCK",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 2,
+      "reciprocal_rank": 0.5
+    },
+    {
+      "sample_id": "manual400_0350",
+      "scenario_type": "intent_override",
+      "target_asin": "B0821XMHGR",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0351",
+      "scenario_type": "buying",
+      "target_asin": "B07FLZKLSD",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0352",
+      "scenario_type": "buying",
+      "target_asin": "B014JPAJG6",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0353",
+      "scenario_type": "boundary",
+      "target_asin": "B098NS3VGP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0354",
+      "scenario_type": "buying",
+      "target_asin": "B08K8DVBNM",
+      "hit": true,
+      "first_hit_turn": 1,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0355",
+      "scenario_type": "browsing",
+      "target_asin": "B094HXM6HF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0356",
+      "scenario_type": "buying",
+      "target_asin": "B08H8HFKGC",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0357",
+      "scenario_type": "browsing",
+      "target_asin": "B075LPX32H",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0358",
+      "scenario_type": "intent_override",
+      "target_asin": "B07X9V6HZX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0359",
+      "scenario_type": "intent_override",
+      "target_asin": "B0BHL35H5P",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0360",
+      "scenario_type": "browsing",
+      "target_asin": "B07GTB7CPK",
+      "hit": true,
+      "first_hit_turn": 8,
+      "best_rank": 1,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "sample_id": "manual400_0361",
+      "scenario_type": "buying",
+      "target_asin": "B085HRZVWP",
+      "hit": true,
+      "first_hit_turn": 10,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0362",
+      "scenario_type": "browsing",
+      "target_asin": "B0B4MS9QNH",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0363",
+      "scenario_type": "intent_override",
+      "target_asin": "B09G2ZNZY4",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0364",
+      "scenario_type": "browsing",
+      "target_asin": "B085PV4XQW",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0365",
+      "scenario_type": "browsing",
+      "target_asin": "B07GWMH578",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0366",
+      "scenario_type": "browsing",
+      "target_asin": "B07RS9LSPF",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0367",
+      "scenario_type": "buying",
+      "target_asin": "B08CXNN66T",
+      "hit": true,
+      "first_hit_turn": 9,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0368",
+      "scenario_type": "intent_override",
+      "target_asin": "B0BRXPDGDC",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0369",
+      "scenario_type": "browsing",
+      "target_asin": "B07TC3DPXY",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0370",
+      "scenario_type": "browsing",
+      "target_asin": "B07MDC1M4Y",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0371",
+      "scenario_type": "intent_override",
+      "target_asin": "B008K7HGHK",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 8,
+      "reciprocal_rank": 0.125
+    },
+    {
+      "sample_id": "manual400_0372",
+      "scenario_type": "browsing",
+      "target_asin": "B083JJ1XJJ",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0373",
+      "scenario_type": "buying",
+      "target_asin": "B01FWLV1FE",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0374",
+      "scenario_type": "browsing",
+      "target_asin": "B07BKVTLPV",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0375",
+      "scenario_type": "browsing",
+      "target_asin": "B07Q1MZM51",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0376",
+      "scenario_type": "browsing",
+      "target_asin": "B072N6NMMW",
+      "hit": true,
+      "first_hit_turn": 6,
+      "best_rank": 6,
+      "reciprocal_rank": 0.16666666666666666
+    },
+    {
+      "sample_id": "manual400_0377",
+      "scenario_type": "buying",
+      "target_asin": "B005J32E8Y",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 5,
+      "reciprocal_rank": 0.2
+    },
+    {
+      "sample_id": "manual400_0378",
+      "scenario_type": "buying",
+      "target_asin": "B07544FGSX",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0379",
+      "scenario_type": "buying",
+      "target_asin": "B0964398Q6",
+      "hit": true,
+      "first_hit_turn": 8,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0380",
+      "scenario_type": "browsing",
+      "target_asin": "B07VF9TKGP",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0381",
+      "scenario_type": "intent_override",
+      "target_asin": "B07F6W3FPK",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0382",
+      "scenario_type": "browsing",
+      "target_asin": "B07Y81T13F",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0383",
+      "scenario_type": "buying",
+      "target_asin": "B01IK3VV5Q",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0384",
+      "scenario_type": "browsing",
+      "target_asin": "B01IYE8SVG",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0385",
+      "scenario_type": "buying",
+      "target_asin": "B0BKLJH7WR",
+      "hit": true,
+      "first_hit_turn": 5,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0386",
+      "scenario_type": "intent_override",
+      "target_asin": "B07CXQXXML",
+      "hit": true,
+      "first_hit_turn": 7,
+      "best_rank": 4,
+      "reciprocal_rank": 0.25
+    },
+    {
+      "sample_id": "manual400_0387",
+      "scenario_type": "intent_override",
+      "target_asin": "B07Q6Q1X84",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0388",
+      "scenario_type": "buying",
+      "target_asin": "B0BT2YDPB4",
+      "hit": true,
+      "first_hit_turn": 3,
+      "best_rank": 10,
+      "reciprocal_rank": 0.1
+    },
+    {
+      "sample_id": "manual400_0389",
+      "scenario_type": "browsing",
+      "target_asin": "B0BVFSTPH4",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0390",
+      "scenario_type": "buying",
+      "target_asin": "B0BN1H3LT2",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0391",
+      "scenario_type": "browsing",
+      "target_asin": "B09SPR9YH5",
+      "hit": true,
+      "first_hit_turn": 4,
+      "best_rank": 9,
+      "reciprocal_rank": 0.1111111111111111
+    },
+    {
+      "sample_id": "manual400_0392",
+      "scenario_type": "intent_override",
+      "target_asin": "B06XSNJGWH",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0393",
+      "scenario_type": "intent_override",
+      "target_asin": "B08TMKKFF7",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0394",
+      "scenario_type": "buying",
+      "target_asin": "B09S5HK59J",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0395",
+      "scenario_type": "browsing",
+      "target_asin": "B089GMX1WH",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0396",
+      "scenario_type": "browsing",
+      "target_asin": "B09XVBWMR7",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0397",
+      "scenario_type": "browsing",
+      "target_asin": "B07VVBRM7R",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0398",
+      "scenario_type": "browsing",
+      "target_asin": "B01A032W8Y",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0399",
+      "scenario_type": "browsing",
+      "target_asin": "B01N0QMCFT",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "sample_id": "manual400_0400",
+      "scenario_type": "intent_override",
+      "target_asin": "B09PY8SPV7",
+      "hit": false,
+      "first_hit_turn": null,
+      "best_rank": null,
+      "reciprocal_rank": 0.0
+    }
+  ]
+}

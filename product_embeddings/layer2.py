@@ -213,6 +213,7 @@ def _embed_present(
     product_count: int,
     batch_size: int,
     dimension: int | None,
+    progress: bool = False,
 ) -> tuple[Any, int]:
     np = _require_numpy()
     if not present_rows:
@@ -220,10 +221,90 @@ def _embed_present(
             raise ValueError("catalog has no non-empty Layer 2 text views")
         return np.zeros((product_count, dimension), dtype=np.float32), dimension
 
+    # Group similar-length texts together so transformer padding from one
+    # unusually long catalog value does not inflate every neighboring batch.
+    # The final matrix is restored to catalog row order below.
+    ordered_rows = sorted(present_rows, key=lambda row: (len(texts[row]), row))
     batches: list[Any] = []
-    present_texts = [texts[row] for row in present_rows]
-    for start in range(0, len(present_texts), batch_size):
-        batch = present_texts[start : start + batch_size]
+    rows_batch: list[int] = []
+    chars_batch = 0
+    # A fixed row count is unsafe for long descriptions because transformer
+    # attention cost follows the longest padded sequence.  This conservative
+    # character budget is model-agnostic and keeps short catalog views batched
+    # while automatically shrinking long-text batches.
+    max_batch_chars = 32_768
+    if getattr(model, "supports_full_document_batch", False):
+        # Identical catalog text has an identical embedding.  Deduplicate only
+        # for the transformer path, where this materially reduces the offline
+        # build cost for repeated categories/features while preserving the
+        # original row-aligned output matrix.
+        unique_rows: list[int] = []
+        row_for_text: dict[str, int] = {}
+        unique_index_for_row: dict[int, int] = {}
+        for row in ordered_rows:
+            text = texts[row]
+            unique_index = row_for_text.get(text)
+            if unique_index is None:
+                unique_index = len(unique_rows)
+                row_for_text[text] = unique_index
+                unique_rows.append(row)
+            unique_index_for_row[row] = unique_index
+
+        ordered_texts = [texts[row] for row in unique_rows]
+        if progress:
+            # tqdm rewrites one terminal line, which is easy to lose in
+            # redirected logs or API tool output. Emit one newline per batch
+            # instead so progress remains observable and searchable.
+            raw_batches: list[Any] = []
+            total_batches = (len(ordered_texts) + batch_size - 1) // batch_size
+            for batch_number, start in enumerate(
+                range(0, len(ordered_texts), batch_size), 1
+            ):
+                batch_texts = ordered_texts[start : start + batch_size]
+                raw_batches.append(
+                    _as_matrix(_embed(model, batch_texts, batch_size), len(batch_texts), np)
+                )
+                end = start + len(batch_texts)
+                print(
+                    f"Layer 2 batch {batch_number}/{total_batches}: "
+                    f"{end}/{len(ordered_texts)} unique texts",
+                    flush=True,
+                )
+            raw = np.concatenate(raw_batches, axis=0)
+        else:
+            raw = _as_matrix(
+                _embed(model, ordered_texts, batch_size),
+                len(ordered_texts),
+                np,
+            )
+        if dimension is not None and int(raw.shape[1]) != dimension:
+            raise ValueError("all Layer 2 views must use the same embedding dimension")
+        if not np.isfinite(raw).all():
+            raise ValueError("embedder returned non-finite values")
+        norms = np.linalg.norm(raw.astype(np.float64), axis=1, keepdims=True)
+        if not np.isfinite(norms).all() or (norms <= 0.0).any():
+            raise ValueError("cannot L2-normalize a zero or non-finite Layer 2 vector")
+        normalized = (raw.astype(np.float64) / norms).astype(np.float32)
+        dimension = int(normalized.shape[1])
+        output = np.zeros((product_count, dimension), dtype=np.float32)
+        for row in ordered_rows:
+            output[row] = normalized[unique_index_for_row[row]]
+        return output, dimension
+
+    for row in ordered_rows:
+        text_length = max(1, len(texts[row]))
+        if rows_batch and (
+            len(rows_batch) >= batch_size
+            or chars_batch + text_length > max_batch_chars
+        ):
+            batch = [texts[item] for item in rows_batch]
+            batches.append(_as_matrix(_embed(model, batch, batch_size), len(batch), np))
+            rows_batch = []
+            chars_batch = 0
+        rows_batch.append(row)
+        chars_batch += text_length
+    if rows_batch:
+        batch = [texts[item] for item in rows_batch]
         batches.append(_as_matrix(_embed(model, batch, batch_size), len(batch), np))
     raw = np.concatenate(batches, axis=0).astype(np.float32, copy=False)
     if dimension is not None and int(raw.shape[1]) != dimension:
@@ -236,7 +317,7 @@ def _embed_present(
     normalized = (raw.astype(np.float64) / norms).astype(np.float32)
     dimension = int(normalized.shape[1])
     output = np.zeros((product_count, dimension), dtype=np.float32)
-    output[list(present_rows)] = normalized
+    output[ordered_rows] = normalized
     return output, dimension
 
 
@@ -273,6 +354,7 @@ def build_layer2_embeddings(
     batch_size: int = 32,
     catalog_version: str | None = None,
     generated_at_utc: str | None = None,
+    progress: bool = False,
 ) -> dict[str, Any]:
     """Build the four core Layer 2 matrices directly from ``catalog.jsonl``."""
 
@@ -291,6 +373,13 @@ def build_layer2_embeddings(
         texts = documents[view]
         present_rows = [row for row, text in enumerate(texts) if text]
         presence[view] = [bool(text) for text in texts]
+        if progress:
+            unique_count = len({texts[row] for row in present_rows})
+            print(
+                f"Layer 2 {view}: starting {len(present_rows)} non-empty rows "
+                f"({unique_count} unique texts)",
+                flush=True,
+            )
         matrix, dimension = _embed_present(
             model,
             texts,
@@ -298,8 +387,15 @@ def build_layer2_embeddings(
             product_count=product_count,
             batch_size=batch_size,
             dimension=dimension,
+            progress=progress,
         )
         matrices[view] = matrix
+        if progress:
+            print(
+                f"Layer 2 {view}: completed {product_count} rows "
+                f"with dimension {dimension}",
+                flush=True,
+            )
 
     if dimension is None:  # guarded by _embed_present, kept for type clarity
         raise ValueError("catalog has no non-empty Layer 2 text views")
