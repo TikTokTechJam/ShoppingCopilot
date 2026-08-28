@@ -1,6 +1,6 @@
-"""Extract canonical shopping constraints from one user utterance (issue #7).
+"""Extract canonical shopping constraints from one user utterance.
 
-Produces the record shape issue #7 specifies:
+Produces the runtime constraint record shape:
 
     {"category": [], "brand": [], "price_min": None, "price_max": None,
      "color": [], "material": [], "size": [], "style": [], "feature": [],
@@ -16,7 +16,7 @@ bare attribute word as weak evidence.
 
 **Nothing is invented.** Values that look like constraints but map to no
 canonical entry are preserved in `unmapped` rather than being forced onto the
-nearest vocabulary item, as issue #7 requires.
+nearest vocabulary item.
 
 The generated attribute dictionary is the source of truth for categorical
 values. Price and size remain structured runtime fields; size is intentionally
@@ -90,7 +90,7 @@ ATTRIBUTE_TOPIC = re.compile(
 
 @dataclass(frozen=True)
 class ShoppingConstraints:
-    """Canonical constraints from one utterance, in issue #7's shape."""
+    """Canonical constraints from one utterance in the runtime shape."""
 
     category: tuple[str, ...] = ()
     brand: tuple[str, ...] = ()
@@ -244,7 +244,7 @@ class ConstraintEvidence:
 
 @_dataclass(frozen=True)
 class CanonicalShoppingConstraints(ShoppingConstraints):
-    """Issue #7 output with optional resolver provenance."""
+    """Runtime constraint output with optional resolver provenance."""
 
     evidence: tuple[ConstraintEvidence, ...] = _field(default=())
 

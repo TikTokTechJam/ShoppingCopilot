@@ -222,12 +222,12 @@ class CascadeTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: constraint extraction (issue #7) and the tag rule
+# Phase 1: constraint extraction and the tag rule
 # ---------------------------------------------------------------------------
 
 
 class ConstraintExtractionTest(unittest.TestCase):
-    def test_produces_the_issue_7_record_shape(self) -> None:
+    def test_produces_the_runtime_record_shape(self) -> None:
         payload = extract_constraints(
             "I need dark blue waterproof hiking boots under $100."
         ).as_dict()
@@ -401,7 +401,7 @@ class SessionFlowTest(unittest.TestCase):
         self.assertEqual(result.intent, BROWSING)
 
     def test_override_message_does_not_change_buying_intent(self) -> None:
-        """An override replaces a constraint. That is issue #7's job, not ours."""
+        """An override replaces a constraint outside the routing layer."""
         session = "s5"
         self.tracker.observe(session, "I'm looking for socks. I'd prefer nylon.", turn=1)
         result = self.tracker.observe(
