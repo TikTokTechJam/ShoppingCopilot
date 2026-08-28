@@ -35,6 +35,16 @@ class ViewKeywordEmbedder:
         return vectors
 
 
+class SemanticTargetEmbedder:
+    model_id = "test-semantic-target-embedder"
+
+    def embed_documents(self, texts: list[str]) -> Any:
+        return [
+            [0.0, 1.0] if "semantic" in text.casefold() else [1.0, 0.0]
+            for text in texts
+        ]
+
+
 @unittest.skipUnless(np is not None, "NumPy is required for Layer 2 artifacts")
 class Layer2EmbeddingTests(unittest.TestCase):
     def _catalog(self, root: Path) -> Path:
@@ -166,6 +176,91 @@ class Layer2EmbeddingTests(unittest.TestCase):
             candidates = retriever.retrieve("BROWSING", "blue boots", {}, limit=2)
             self.assertEqual([item.parent_asin for item in candidates], ["A1", "A2"])
             self.assertGreater(candidates[0].dense_score, candidates[1].dense_score)
+
+    def test_combined_score_controls_dense_ranking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            catalog.write_text(
+                "\n".join(
+                    json.dumps(record)
+                    for record in (
+                        {
+                            "parent_asin": "A1",
+                            "title": "Plain shoes",
+                            "categories": ["Shoes"],
+                            "features": ["Durable"],
+                            "description": ["Everyday"],
+                        },
+                        {
+                            "parent_asin": "A2",
+                            "title": "Semantic shoes",
+                            "categories": ["Shoes"],
+                            "features": ["Durable"],
+                            "description": ["Everyday"],
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            facts = root / "facts.jsonl"
+            common = {
+                "category": ["shoes"],
+                "brand": ["alpha"],
+                "color": ["black"],
+                "material": ["leather"],
+                "style": ["classic"],
+                "feature": ["durable"],
+            }
+            facts.write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "parent_asin": asin,
+                            "facts": {
+                                **common,
+                                **({"use_case": ["everyday"]} if asin == "A1" else {}),
+                            },
+                        }
+                    )
+                    for asin in ("A1", "A2")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "product_embeddings"
+            embedder = SemanticTargetEmbedder()
+            build_layer2_embeddings(catalog, output, embedder)
+            retriever = ProductRetriever(
+                catalog,
+                facts_path=facts,
+                query_encoder=embedder,
+                layer2_artifact_dir=output,
+                layer2_weights={
+                    "categories": 0.0,
+                    "title": 1.0,
+                    "features": 0.0,
+                    "description": 0.0,
+                },
+            )
+            candidates = retriever.retrieve(
+                "BROWSING",
+                "semantic",
+                {
+                    "category": ("shoes",),
+                    "brand": ("alpha",),
+                    "color": ("black",),
+                    "material": ("leather",),
+                    "style": ("classic",),
+                    "feature": ("durable",),
+                    "use_case": ("everyday",),
+                },
+                limit=2,
+            )
+            self.assertEqual([item.parent_asin for item in candidates], ["A2", "A1"])
+            self.assertGreater(candidates[1].constraint_score, candidates[0].constraint_score)
+            self.assertGreater(candidates[0].score, candidates[1].score)
 
 
 if __name__ == "__main__":

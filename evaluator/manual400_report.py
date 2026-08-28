@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from evaluator import hard_evaluator
+from evaluator.agent_factory import build_evaluator_agent
 
 SCHEMA_VERSION = 1
 RUN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -362,7 +363,15 @@ def run(args: argparse.Namespace) -> Path:
     inputs = {str(row["sample_id"]): row for row in sessions}
 
     startup = time.perf_counter()
-    agent = hard_evaluator.Agent(catalog_path)
+    agent = build_evaluator_agent(
+        catalog_path,
+        layer2_artifact_dir=args.layer2_artifact_dir,
+        embedding_model=args.embedding_model,
+        hash_dimension=args.hash_dimension,
+        disable_layer2=args.disable_layer2,
+        half_precision=args.half_precision,
+        device=args.device,
+    )
     startup_ms = (time.perf_counter() - startup) * 1000.0
     catalog_ids = hard_evaluator.load_catalog_ids(catalog_path)
     observed = ObservedAgent(agent, catalog_ids)
@@ -441,6 +450,20 @@ def main() -> None:
     parser.add_argument("--run-name", default="manual400")
     parser.add_argument("--report-root", default="reports/manual400")
     parser.add_argument("--artifact-version", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--layer2-artifact-dir")
+    embedding_group = parser.add_mutually_exclusive_group()
+    embedding_group.add_argument("--embedding-model")
+    embedding_group.add_argument("--hash-dimension", type=int)
+    parser.add_argument("--disable-layer2", action="store_true")
+    parser.add_argument(
+        "--half-precision",
+        action="store_true",
+        help="Load a SentenceTransformer Layer 2 query model in float16.",
+    )
+    parser.add_argument(
+        "--device",
+        help="SentenceTransformer device for Layer 2 queries, for example cpu or mps.",
+    )
     parser.add_argument(
         "--non-strict",
         action="store_true",

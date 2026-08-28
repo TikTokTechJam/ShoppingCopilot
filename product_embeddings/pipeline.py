@@ -14,6 +14,57 @@ class EmbeddingModel(Protocol):
         ...
 
 
+class SentenceTransformerRetrievalEncoder:
+    """Adapt a local SentenceTransformer to the document/query boundary.
+
+    Jina's retrieval models use different prompt names for catalog documents
+    and user queries.  Keeping that distinction here makes the offline
+    artifact builder and the runtime Agent share exactly the same encoding
+    contract.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        *,
+        model_id: str,
+        task: str | None = None,
+        document_prompt_name: str | None = None,
+        query_prompt_name: str | None = None,
+        batch_size: int = 32,
+        show_progress_bar: bool = False,
+    ) -> None:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        self._model = model
+        self.model_id = model_id
+        self.task = task
+        self.document_prompt_name = document_prompt_name
+        self.query_prompt_name = query_prompt_name
+        self.batch_size = batch_size
+        self.show_progress_bar = show_progress_bar
+        self.supports_full_document_batch = True
+
+    def _encode(self, texts: Sequence[str], *, prompt_name: str | None) -> Any:
+        kwargs: dict[str, Any] = {
+            "batch_size": self.batch_size,
+            "show_progress_bar": self.show_progress_bar,
+            "convert_to_numpy": True,
+            "normalize_embeddings": False,
+        }
+        if self.task is not None:
+            kwargs["task"] = self.task
+        if prompt_name is not None:
+            kwargs["prompt_name"] = prompt_name
+        return self._model.encode(list(texts), **kwargs)
+
+    def embed_documents(self, texts: Sequence[str]) -> Any:
+        return self._encode(texts, prompt_name=self.document_prompt_name)
+
+    def embed_query(self, text: str) -> Any:
+        return self._encode([text], prompt_name=self.query_prompt_name)
+
+
 class HashEmbeddingModel:
     """Dependency-light deterministic fallback for pipeline smoke generation.
 
@@ -57,7 +108,27 @@ class HashEmbeddingModel:
         return vectors
 
 
-def load_local_sentence_transformer(model_path: str) -> Any:
+def is_jina_v5_text_nano(model_path: str) -> bool:
+    """Return whether a model path identifies the requested Jina model."""
+    normalized = re.sub(r"[^a-z0-9]+", "-", model_path.casefold())
+    return (
+        "jina-embeddings-v5-text-nano" in normalized
+        or "jina-v5-text-nano" in normalized
+    )
+
+
+def load_local_sentence_transformer(
+    model_path: str,
+    *,
+    task: str | None = None,
+    document_prompt_name: str | None = None,
+    query_prompt_name: str | None = None,
+    trust_remote_code: bool = False,
+    batch_size: int = 32,
+    device: str | None = None,
+    half_precision: bool = False,
+    show_progress_bar: bool = False,
+) -> Any:
     """Load a cached/local SentenceTransformer without permitting downloads."""
     try:
         from sentence_transformers import SentenceTransformer
@@ -67,12 +138,28 @@ def load_local_sentence_transformer(model_path: str) -> Any:
             "inject a local embedder or use the hashing fallback instead"
         ) from exc
     try:
-        return SentenceTransformer(model_path, local_files_only=True)
+        model = SentenceTransformer(
+            model_path,
+            device=device,
+            local_files_only=True,
+            trust_remote_code=trust_remote_code,
+        )
     except TypeError as exc:  # pragma: no cover - old optional dependency
         raise RuntimeError(
             "the installed sentence-transformers version does not support "
             "local_files_only; refusing to load a potentially network-backed model"
         ) from exc
+    if half_precision:
+        model.half()
+    return SentenceTransformerRetrievalEncoder(
+        model,
+        model_id=model_path,
+        task=task,
+        document_prompt_name=document_prompt_name,
+        query_prompt_name=query_prompt_name,
+        batch_size=batch_size,
+        show_progress_bar=show_progress_bar,
+    )
 
 
 def load_injected_embedder(spec: str) -> Any:
