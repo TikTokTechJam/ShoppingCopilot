@@ -9,6 +9,7 @@ constraints drive the Buying filters and preference boosts drive Browsing.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import re
@@ -22,6 +23,7 @@ from product_embeddings.layer2 import (
     Layer2EmbeddingIndex,
     load_layer2_embedding_index,
 )
+from product_embeddings.pipeline import embedding_models_compatible
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -47,6 +49,7 @@ DEFAULT_METADATA_PATHS = (
     Path("product_embedding_metadata.json"),
 )
 DEFAULT_LAYER2_ARTIFACT_PATHS = (
+    Path("data/derived/product_embeddings_jina"),
     Path("data/derived/product_embeddings"),
     Path("data/derived/layer2_embeddings"),
     Path("data/layer2_embeddings"),
@@ -67,7 +70,48 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "feature": 0.30,
     "use_case": 0.30,
 }
-DENSE_SCORE_WEIGHT = 0.20
+MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
+    "BUYING": {"structured": 1.00, "dense": 0.20},
+    "BROWSING": {"structured": 0.25, "dense": 1.00},
+}
+# Backward-compatible name for callers that inspect the Buying contribution.
+DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
+
+
+def _encoder_model_id(encoder: object | None) -> str | None:
+    if encoder is None:
+        return None
+    for name in ("model_id", "model_name", "embedding_model"):
+        value = getattr(encoder, name, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _encoder_dimension(encoder: object | None) -> int | None:
+    if encoder is None:
+        return None
+    for name in ("embedding_dimension", "dimension"):
+        value = getattr(encoder, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    getter = getattr(encoder, "get_sentence_embedding_dimension", None)
+    if callable(getter):
+        try:
+            value = getter()
+        except (TypeError, ValueError):
+            return None
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _final_score(mode: str, structured_score: float, dense_score: float) -> float:
+    weights = MODE_SCORE_WEIGHTS[mode]
+    return float(
+        weights["structured"] * structured_score
+        + weights["dense"] * dense_score
+    )
 
 
 def _normalise_value(value: object) -> str:
@@ -236,6 +280,8 @@ class ProductRetriever:
         self._embedding_norms: Any = None
         self._load_embeddings(embeddings_path, metadata_path)
         self.layer2_index: Layer2EmbeddingIndex | None = None
+        self._layer2_encoder_compatible = False
+        self.layer2_compatibility_error: str | None = None
         self._load_layer2(layer2_artifact_dir)
 
     @property
@@ -249,6 +295,17 @@ class ProductRetriever:
         )
 
     def _load_layer2(self, artifact_dir: str | Path | None) -> None:
+        if artifact_dir is None:
+            if self.query_encoder is None:
+                return
+            try:
+                is_default_catalog = self.catalog_path.resolve() == Path(
+                    "data/catalog.jsonl"
+                ).resolve()
+            except OSError:
+                is_default_catalog = False
+            if not is_default_catalog:
+                return
         candidates = (
             (Path(artifact_dir),) if artifact_dir is not None else DEFAULT_LAYER2_ARTIFACT_PATHS
         )
@@ -264,11 +321,41 @@ class ProductRetriever:
             except (ImportError, OSError, TypeError, ValueError, json.JSONDecodeError):
                 continue
             self.layer2_index = index
+            self._layer2_encoder_compatible = self._validate_layer2_encoder(index)
             return
+
+    def _validate_layer2_encoder(self, index: Layer2EmbeddingIndex) -> bool:
+        encoder = self.query_encoder
+        if encoder is None:
+            self.layer2_compatibility_error = "Layer 2 query encoder is not configured"
+            return False
+
+        manifest = index.manifest
+        expected_model = manifest.get("embedding_model", manifest.get("model"))
+        actual_model = _encoder_model_id(encoder)
+        if expected_model and actual_model and not embedding_models_compatible(
+            expected_model, actual_model
+        ):
+            self.layer2_compatibility_error = (
+                "Layer 2 embedding model does not match the query encoder: "
+                f"artifact={expected_model!r}, encoder={actual_model!r}"
+            )
+            return False
+
+        actual_dimension = _encoder_dimension(encoder)
+        if actual_dimension is not None and actual_dimension != index.dimension:
+            self.layer2_compatibility_error = (
+                "Layer 2 embedding dimension does not match the query encoder: "
+                f"artifact={index.dimension}, encoder={actual_dimension}"
+            )
+            return False
+        return True
 
     @property
     def dense_available(self) -> bool:
         encoder = self.query_encoder
+        if self.layer2_index is not None and not self._layer2_encoder_compatible:
+            return False
         return self.has_dense_index and (
             callable(encoder)
             or any(
@@ -555,7 +642,7 @@ class ProductRetriever:
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = structured_score + DENSE_SCORE_WEIGHT * dense_score
+        score = _final_score(mode, structured_score, dense_score)
         return Candidate(
             parent_asin=asin,
             score=float(score),
@@ -653,7 +740,20 @@ class ProductRetriever:
                 return 0.0
             return matched_weight.get(asin, 0.0) / total_weight
 
-        if not constraint_fields and not dense_scores:
+        price_labels: list[str] = []
+        if "price" in constraint_fields:
+            if price_min is not None:
+                price_labels.append(f"price_min:{price_min:g}")
+            if price_max is not None:
+                price_labels.append(f"price_max:{price_max:g}")
+
+        def labels_for(asin: str) -> tuple[str, ...]:
+            labels = list(matched_labels.get(asin, ()))
+            if "price" in constraint_fields and asin in price_match_asins:
+                labels.extend(price_labels)
+            return tuple(labels)
+
+        if not dense_scores and not constraint_fields:
             ranked_asins = eligible_asins[:limit]
         elif not dense_scores:
             positive_asins = sorted(
@@ -671,30 +771,18 @@ class ProductRetriever:
                 )
                 ranked_asins = ranked_asins[:limit]
         else:
-            ranked_asins = sorted(
-                eligible_asins,
-                key=lambda asin: (
-                    -(
-                        structured_score(asin)
-                        + DENSE_SCORE_WEIGHT * dense_scores.get(asin, 0.0)
-                    ),
-                    self.product_by_asin[asin].catalog_order,
-                ),
-            )[:limit]
-
-        price_labels: list[str] = []
-        if "price" in constraint_fields:
-            if price_min is not None:
-                price_labels.append(f"price_min:{price_min:g}")
-            if price_max is not None:
-                price_labels.append(f"price_max:{price_max:g}")
-
-        def labels_for(asin: str) -> tuple[str, ...]:
-            labels = list(matched_labels.get(asin, ()))
-            if "price" in constraint_fields and asin in price_match_asins:
-                labels.extend(price_labels)
-            return tuple(labels)
-
+            final_scores = {
+                asin: _final_score(mode, structured_score(asin), dense_scores[asin])
+                for asin in eligible_asins
+            }
+            rank_key = lambda asin: (
+                -final_scores[asin],
+                self.product_by_asin[asin].catalog_order,
+            )
+            if limit < len(eligible_asins):
+                ranked_asins = heapq.nsmallest(limit, eligible_asins, key=rank_key)
+            else:
+                ranked_asins = sorted(eligible_asins, key=rank_key)
         return [
             self._candidate(
                 asin,
@@ -735,6 +823,7 @@ InMemoryRetriever = ProductRetriever
 __all__ = [
     "Candidate",
     "InMemoryRetriever",
+    "MODE_SCORE_WEIGHTS",
     "ProductRecord",
     "ProductRetriever",
     "SharedCandidate",

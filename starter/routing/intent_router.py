@@ -375,7 +375,9 @@ class TwoPhaseIntentRouter:
     fields did the customer actually fill in? A message carrying two or more
     -- a colour and a price, a brand and a size -- has committed to enough
     that no further reading is needed. This is issue #7's extractor doing the
-    work, and it is the cheapest and least arguable evidence available.
+    work, and it is the cheapest evidence available -- but not an unarguable
+    one. The count is only as good as the extractor's precision, so Phase 1 is
+    vetoed when the ledger reads the same message as confidently exploratory.
 
     Phase 2 handles everything Phase 1 cannot settle, which is every message
     whose intent lives in *how* it is phrased rather than in what it names.
@@ -412,6 +414,7 @@ class TwoPhaseIntentRouter:
             backend=backend, threshold=escalation_threshold, rules=self.rules
         )
         self.phase1_decisions = 0
+        self.phase1_vetoed = 0
         self.defaulted = 0
 
     @property
@@ -422,26 +425,41 @@ class TwoPhaseIntentRouter:
     def backend_failures(self) -> int:
         return self.cascade.backend_failures
 
+    def _browsing_veto(self, message: str) -> bool:
+        """Whether the ledger reads this message as confidently exploratory.
+
+        Deliberately the pure lexical tier, not the cascade: a veto must stay
+        a cheap pure-function check and must never escalate to the reranker.
+        """
+        result = self.rules.classify(message)
+        return (
+            result.intent == BROWSING
+            and result.confidence >= lexicon.BROWSING_VETO_CONFIDENCE
+        )
+
     def classify(self, message: str) -> IntentResult:
         constraints = extract_constraints(message)
         tags = constraints.populated_fields(exclude=lexicon.TAG_COUNT_EXCLUDE)
 
         # -- Phase 1: enough named constraints is decisive on its own --------
         if len(tags) >= self.tag_threshold:
-            self.phase1_decisions += 1
-            # Confidence grows with the evidence, saturating quickly: three
-            # constraints is not meaningfully surer than two.
-            confidence = min(0.99, 0.80 + 0.06 * (len(tags) - self.tag_threshold))
-            return IntentResult(
-                intent=BUYING,
-                confidence=confidence,
-                margin=float(len(tags)),
-                signals=(),
-                weak=False,
-                tier="tags",
-                tags=tags,
-                constraints=constraints,
-            )
+            if self._browsing_veto(message):
+                self.phase1_vetoed += 1
+            else:
+                self.phase1_decisions += 1
+                # Confidence grows with the evidence, saturating quickly: three
+                # constraints is not meaningfully surer than two.
+                confidence = min(0.99, 0.80 + 0.06 * (len(tags) - self.tag_threshold))
+                return IntentResult(
+                    intent=BUYING,
+                    confidence=confidence,
+                    margin=float(len(tags)),
+                    signals=(),
+                    weak=False,
+                    tier="tags",
+                    tags=tags,
+                    constraints=constraints,
+                )
 
         # -- Phase 2: fall back to the signal ledger (and the reranker) ------
         result = self.cascade.classify(message)
