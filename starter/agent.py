@@ -59,18 +59,9 @@ class Agent:
 
     @staticmethod
     def _extract(message: str) -> ShoppingConstraints:
-        """Extract canonical constraints without making optional artifacts fatal."""
+        """Extract constraints from the required generated dictionary."""
 
-        try:
-            return constraint_module.extract_constraints(message)
-        except Exception:
-            legacy = getattr(constraint_module, "_legacy_extract_constraints", None)
-            if callable(legacy):
-                try:
-                    return legacy(message)
-                except Exception:
-                    pass
-            return ShoppingConstraints()
+        return constraint_module.extract_constraints(message)
 
     def _route(self, message: str) -> str:
         try:

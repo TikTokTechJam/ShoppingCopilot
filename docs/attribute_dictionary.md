@@ -112,6 +112,6 @@ annotation JSONL location, such as a generated release under
 requires the dependencies in `requirements-embeddings.txt`; it is intentionally
 not run as part of normal repository checks.
 
-The runtime loads the generated registry when both exact artifact files are
-present. If they are absent, the existing legacy vocabulary fallback remains
-available so the starter Agent can still run.
+The runtime requires the generated registry. Missing or incomplete dictionary
+artifacts are configuration errors; categorical extraction cannot proceed
+without these artifacts.

@@ -8,13 +8,11 @@ product says which shelf the customer is standing at, not whether they have
 decided. What separates the two intents is whether the message commits to
 anything.
 
-Vocabulary ownership: the attribute vocabularies -- brand, budget, size,
-colour, material, feature, use case and style -- are **not** defined here.
-They come from `constraints.CANONICAL_VOCAB`, the canonical dictionary issue
-#7 produces, via `constraints.alias_pattern()`. Keeping a second copy in this
-file meant two lists that could disagree about what "navy" or "water
-resistant" means; now there is one, and replacing it with the generated
-dictionary from issues #5 and #8 updates both components at once.
+Vocabulary ownership: categorical attribute vocabularies come from the
+generated dictionary loaded by `constraints.alias_pattern()`. Size remains a
+structured runtime field and uses the compact size matcher in that helper;
+price signals come from structured price expressions. Keeping values in the
+generated dictionary ensures the extractor and intent ledger use one source.
 
 What this file still owns is everything that is *not* a product attribute:
 the hesitation signals, the request verbs, the weights, and the rules for how
