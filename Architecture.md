@@ -980,111 +980,125 @@ Size and measurements should use typed structured indexes rather than pretending
 
 No Postgres, external vector database, or distributed serving layer is required for the first MVP.
 
-## 12. Clarification policy
+## 12. Per-turn recommendation and clarification strategy
 
-Every scoreable turn returns recommendations even when asking a question.
+Every scoreable turn produces a candidate ranking, so recommendation output is decoupled from turn termination. The turn does not choose between recommending and asking; it does both, from one candidate pool, on two parallel paths.
 
-```text
-current candidate pool
-      |
-      +--> current best Top-K
-      |
-      `--> optional ONE clarification attribute
-```
-
-Clarification is a recall instrument, not a ranking instrument. A session stops being scoreable once the target enters Top-K, so a question can only improve turns that have not yet hit. Its value is therefore concentrated in rescuing sessions that would otherwise miss and in pulling late hits earlier. It must never reduce the quality or size of the returned Top-K.
-
-### 12.1 Attribute scoring
-
-A deterministic one-step policy scores every askable attribute each turn and asks the argmax:
+This alignment is deliberate:
 
 ```text
-score(a) = Gain(a | pool)   x   Act(a)   x   Yield(a)   x   Profile(a)
+Hit Rate@10 + MRR   the user receives a ranked Top-K at turn 1, so a session can
+                    hit before any clarification is answered
+MTTC                a high-confidence top candidate can be presented directly with
+                    an optional prompt, letting the user stop or keep refining
 ```
 
 ```text
-Gain(a | pool)   expected improvement in the ranking if the user names a value of a
-Act(a)           probability the reply resolves to evidence the retriever can use
-Yield(a)         probability an undisclosed preference for a still exists
-Profile(a)       prior nudge from the anonymized user profile
+                          user turn t
+             turn 1: category | turn t: reply
+                              |
+                              v
+              +-------------------------------+
+              | CANDIDATE POOL UPDATE ENGINE  |
+              |  turn 1: Layer 1 category     |
+              |          + Layer 2 dense      |
+              |  turn t: specific answer      |
+              |          -> filter to C_t     |
+              |          no preference        |
+              |          -> keep C_t, retire  |
+              |             attribute A*      |
+              +---------------+---------------+
+                              |
+              +---------------+---------------+
+              |                               |
+              v                               v
+     PATH A: RERANKING              PATH B: QUESTION SELECTOR
+     score every i in C_t           expected information gain
+     Score(i) = w1*S_sem            IG(A_k, C_t) over unasked
+              + w2*S_qual           askable attributes
+              + w3*S_price          A* = argmax Score(A_k)
+              |                               |
+              v                               v
+     Top-K recommendations          follow-up question on A*
+              |                               |
+              +---------------+---------------+
+                              |
+                              v
+                   combined turn response
+                   - Top-K recommendations
+                   - at most one follow-up question
 ```
 
-Each factor describes a different system: `Gain` is a property of the catalog, `Act` of the parsing and retrieval pipeline, `Yield` of the conversation state, and `Profile` of the user. They multiply because they are independent gates. An attribute that partitions the catalog perfectly but whose answer cannot be resolved is worth nothing, and so is one that resolves perfectly but that the shopper has no remaining preference about.
+### 12.1 Candidate pool maintenance
 
-Actual factor values are benchmark-measured and should not be hard-coded into this document.
+The pool `C_t` is the single population both paths read. It carries forward across turns rather than being rebuilt from scratch.
 
-### 12.2 Gain — how an answer reaches the ranking
+**Turn 1 — initial category.** Hard filter the catalog on `category` using the Layer 1 exact index, then soft rank by Layer 2 multi-view similarity against the session semantic query, including any `preference_tags` resolved from the profile. The result is `C_1`.
 
-An answer reaches the ranking through up to three channels. `Gain` must be estimated per channel, because only the first removes candidates:
+**Turn t > 1 — attribute feedback.** The pool update depends on what the reply resolves to:
 
 ```text
-channel                      attributes                        effect
-Layer 1 hard constraint      category, budget, size,           removes candidates
-                             typed measurements
-Layer 1 canonical evidence   brand, color, material            strong re-ranking
-                             style, feature, use_case          soft re-ranking
-Layer 2 query enrichment     any answer retained in the        diffuse re-ranking
-                             session semantic query            across all views
+specific value      C_t = { i in C_(t-1) | attribute(i) matches the stated value }
+no preference       C_t = C_(t-1), attribute A* retired for the session
 ```
 
-Estimating every attribute as if it filtered would overstate `style`, `feature`, and `use_case`, which section 3 forbids from eliminating candidates at all.
+Exact filtering is bounded by the trust rules in section 10.1: only fields whose semantics and coverage make elimination safe may remove candidates, and absence of a sparse annotation is not contradiction. When an exact match would leave fewer than `top_k` candidates, fall back to soft filtering via attribute-scoped Layer 2 similarity rather than exhausting the pool. This is the same controlled relaxation described in section 10.2, applied at pool-update time.
 
-**Filter channel.** Expected pool reduction, estimated from value cardinality. The canonical registry's per-value distinct-product counts give the distribution directly:
+A reply that declines to state a preference must be recognized before constraint extraction runs. Such replies routinely name the attribute itself, so extracting them would invent a constraint from a refusal. A declining reply must not become a constraint, must not enter the semantic query text feeding Layer 2, and must retire the attribute for the rest of the session.
+
+An intent override is not a clarification reply. It retires the stale constraints it contradicts, but preferences gathered before the override remain valid, and attributes already spent remain spent.
+
+### 12.2 Path A — Top-K reranking
+
+Rerank the active pool on every turn:
 
 ```text
-p_v       = c_v / sum(c)          probability the shopper names value v
-survive   = sum(p_v * c_v / N)    expected surviving share of the pool
-gain      = 1 - survive
+FinalScore(i) = w1 * S_semantic(i)
+              + w2 * S_quality(i)
+              + w3 * S_price_affinity(i)
 ```
-
-A Gini or entropy form of the same distribution is equivalent for ranking purposes. Distinct-product counts overcount multi-valued products, so this is an approximation; canonical product facts give exact coverage where precision matters.
-
-**Evidence channel.** Expected reordering rather than reduction, and bounded by annotation coverage inside the current pool. An exact-match boost can only move candidates that carry a value for that attribute, and section 10.1 forbids pushing unannotated candidates down, so a sparsely annotated attribute reorders a minority and leaves the rest in place. Value diversity alone is therefore not sufficient — pool coverage must multiply it. This bound matters most for Tier 2, whose annotation policy deliberately favors precision over recall.
-
-**Semantic channel.** Under section 7.7 the runtime embeds one query per turn and compares it against every product view, so an answer influences Layer 2 only by changing the session query text. The effect is diffuse rather than targeted, and it dilutes as the query grows: each additional clause moves the single query vector less than the last. Layer 2 gain should therefore be treated as a small, decreasing term rather than a per-attribute quantity, until benchmark evidence justifies query-to-field routing.
-
-**Which population supplies the distribution** depends on the turn:
 
 ```text
-turn 1      global value-count distribution
-turn 2+     distribution restricted to the live candidate pool
+S_semantic        Layer 2 presence-aware multi-view similarity (section 7.8)
+                  combined with Layer 1 structured and canonical evidence
+                  per the trust ordering in section 10.1
+S_quality         catalog quality signal, principally average_rating and
+                  rating volume
+S_price_affinity  agreement with a stated or inferred budget
 ```
 
-The global distribution is a precomputed table with one row per askable attribute, built once at startup from the canonical registry and cached. It exists because the first turn is both the highest-leverage question and the one where pool-conditioned statistics are least reliable: the initial pool is wide and weakly ordered, so its split quality is mostly noise. From the second turn onward the pool-conditioned distribution is the better estimate and should replace it.
+Sort `C_t` descending by `FinalScore(i)` and return the first `top_k` items. Weights are benchmark-tuned and must not be hard-coded into this document.
 
-Two askable attributes are absent from the canonical registry, because `price` remains numeric and `size` remains a structured runtime constraint. Their rows come from the structured layer instead:
+Roughly one fifth of the frozen catalog carries a price, so `S_price_affinity` is a tie-break among priced candidates only. A stated budget must not become a hard filter and must never penalize a product whose price is unknown; eliminating unpriced products would discard most of the catalog along with plausible targets.
+
+### 12.3 Path B — next-question selection
+
+In parallel with Path A, score every remaining askable attribute by the expected information gain of learning its value over the live pool:
 
 ```text
-budget    catalog price coverage and distribution
-size      Tier 1 structured size-label index
+IG(A_k, C_t) = H(C_t) - sum_v ( |C_t,A_k=v| / |C_t| ) * H(C_t,A_k=v)
 ```
 
-### 12.3 Act — actionability
+```text
+Score(A_k) = IG(A_k, C_t) * ( 1 + lambda * max_over_tags Sim(A_k, tag) )
+```
 
-`Act` is the probability that a reply becomes evidence the retriever can act on. It decides whether a theoretical gain ever reaches the ranking, and it is where semantic-resolution quality enters the policy: for `style`, `feature`, and `use_case`, `Act` is the probability that the reply resolves to a canonical value or to a usable attribute-scoped semantic fallback under section 6. A high-`Gain` attribute whose answers land in unresolved residual text has low `Act` and should not be asked ahead of a resolvable one.
+Ask `A* = argmax Score(A_k)`.
 
-`Act` is also bounded by structured coverage. Roughly one fifth of the frozen catalog carries a price, so a budget answer is unusable for most products. Two consequences follow, and both are ranking rules rather than clarification rules:
+The `IG` term is a property of the catalog: how evenly a value distribution splits the current pool. The `Sim` term is the anonymized `user_profile` prior — profile tags are resolved through the same canonical registry that resolves user utterances, and `lambda` controls how much that prior nudges an otherwise even contest. The prior is a tiebreaker, not a constraint: a profile tag describes the shopper's general leanings rather than the current target, so it may boost a question's priority but must never suppress one, and its influence decays as real constraints accumulate.
 
-- a stated budget must not become a hard filter, because eliminating unpriced products would discard most of the catalog along with plausible targets;
-- a preference for cheaper items must act as a tie-break among priced candidates only, never as a penalty against products whose price is unknown.
+Which population supplies the distribution depends on the turn:
 
-`Act` for Tier 2 attributes depends on a configuration decision. Section 10.2 leaves it benchmark-driven whether a Tier 2 mismatch hard-filters, and the same answer is worth very different amounts under the two settings. The policy must read the same switch the retriever uses rather than assuming one.
+```text
+turn 1      global value-count distribution from the canonical registry
+turn 2+     distribution restricted to the live candidate pool C_t
+```
 
-Finally, an answer strong enough to trigger controlled relaxation partly reverses itself: section 10.2 drops the weakest evidence first when a strict pool collapses. An attribute whose answers routinely force relaxation should be scored accordingly.
+The global table is built once at startup and cached. It exists because turn 1 is both the highest-leverage question and the one where pool-conditioned statistics are least reliable: the initial pool is wide and weakly ordered, so its split quality is mostly noise. Two askable attributes are absent from the canonical registry, because `price` remains numeric and `size` remains a structured runtime constraint; their distributions come from catalog price coverage and the Tier 1 structured size-label index respectively.
 
-### 12.4 Yield — availability of an undisclosed preference
+Entropy over value counts overstates attributes whose answers cannot eliminate candidates. Section 3 forbids `style`, `feature`, and `use_case` from removing candidates at all, and section 10.1 forbids pushing unannotated candidates down, so for those attributes `IG` must be read as expected reordering bounded by annotation coverage inside `C_t`, not as expected pool reduction. An attribute whose answers land in unresolved residual text, or whose channel cannot act on them, is worth less than its raw split suggests.
 
-`Yield` is the probability that the shopper still holds an undisclosed preference for the attribute. It separates a question that returns information from one that returns a polite non-answer, and it is bounded by whether the target's own record can support such a preference at all — the same missing prices that depress `Act(budget)` also depress `Yield(budget)`.
-
-`Yield` is dynamic in two ways. It is mode- and scenario-conditioned, because an opening utterance that already states a constraint spends that attribute before the first response. And it is exhausted by asking: an attribute that has been answered, refused, or reported as having no preference will not produce a second preference, so it must be retired for the session rather than re-scored.
-
-### 12.5 Profile — pre-first-turn prior
-
-The anonymized `user_profile` arrives at `reset`, making it the only signal available before the first utterance and therefore a natural turn-1 tiebreaker. Preference tags should be resolved through the same canonical registry that resolves user utterances, which classifies them into attributes with no additional machinery.
-
-A profile tag describes the shopper's general leanings, not the current target, and the shopper has not stated it in this conversation. It must therefore be applied as a soft ranking prior only. It must never be treated as a disclosed constraint, and it must never suppress a question, because the corresponding preference may still be undisclosed and worth asking for. `Profile` drops out of the score once real constraints exist.
-
-### 12.6 Asking discipline
+### 12.4 Asking discipline
 
 ```text
 live(a)  =  a is supported by the response contract
@@ -1093,29 +1107,49 @@ live(a)  =  a is supported by the response contract
          &  a has not been reported as having no preference
 ```
 
-Ask the highest-scoring live attribute. Weak split quality should demote an attribute rather than veto it: because a turn that asks nothing yields nothing, declining to ask while a live attribute remains forfeits the turn's information for no compensating gain. Withhold the question only when no live attribute remains, or when no further reply can arrive.
+Ask the highest-scoring live attribute. Weak split quality should demote an attribute rather than veto it: a turn that asks nothing yields nothing, so declining to ask while a live attribute remains forfeits the turn's information for no compensating gain.
 
-Asking never replaces recommendations, and at most one attribute is asked per turn. The prose in `message` is a human-facing courtesy; `ask_attribute` is the structured signal, and the two must agree.
+At most one attribute is asked per turn, and asking never replaces or shortens the Top-K. The prose in `message` is a human-facing courtesy; `ask_attribute` is the structured signal, and the two must agree.
 
-### 12.7 Reply handling
+The attribute that was asked is known, so the reply is resolved with that field pinned rather than re-classified from scratch. Field-pinned resolution follows the attribute-scoped policy in section 6: exact and normalized canonical matching first, high-threshold semantic fallback where the attribute permits it, numeric parsing for price and measurements, and residual text as the last resort. A resolved answer is routed to the channel matching its tier per section 8. Because Layer 1 and Layer 2 are independent paths that meet only at ranking, a constraint enforced at Layer 1 also remains present in the session query text feeding Layer 2; ranking must account for that double representation rather than treating the two contributions as independent evidence.
 
-The attribute that was asked is known, so the reply should be resolved with that field pinned rather than re-classified from scratch. Field-pinned resolution follows the attribute-scoped policy in section 6: exact and normalized canonical matching first, high-threshold semantic fallback where the attribute permits it, numeric parsing for price and measurements, and residual text as the last resort.
+### 12.5 Turn output
 
-A resolved answer is routed to the channel that matches its tier, following the priority order in section 8. Because Layer 1 and Layer 2 are independent paths that meet only at ranking, a constraint enforced at Layer 1 also remains present in the session query text feeding Layer 2. The ranking layer should account for that double representation rather than treating the two contributions as independent evidence.
+Both paths converge into the single response defined by the Agent contract in section 13. Path A fills `recommendations`; Path B fills `ask_attribute` and the question text in `message`:
 
-Replies that decline to state a preference must be recognized before constraint extraction runs. Such replies routinely name the attribute itself, so extracting them would invent a constraint from a refusal. A declining reply must not become a constraint, must not enter the semantic query context used for Layer 2 retrieval, and must retire the attribute for the rest of the session.
+```json
+{
+  "message": "To narrow this down further, do you have a specific color preference?",
+  "ask_attribute": "color",
+  "recommendations": [
+    {"parent_asin": "B0BZWZSM7D"}
+  ]
+}
+```
 
-An intent override is not a clarification reply. It retires the stale constraint it contradicts, but preferences gathered before the override remain valid, and attributes already spent remain spent.
+Internal candidate records may carry rank, score, price, and rating for debugging and evaluation, but the published response shape is the one in section 13 and does not change.
 
-### 12.8 Calibration and boundaries
+### 12.6 Early exit
 
-`Gain` is derived from catalog artifacts and is stable between runs. `Act` and `Yield` are aggregate rates measured by replaying the benchmark and recording, per attribute, how often a question produced usable evidence. They are calibration constants and must be re-measured when the catalog, the annotation pass, the embedding views, or the evaluation harness changes; a fixed ask order is a sufficient probe for estimating both.
+Because a Top-K is returned every turn, the conversation can terminate as soon as the ranking is confident enough that another question is unlikely to pay for its turn:
+
+```text
+FinalScore(i_1) >= tau_confidence    OR    |C_t| <= top_k
+```
+
+When either condition holds, return the Top-K with `ask_attribute` set to `null`. The pool is already small enough to enumerate, or the leader is already separated enough that further narrowing has little left to recover — in both cases the remaining turns are spent rather than saved. Withholding the question also follows when no live attribute remains or no further reply can arrive.
+
+`tau_confidence` is benchmark-tuned. It trades MTTC against Hit Rate@10 and MRR directly and must be measured, not assumed.
+
+### 12.7 Calibration and boundaries
+
+`IG` is derived from catalog artifacts and is stable between runs. The reranking weights, `lambda`, and `tau_confidence` are calibration constants measured by replaying the benchmark, and must be re-measured when the catalog, the annotation pass, the embedding views, or the evaluation harness changes.
 
 The policy may consume only the observable reply text and the published response contract. Hidden targets, hidden simulator state, and benchmark labels stay evaluator-side as required by section 15, and measured calibration rates must remain aggregate statistics rather than a channel for per-session evaluator knowledge.
 
 The supported public `ask_attribute` values remain those required by the competition contract. Attribute values that never carry a preference under the contract are not worth a turn and should be excluded from the askable set. Internal typed measurements can still map to the closest supported public question category when needed.
 
-Recursive DP, learned question policies, or posterior planning can replace this utility later without changing the Agent response contract. The scoring form above is deliberately greedy: sessions expose only a handful of undisclosed preferences, so deeper lookahead has little to recover.
+Recursive DP, learned question policies, or posterior planning can replace this greedy one-step selector later without changing the Agent response contract. Sessions expose only a handful of undisclosed preferences, so deeper lookahead has little to recover.
 
 ## 13. Agent contract
 
