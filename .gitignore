@@ -23,6 +23,9 @@ tests/test_organizer_pipeline.py
 #   python -m tools.fetch_reranker
 assets/qwen3-reranker-0.6b-onnx
 
+# Local Hugging Face model weights; never commit downloaded encoders.
+models/
+
 # Generated annotation datasets and reports.
 data/derived/annotations/
 data/derived/dictionary/

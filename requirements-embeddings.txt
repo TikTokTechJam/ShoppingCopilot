@@ -1,3 +1,7 @@
+# Runtime and one-time setup dependencies for the Jina v5 text encoder.
 numpy>=1.24
 sentence-transformers>=3.0
-peft>=0.20
+transformers>=4.57.0
+torch>=2.8.0
+peft>=0.15.2
+huggingface-hub>=0.23
