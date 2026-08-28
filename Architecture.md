@@ -17,7 +17,7 @@ The design optimizes for the competition objective:
 - treat Buying as precision-first and Browsing as recall-first;
 - keep hidden evaluator information completely outside Agent logic.
 
-The first MVP deliberately favors deterministic preprocessing, in-memory indexes, exact dense search, and benchmark-driven iteration over infrastructure complexity.
+The first MVP deliberately favors deterministic preprocessing, in-memory indexes, exact dense search, optional FAISS `IndexFlatIP` acceleration, and benchmark-driven iteration over infrastructure complexity.
 
 ## 2. System-level architecture
 
@@ -103,7 +103,7 @@ Each view is embedded independently so noisy text in one catalog field does not 
                                USER TURN
                                    |
                                    v
-                     existing utterance processing
+                      existing utterance processing
                                    |
                     +--------------+--------------+
                     |                             |
@@ -117,19 +117,23 @@ Each view is embedded independently so noisy text in one catalog field does not 
                     |                             v
                     |              normalized query_embedding
                     |                             |
-                    |              +--------------+--------------+--------------+--------------+
-                    |              |              |              |              |              |
-                    |              v              v              v              v              v
-                    |         categories      title          features      description      details (optional)
-                    |          matrix          matrix          matrix          matrix          matrix (optional)
-                    |              |              |              |              |              |
-                    |              v              v              v              v              v
-                    |        category score   title score   features score description score details score (optional)
-                    |              |              |              |              |              |
-                    |              +--------------+--------------+--------------+--------------+
+                    |              +--------------+--------------+--------------+
+                    |              |              |              |              |
+                    |              v              v              v              v
+                    |        category FAISS   title FAISS    features FAISS  description FAISS
+                    |        IndexFlatIP       IndexFlatIP    IndexFlatIP     IndexFlatIP
+                    |              |              |              |              |
+                    |              v              v              v              v
+                    |           Top-N          Top-N          Top-N          Top-N
+                    |              |              |              |              |
+                    |              +--------------+--------------+--------------+
                     |                                             |
                     |                                             v
-                    |                                presence-aware weighted score
+                    |                                  candidate-row union
+                    |                                             |
+                    |                                             v
+                    |                              exact multi-view score on union
+                    |                              using embedding matrices + masks
                     |                                             |
                     +----------------------+----------------------+
                                            |
@@ -143,7 +147,11 @@ Each view is embedded independently so noisy text in one catalog field does not 
                                          Top-K
 ```
 
-At runtime, catalog embeddings are never regenerated. The Agent loads the four core matrices once at startup and may additionally load the optional details matrix when that view is implemented. It creates only one new query embedding per turn.
+At runtime, catalog embeddings and FAISS indexes are never regenerated. The Agent loads the four core embedding matrices and, when available, four exact FAISS `IndexFlatIP` indexes once at startup. It creates only one new query embedding per turn.
+
+FAISS is an acceleration path for Layer 2 candidate generation, not a replacement for the existing field embeddings or Layer 1 evidence. When the Layer 1 candidate pool is already small, the runtime may skip FAISS and score those candidate rows directly. When the candidate pool is broad, FAISS retrieves the strongest per-field candidates, unions them, and the existing multi-view scorer reranks that smaller set exactly.
+
+If FAISS artifacts are unavailable, the runtime must fall back to the existing exact matrix-scoring path without changing the Agent contract.
 
 ## 3. Product knowledge model
 
@@ -581,6 +589,13 @@ data/derived/product_embeddings/
 ├── features_embeddings.npy
 ├── description_embeddings.npy
 ├── details_embeddings.npy          # optional / later
+├── faiss/
+│   ├── category.index
+│   ├── title.index
+│   ├── features.index
+│   ├── description.index
+│   ├── row_mappings.json
+│   └── manifest.json
 ├── product_embedding_metadata.json
 └── manifest.json
 ```
@@ -599,7 +614,12 @@ source catalog version
 product count
 field/view names
 generation configuration
+FAISS index type and per-view indexed-row counts when FAISS artifacts exist
 ```
+
+The FAISS sub-manifest should bind the indexes to the exact embedding artifact. It should record the index type, dimension, per-view vector counts, catalog hash, embedding model/task/prompt identity, text/preprocessing version, normalization, row-mapping version, and matrix content hashes when available. A mismatch in catalog identity, dimension, row mapping, presence masks, preprocessing version, or embedding identity invalidates the FAISS bundle.
+
+FAISS indexes should contain only rows whose corresponding field is present. `row_mappings.json` maps each FAISS-local row back to the original catalog row / `parent_asin`.
 
 ### 7.7 Query embedding
 
@@ -619,6 +639,17 @@ description_scores = description_embeddings @ query_embedding
 ```
 
 This keeps the baseline simple and avoids adding query-to-field routing before benchmark evidence justifies it.
+
+When FAISS acceleration is enabled, the same normalized query vector is sent to each field index:
+
+```python
+category_scores, category_rows = category_index.search(query_embedding, top_n)
+title_scores, title_rows = title_index.search(query_embedding, top_n)
+features_scores, features_rows = features_index.search(query_embedding, top_n)
+description_scores, description_rows = description_index.search(query_embedding, top_n)
+```
+
+The returned catalog rows are unioned before the existing multi-view scorer runs. `top_n` is a benchmark-tuned retrieval parameter rather than a fixed architecture constant.
 
 ### 7.8 Multi-view Layer 2 score
 
@@ -661,7 +692,7 @@ has_details    # optional / later
 
 A missing field contributes no Layer 2 score and must not be treated as negative evidence.
 
-### 7.10 Vector normalization and search
+### 7.10 Vector normalization and FAISS search
 
 Vectors should be L2-normalized float32.
 
@@ -673,9 +704,67 @@ scores = embeddings @ query_embedding
 
 is cosine similarity.
 
-For roughly 50,000 products, exact in-process search is sufficient. Normalized NumPy inner product or FAISS `IndexFlatIP` is acceptable.
+The default FAISS acceleration uses exact inner-product indexes:
 
-An external vector database is not required.
+```python
+index = faiss.IndexFlatIP(embedding_dimension)
+```
+
+Because product and query vectors are L2-normalized, `IndexFlatIP` returns exact cosine-nearest neighbors. This is not an ANN approximation and does not require IVF, HNSW, PQ, or an external vector database.
+
+Build one index for each implemented Layer 2 view:
+
+```text
+categories
+title
+features
+description
+```
+
+Each index should contain only products for which that field is present. Maintain a mapping:
+
+```text
+FAISS local row -> catalog row -> parent_asin
+```
+
+At runtime:
+
+```text
+query_embedding
+    |
+    +--> category IndexFlatIP    -> Top-N rows
+    +--> title IndexFlatIP       -> Top-N rows
+    +--> features IndexFlatIP    -> Top-N rows
+    `--> description IndexFlatIP -> Top-N rows
+                                      |
+                                      v
+                               union candidate rows
+                                      |
+                                      v
+                     exact multi-view scoring on the union
+```
+
+The original embedding matrices remain loaded because they are still used for the presence-aware multi-view score and for exact scoring when Layer 1 already produces a small candidate pool.
+
+FAISS should therefore be used adaptively:
+
+```text
+small viable candidate pool
+    -> score candidate rows directly from matrices
+
+broad / browsing candidate pool
+    -> FAISS per-field Top-N retrieval
+    -> candidate union
+    -> exact multi-view rerank
+```
+
+The per-field `Top-N` value and the threshold for switching to FAISS are benchmark-tuned. Candidate-union recall should be measured before reducing either aggressively.
+
+Treat the four core FAISS indexes and their mappings as one validated acceleration bundle. If any required core index or mapping is missing, corrupt, dimensionally inconsistent, or bound to a different embedding/catalog artifact, disable the FAISS path and fall back to the existing exact matrix-scoring path for correctness.
+
+`IndexFlatIP` stores its own vector data, so keeping both the four NumPy matrices and four FAISS indexes duplicates vector memory. At 50,000 products and 768 dimensions, the four NumPy matrices occupy about 586 MiB and present-row FAISS vectors add about 501 MiB, for roughly 1.09 GiB of vector storage in memory. This is acceptable for the MVP when memory permits; memory mapping the NumPy matrices may be considered later if measurement shows memory pressure.
+
+For roughly 50,000 products, `IndexFlatIP` is sufficient. Approximate FAISS indexes such as IVF, HNSW, or PQ are not required for the MVP.
 
 ### 7.11 Layer 1 and Layer 2 relationship
 
@@ -884,7 +973,13 @@ apply strong trusted-semantic evidence
 score descriptive semantic matches
     |
     v
-use Layer 2 multi-view similarity among viable candidates
+if viable pool is small:
+    exact Layer 2 scoring on viable rows
+else:
+    FAISS per-field Top-N -> union -> keep viable rows
+    |
+    v
+exact Layer 2 multi-view rerank
     |   categories / title / features / description / selected details (optional)
     v
 rank candidate pool
@@ -916,10 +1011,16 @@ Browsing is recall-first.
 full current/session semantic context
         |
         v
-Layer 2 multi-view dense retrieval over 50k
+one normalized query embedding
         |
         v
-broad candidate pool
+FAISS IndexFlatIP search per Layer 2 field
+        |
+        v
+union per-field Top-N candidates
+        |
+        v
+exact multi-view rerank on candidate union
         |
         v
 Tier 2 / Tier 3 preference boosts
@@ -929,6 +1030,8 @@ ranked candidates
 ```
 
 Vague preferences should not be aggressive hard filters.
+
+The browsing evaluator should also track candidate-union recall: whether the target appears anywhere in the union returned by the field-level FAISS searches. This separates candidate-generation failures from final ranking failures.
 
 ### 10.4 Shared candidate contract
 
@@ -962,6 +1065,9 @@ Tier 2 canonical inverted indexes
 Tier 3 canonical inverted indexes where useful
 canonical registries
 Layer 2 category/title/features/description embedding matrices + optional details matrix + shared row metadata when valid
+optional exact FAISS IndexFlatIP indexes for category/title/features/description
+FAISS-local-row -> catalog-row mappings
+FAISS bundle manifest / validation metadata
 ```
 
 Typical exact indexes:
@@ -1054,7 +1160,14 @@ data/derived/
     ├── title_embeddings.npy
     ├── features_embeddings.npy
     ├── description_embeddings.npy
-    └── details_embeddings.npy      # optional / later
+    ├── details_embeddings.npy      # optional / later
+    └── faiss/
+        ├── category.index
+        ├── title.index
+        ├── features.index
+        ├── description.index
+        ├── row_mappings.json
+        └── manifest.json
 ```
 
 Every generated artifact should record enough information to detect mismatches, including source/facts version, model or normalization configuration, dimensions/counts, and row mappings where relevant.
@@ -1089,6 +1202,13 @@ Tier 3 semantic fallback rates
 candidate-pool sizes
 controlled relaxation frequency
 dense fallback frequency
+FAISS candidate-union size and target recall
+query-embedding latency
+FAISS search latency
+candidate-union latency
+exact candidate-rerank latency
+total retrieval latency
+FAISS vs direct-matrix retrieval latency
 clarification frequency and value
 startup latency
 mean/p50/p95 response latency
@@ -1116,7 +1236,7 @@ After repeated optimization on Manual400, treat it as a dev set and validate cha
    Early Top-K hits directly improve the competition objective. Clarification is supplementary.
 
 6. **Keep runtime in memory.**
-   The frozen catalog is small enough that external databases and vector services are unnecessary for the MVP.
+   The frozen catalog is small enough that external databases and vector services are unnecessary for the MVP. Exact FAISS `IndexFlatIP` indexes may be used in-process to reduce dense candidate-generation latency.
 
 7. **Add complexity only after measurement.**
    BM25/lexical product branches, cross-encoder reranking, hosted LLM rerankers, recursive DP, ANN indexes, and other advanced paths should be justified by benchmark evidence rather than added preemptively.
@@ -1139,5 +1259,7 @@ hosted LLM reranking
 recursive depth-2+ clarification DP
 learned posterior model
 ```
+
+Exact in-process FAISS `IndexFlatIP` acceleration is allowed by the current architecture; `complex ANN indexing` above refers to approximate schemes such as IVF, HNSW, or PQ.
 
 These may be added later only when measured failures justify them and the architecture is intentionally revised.
