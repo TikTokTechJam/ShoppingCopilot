@@ -31,7 +31,7 @@ Use a local or injected embedding model for benchmark artifacts:
 python -m scripts.build_layer2_embeddings \
   --catalog data/catalog.jsonl \
   --output-dir data/derived/product_embeddings \
-  --model path/to/local/sentence-transformer
+  --model model/jina-embeddings-v5-text-nano
 ```
 
 The builder loads local SentenceTransformers models with
@@ -110,4 +110,22 @@ python -m evaluator.hard_evaluator \
 ```
 
 Use `--disable-layer2` for an explicit Layer 1-only run. For a semantic run,
-replace `--hash-dimension 384` with `--embedding-model path/to/local/model`.
+pass the Jina artifact directory; the evaluator will use the repository-local
+model automatically:
+
+```bash
+python -m evaluator.hard_evaluator \
+  --catalog data/catalog.jsonl \
+  --sessions data/derived/gptannotation/sessions.jsonl \
+  --layer2-artifact-dir data/derived/product_embeddings_jina \
+  --output results_layer1_layer2_jina.json
+```
+
+You can still override the model location with
+`--embedding-model /path/to/local/model`.
+
+The repository convention for the Jina model is
+`model/jina-embeddings-v5-text-nano`. The model weights are intentionally
+ignored by Git. Download or copy the complete local model into that directory
+on each checkout. When Layer 2 is enabled through the evaluator with no
+explicit `--embedding-model`, this path is used automatically.
