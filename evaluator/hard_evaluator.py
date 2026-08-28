@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from evaluator.agent_factory import build_evaluator_agent
 from starter.agent import Agent
-from starter.retrieval import STRUCTURED_FIELD_WEIGHTS
+from starter.retrieval import MODE_SCORE_WEIGHTS, STRUCTURED_FIELD_WEIGHTS
 
 
 MAX_TURNS = 10
@@ -742,9 +742,31 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         excluded_asins=None,
         apply_budget=False,
     )
+
+    def sort_by(candidates: list[Any], score_name: str) -> list[Any]:
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                -float(getattr(candidate, score_name)),
+                retriever.product_by_asin[candidate.parent_asin].catalog_order,
+            ),
+        )
+
+    structured = sort_by(eligible, "constraint_score")
+    dense = sort_by(eligible, "dense_score")
+    hybrid = sort_by(eligible, "score")
+    global_structured = sort_by(global_ranking, "constraint_score")
+    global_dense = sort_by(global_ranking, "dense_score")
+    global_hybrid = sort_by(global_ranking, "score")
     return {
         "eligible": eligible,
         "global": global_ranking,
+        "structured": structured,
+        "dense": dense,
+        "hybrid": hybrid,
+        "global_structured": global_structured,
+        "global_dense": global_dense,
+        "global_hybrid": global_hybrid,
         "target_eligible": next(
             (candidate for candidate in eligible if candidate.parent_asin == target),
             None,
@@ -902,6 +924,31 @@ class InteractiveDebugPrinter:
         print("AGENT CONSTRAINTS SO FAR")
         print(json.dumps(_debug_constraints(state), indent=2, ensure_ascii=False))
         print(f"Intent mode: {getattr(state, 'mode', None) or 'BROWSING'}")
+        retriever = agent.retriever
+        layer2_index = getattr(retriever, "layer2_index", None)
+        query_encoder = getattr(retriever, "query_encoder", None)
+        artifact_manifest = getattr(layer2_index, "manifest", {}) if layer2_index else {}
+        artifact_model = artifact_manifest.get(
+            "embedding_model", artifact_manifest.get("model", "N/A")
+        )
+        encoder_model = getattr(query_encoder, "model_id", None) or "N/A"
+        artifact_dimension = getattr(layer2_index, "dimension", None)
+        print()
+        print("LAYER 2")
+        print(f"Enabled: {'YES' if bool(getattr(retriever, 'dense_available', False)) else 'NO'}")
+        print(f"Artifact model: {artifact_model}")
+        print(f"Query model: {encoder_model}")
+        print(f"Dimension: {artifact_dimension if artifact_dimension is not None else 'N/A'}")
+        compatibility_error = getattr(retriever, "layer2_compatibility_error", None)
+        if compatibility_error and not bool(getattr(retriever, "dense_available", False)):
+            print(f"Dense status: {compatibility_error}")
+        mode = str(getattr(state, "mode", None) or "BROWSING").upper()
+        score_weights = MODE_SCORE_WEIGHTS.get(mode, MODE_SCORE_WEIGHTS["BROWSING"])
+        print(
+            "Score weights: "
+            f"structured={score_weights['structured']:.2f}, "
+            f"dense={score_weights['dense']:.2f}"
+        )
         print()
         snapshot = _debug_state_snapshot(agent, session_id)
         excluded = snapshot.get("excluded", [])
@@ -928,6 +975,9 @@ class InteractiveDebugPrinter:
         ranking = _debug_ranking_snapshot(agent, session_id, target)
         eligible = ranking["eligible"]
         global_ranking = ranking["global"]
+        structured_ranking = ranking["structured"]
+        dense_ranking = ranking["dense"]
+        hybrid_ranking = ranking["hybrid"]
         target_eligible = ranking["target_eligible"]
         target_global = ranking["target_global"]
         eligible_rank = _debug_rank(eligible, target)
@@ -958,6 +1008,10 @@ class InteractiveDebugPrinter:
             print(f"Final score: {target_candidate.score:.4f}")
         else:
             print("Target score: N/A")
+        print("Target ranks (eligible products):")
+        print(f"  Structured rank: {_debug_rank(structured_ranking, target) or 'MISS'}")
+        print(f"  Dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
+        print(f"  Hybrid rank: {_debug_rank(hybrid_ranking, target) or 'MISS'}")
         top10_rank = ranked.index(target) + 1 if target in ranked else None
         print(f"Top10 rank: {top10_rank if top10_rank is not None else 'MISS'}")
 

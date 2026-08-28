@@ -4,11 +4,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 from starter.agent import Agent
 from starter.retrieval import (
     DENSE_SCORE_WEIGHT,
+    MODE_SCORE_WEIGHTS,
     STRUCTURED_FIELD_WEIGHTS,
     ProductRetriever,
 )
@@ -323,6 +324,127 @@ class ProductRetrieverTests(unittest.TestCase):
             self.assertTrue(ids)
             self.assertEqual(len(ids), len(set(ids)))
             self.assertTrue(set(ids) <= set(agent.retriever.valid_asins))
+
+    def test_mode_weights_make_browsing_dense_dominant_and_buying_structured_dominant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            retriever = self.make_retriever(Path(directory))
+            constraints = ShoppingConstraints(
+                category=("shoes",),
+                brand=("new balance",),
+                color=("black",),
+                material=("high quality mesh",),
+                style=("high waisted",),
+                feature=("four way stretch",),
+                use_case=("trail running",),
+            )
+            dense_scores = {"A": 0.10, "B": 0.90, "C": 0.0, "X": 0.0, "D": 0.0}
+            with patch.object(
+                retriever,
+                "_dense_scores",
+                return_value=dense_scores,
+            ), patch.object(
+                type(retriever),
+                "dense_available",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                browsing = retriever.retrieve("BROWSING", "semantic query", constraints, limit=2)
+                buying = retriever.retrieve("BUYING", "semantic query", constraints, limit=2)
+
+            self.assertEqual(browsing[0].parent_asin, "B")
+            self.assertEqual(buying[0].parent_asin, "A")
+            for candidate in browsing:
+                expected = (
+                    MODE_SCORE_WEIGHTS["BROWSING"]["structured"] * candidate.constraint_score
+                    + MODE_SCORE_WEIGHTS["BROWSING"]["dense"] * candidate.dense_score
+                )
+                self.assertAlmostEqual(candidate.score, expected)
+
+    def test_browsing_dense_can_surface_zero_structured_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            retriever = self.make_retriever(Path(directory))
+            dense_scores = {"A": 0.10, "B": 0.90, "C": 0.20, "X": 0.30, "D": 0.40}
+            with patch.object(
+                retriever,
+                "_dense_scores",
+                return_value=dense_scores,
+            ), patch.object(
+                type(retriever),
+                "dense_available",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                ranked = retriever.retrieve(
+                    "BROWSING",
+                    "semantic query",
+                    ShoppingConstraints(category=("not in this catalog",)),
+                    limit=3,
+                )
+
+            self.assertEqual(ranked[0].parent_asin, "B")
+            self.assertEqual(ranked[0].constraint_score, 0.0)
+
+    def test_dense_ranking_preserves_budget_and_recommendation_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            retriever = self.make_retriever(Path(directory))
+            dense_scores = {"A": 0.99, "B": 0.10, "C": 0.95, "X": 0.90, "D": 0.80}
+            with patch.object(
+                retriever,
+                "_dense_scores",
+                return_value=dense_scores,
+            ), patch.object(
+                type(retriever),
+                "dense_available",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                budgeted = retriever.retrieve(
+                    "BROWSING",
+                    "semantic query",
+                    ShoppingConstraints(category=("shoes",), price_max=30.0),
+                    limit=10,
+                )
+                excluded = retriever.retrieve(
+                    "BROWSING",
+                    "semantic query",
+                    ShoppingConstraints(category=("shoes",)),
+                    limit=10,
+                    excluded_asins={"B"},
+                )
+
+            self.assertEqual([candidate.parent_asin for candidate in budgeted], ["B"])
+            self.assertNotIn("B", [candidate.parent_asin for candidate in excluded])
+
+    def test_debug_ranking_matches_production_ranking_with_dense_scores(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            retriever = self.make_retriever(Path(directory))
+            dense_scores = {"A": 0.1, "B": 0.9, "C": 0.2, "X": 0.3, "D": 0.4}
+            with patch.object(
+                retriever,
+                "_dense_scores",
+                return_value=dense_scores,
+            ), patch.object(
+                type(retriever),
+                "dense_available",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                production = retriever.retrieve(
+                    "BROWSING",
+                    "semantic query",
+                    ShoppingConstraints(category=("shoes",)),
+                    limit=5,
+                )
+                debug = retriever.debug_rank_all(
+                    "BROWSING",
+                    "semantic query",
+                    ShoppingConstraints(category=("shoes",)),
+                )
+
+            self.assertEqual(
+                [candidate.parent_asin for candidate in production],
+                [candidate.parent_asin for candidate in debug[:5]],
+            )
 
 
 if __name__ == "__main__":

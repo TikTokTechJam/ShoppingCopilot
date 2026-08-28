@@ -38,6 +38,16 @@ class SentenceTransformerRetrievalEncoder:
             raise ValueError("batch_size must be positive")
         self._model = model
         self.model_id = model_id
+        dimension_getter = getattr(model, "get_sentence_embedding_dimension", None)
+        try:
+            dimension = dimension_getter() if callable(dimension_getter) else None
+        except (TypeError, ValueError):
+            dimension = None
+        self.embedding_dimension = (
+            int(dimension)
+            if isinstance(dimension, int) and not isinstance(dimension, bool) and dimension > 0
+            else None
+        )
         self.task = task
         self.document_prompt_name = document_prompt_name
         self.query_prompt_name = query_prompt_name
@@ -76,6 +86,7 @@ class HashEmbeddingModel:
         if dimension < 1:
             raise ValueError("dimension must be positive")
         self.dimension = dimension
+        self.embedding_dimension = dimension
         self.model_id = "hashing-fallback-v1"
 
     def embed_documents(self, texts: Sequence[str]) -> Any:
@@ -115,6 +126,20 @@ def is_jina_v5_text_nano(model_path: str) -> bool:
         "jina-embeddings-v5-text-nano" in normalized
         or "jina-v5-text-nano" in normalized
     )
+
+
+def embedding_models_compatible(expected: object, actual: object) -> bool:
+    """Return whether two model identifiers refer to the same model family."""
+
+    expected_id = str(expected).strip().casefold()
+    actual_id = str(actual).strip().casefold()
+    if not expected_id or not actual_id:
+        return False
+    if expected_id == actual_id:
+        return True
+    # A cached local directory and the Hugging Face identifier can be different
+    # strings while still referring to the same Jina model.
+    return is_jina_v5_text_nano(expected_id) and is_jina_v5_text_nano(actual_id)
 
 
 def load_local_sentence_transformer(
