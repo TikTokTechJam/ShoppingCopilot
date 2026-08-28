@@ -28,6 +28,12 @@ def test_color_response_has_exact_schema() -> None:
         parse_and_validate_color('{"color": [], "material": []}')
 
 
+def test_color_response_has_no_parser_value_limit() -> None:
+    assert parse_and_validate_color(
+        '{"color": ["black", "white", "red", "blue"]}'
+    ) == {"color": ["black", "white", "red", "blue"]}
+
+
 def test_prompt_contains_the_complete_row_and_main_product_rules() -> None:
     product = {
         "parent_asin": "A",

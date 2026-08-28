@@ -16,7 +16,6 @@ from .runner import _compact_error, _emit_progress, _retry_kind, iter_catalog
 
 
 PROMPT_VERSION = "v5-color-v1"
-MAX_COLOR_VALUES = 3
 _EXPECTED_RESPONSE_FIELDS = {"color"}
 
 COLOR_ALIASES = {
@@ -120,8 +119,6 @@ def parse_and_validate_color(raw_response: Any) -> dict[str, list[str]]:
     values = payload["color"]
     if not isinstance(values, list):
         raise TypeError("color must be an array of strings")
-    if len(values) > MAX_COLOR_VALUES:
-        raise ValueError(f"color must contain at most {MAX_COLOR_VALUES} values")
     normalized_values: list[str] = []
     seen: set[str] = set()
     for value in values:
