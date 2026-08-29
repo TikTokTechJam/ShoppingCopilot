@@ -305,6 +305,7 @@ class Candidate:
     attributes: Mapping[str, tuple[str, ...]] = field(default_factory=dict, repr=False, compare=False)
     semantic_score: float = 0.0
     matched_semantic_constraints: tuple[str, ...] = ()
+    price: float | None = None
     bm25_score: float = 0.0
     rating: float | None = None
     ranking_score: float = 0.0
@@ -865,6 +866,7 @@ class ProductRetriever:
             attributes=self.product_by_asin[asin].facts,
             semantic_score=float(dense_score),
             matched_semantic_constraints=matched_semantic_constraints,
+            price=self.product_by_asin[asin].price,
             bm25_score=float(bm25_score),
             rating=rating,
             ranking_score=float(score + w_rating * normalized_rating(rating)),

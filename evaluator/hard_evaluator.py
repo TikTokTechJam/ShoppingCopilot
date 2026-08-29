@@ -331,8 +331,7 @@ def simulate_customer_reply(
     if not isinstance(ask_attribute, str) or ask_attribute not in ALLOWED_ATTRIBUTES:
         return "I don't have an additional preference there."
 
-    # `other` is intentionally NOT a wildcard in this benchmark.
-    if ask_attribute in {"other", "category"}:
+    if ask_attribute == "category":
         return "I don't have a specific additional preference there."
 
     # Boundary behavior: only sessions explicitly marked boundary_first reject
@@ -353,7 +352,7 @@ def simulate_customer_reply(
     for fact in session["hidden_facts"]:
         fid = fact_id(fact)
         if (
-            str(fact["attribute"]) == ask_attribute
+            (ask_attribute == "other" or str(fact["attribute"]) == ask_attribute)
             and fid is not None
             and fid not in disclosed
             and fid not in stale
@@ -866,6 +865,20 @@ def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
         "constraints": _debug_constraints(state),
         "semantic_constraints": _debug_semantic_constraints(state),
         "mode": getattr(state, "mode", None),
+        "clarification_cycle": int(getattr(state, "clarification_cycle", 1)),
+        "attribute_call_count": {
+            str(field_name): int(count)
+            for field_name, count in sorted(
+                getattr(state, "attribute_call_count", {}).items()
+            )
+        },
+        "no_preference_attributes": sorted(
+            str(value)
+            for value in getattr(state, "no_preference_attributes", set())
+        ),
+        "clarification_stopped": bool(
+            getattr(state, "clarification_stopped", False)
+        ),
         "override_kind": getattr(state, "last_override_kind", None),
         "override_delta": _debug_constraints(
             getattr(state, "last_override_delta", None)

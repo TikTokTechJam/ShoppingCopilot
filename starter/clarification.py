@@ -36,6 +36,14 @@ SUPPORTED_ATTRIBUTES = (
     "budget",
     "feature",
     "use_case",
+    "other",
+)
+
+# ``other`` is a cycle boundary rather than a field whose value can be
+# clarified.  Keep this derived from the public list so callers do not need a
+# second hand-maintained list of askable attributes.
+NORMAL_CLARIFICATION_ATTRIBUTES = tuple(
+    attribute for attribute in SUPPORTED_ATTRIBUTES if attribute != "other"
 )
 
 ATTRIBUTE_QUESTIONS = {
@@ -48,6 +56,7 @@ ATTRIBUTE_QUESTIONS = {
     "budget": "What budget range should I stay within?",
     "feature": "Which feature matters most for this item?",
     "use_case": "What will you mainly use this for?",
+    "other": "Is there another preference that matters to you?",
 }
 
 MODE_PRIORS = {
@@ -166,6 +175,31 @@ def _candidate_values(candidate: object, attribute: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _candidate_price(candidate: object) -> float | None:
+    value = getattr(candidate, "price", None)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    return price if math.isfinite(price) and price >= 0.0 else None
+
+
+def _price_band(price: float) -> str:
+    """Return a coarse, user-meaningful budget band for question utility."""
+
+    if price < 25.0:
+        return "under_25"
+    if price < 50.0:
+        return "25_to_50"
+    if price < 100.0:
+        return "50_to_100"
+    if price < 200.0:
+        return "100_to_200"
+    return "200_plus"
+
+
 def _known(constraints: ShoppingConstraints, attribute: str) -> bool:
     if attribute == "budget":
         return (
@@ -190,7 +224,12 @@ def _utility(
     counts: Counter[str] = Counter()
     covered = 0
     for candidate in candidates:
-        values = _candidate_values(candidate, attribute)
+        price = _candidate_price(candidate) if attribute == "budget" else None
+        values = (
+            (_price_band(price),)
+            if price is not None
+            else _candidate_values(candidate, attribute)
+        )
         if not values:
             continue
         covered += 1
@@ -238,7 +277,7 @@ class ClarificationPolicy:
         asked = set(asked_attributes)
         available = [
             attribute
-            for attribute in SUPPORTED_ATTRIBUTES
+            for attribute in NORMAL_CLARIFICATION_ATTRIBUTES
             if attribute not in asked and not _known(constraints, attribute)
         ]
         if not available:
@@ -305,6 +344,7 @@ __all__ = [
     "PRIOR_CEILING",
     "ATTRIBUTE_QUESTIONS",
     "ClarificationPolicy",
+    "NORMAL_CLARIFICATION_ATTRIBUTES",
     "SUPPORTED_ATTRIBUTES",
     "choose_attribute",
 ]

@@ -101,6 +101,10 @@ function renderState(data) {
   $("state").innerHTML = `
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
+    <div class="kv"><span>Clarification cycle</span><b>${esc(state.clarification_cycle ?? 1)}</b></div>
+    <div class="kv"><span>Ask counts</span><b><code>${esc(json(state.attribute_call_count || {}))}</code></b></div>
+    <div class="kv"><span>No preference</span><b>${esc((state.no_preference_attributes || []).join(", ") || "—")}</b></div>
+    <div class="kv"><span>Clarification stopped</span><b>${state.clarification_stopped ? "YES" : "NO"}</b></div>
     <h3>Structured constraints</h3>
     <div>${chips(state.constraints)}</div>
     <h3>Dense semantic constraints</h3>
@@ -185,7 +189,7 @@ function renderConversation(data) {
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
-      <div class="turn-meta">Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
+      <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");
 }
 

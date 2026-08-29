@@ -32,6 +32,15 @@ def _two_field_pool(left: str, right: str) -> tuple[object, ...]:
     return tuple(Candidate(v) for v in ("a", "b", "c", "d"))
 
 
+def _priced_pool(*prices: float) -> tuple[object, ...]:
+    class Candidate:
+        def __init__(self, price: float) -> None:
+            self.price = price
+            self.attributes = {}
+
+    return tuple(Candidate(price) for price in prices)
+
+
 def _factor(overrides: dict[str, float]):
     """A profile whose likelihood ratio is 1.0 except where stated."""
     return lambda attribute: overrides.get(attribute, 1.0)
@@ -350,6 +359,10 @@ class CombinedUtilityTest(unittest.TestCase):
         """The top weight must not read as certainty, or nothing can move it."""
         pool = _two_field_pool("material", "budget")
         self.assertEqual(_choose(pool, "BUYING", _factor({"budget": 12.0})), "budget")
+
+    def test_budget_utility_uses_candidate_prices(self) -> None:
+        pool = _priced_pool(15.0, 20.0, 40.0, 85.0)
+        self.assertEqual(_choose(pool, "BUYING"), "budget")
 
 
 if __name__ == "__main__":

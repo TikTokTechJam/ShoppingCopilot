@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from evaluator.debug_web import DebugWebController, SessionPool, STATIC_DIR
 from evaluator.hard_evaluator import Manual400SessionRunner
+from evaluator.hard_evaluator import _debug_state_snapshot
 from starter.routing.constraints import ShoppingConstraints
 
 
@@ -111,6 +112,22 @@ class DebugWebTests(unittest.TestCase):
         self.assertEqual(first_ids, second_ids)
         self.assertEqual(len(set(first_ids[:6])), 6)
         self.assertIn(first_ids[6], first_ids[:6])
+
+    def test_debug_snapshot_exposes_clarification_round_state(self) -> None:
+        agent = FakeAgent()
+        agent.reset("session", {})
+        state = agent.sessions._states["session"]
+        state.clarification_cycle = 2
+        state.attribute_call_count = {"material": 1, "color": 0}
+        state.no_preference_attributes = {"color"}
+        state.clarification_stopped = False
+
+        snapshot = _debug_state_snapshot(agent, "session")
+
+        self.assertEqual(snapshot["clarification_cycle"], 2)
+        self.assertEqual(snapshot["attribute_call_count"]["material"], 1)
+        self.assertEqual(snapshot["no_preference_attributes"], ["color"])
+        self.assertFalse(snapshot["clarification_stopped"])
 
     def test_scenario_filter_and_specific_id(self) -> None:
         rows = self.sessions + [make_session("buying_1", scenario="buying")]

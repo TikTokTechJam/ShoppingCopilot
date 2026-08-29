@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
+from starter.clarification import NORMAL_CLARIFICATION_ATTRIBUTES
 from starter.routing.constraints import (
     CATEGORICAL_FIELDS,
     SemanticShoppingConstraints,
@@ -42,6 +43,16 @@ class SessionState:
         default_factory=SemanticShoppingConstraints
     )
     asked_attributes: set[str] = field(default_factory=set)
+    no_preference_attributes: set[str] = field(default_factory=set)
+    # Counts only proactive Agent questions in the current clarification
+    # cycle.  User-volunteered values never increment these counters.
+    attribute_call_count: dict[str, int] = field(
+        default_factory=lambda: {
+            attribute: 0 for attribute in NORMAL_CLARIFICATION_ATTRIBUTES
+        }
+    )
+    clarification_cycle: int = 1
+    clarification_stopped: bool = False
     last_recommendations: tuple[str, ...] = ()
     excluded_recommendations: set[str] = field(default_factory=set)
     last_user_message: str | None = None
@@ -64,6 +75,10 @@ class SessionState:
         """Return the current shopping context in chronological order."""
 
         return " ".join(message for message in self.messages if message).strip()
+
+
+def _fresh_attribute_call_count() -> dict[str, int]:
+    return {attribute: 0 for attribute in NORMAL_CLARIFICATION_ATTRIBUTES}
 
 
 def _unique(values: Iterable[object]) -> tuple[str, ...]:
@@ -252,6 +267,16 @@ def is_no_preference_reply(message: str, asked_attribute: str | None) -> bool:
     )
 
 
+def is_generic_clarification_reply(message: str) -> bool:
+    """Return whether a reply is evaluator-generated clarification filler.
+
+    This is deliberately an exact sentence-level check. Generic words such as
+    ``you`` and ``one`` remain valid dictionary/product tokens elsewhere.
+    """
+
+    return bool(lexicon.GENERIC_CLARIFICATION_REPLY.fullmatch(message or ""))
+
+
 def detect_override_kind(
     message: str,
     current: ShoppingConstraints,
@@ -317,6 +342,10 @@ class SessionManager:
         state.mode = None
         state.constraints = ShoppingConstraints()
         state.asked_attributes.clear()
+        state.no_preference_attributes.clear()
+        state.attribute_call_count = _fresh_attribute_call_count()
+        state.clarification_cycle = 1
+        state.clarification_stopped = False
         state.last_recommendations = ()
         state.excluded_recommendations.clear()
         state.last_user_message = None
@@ -421,11 +450,27 @@ class SessionManager:
         )
         state.semantic_constraint_provenance = semantic_provenance
         state.asked_attributes.clear()
+        # A preference override starts a new clarification cycle but remains
+        # within the same shopping goal.  Explicit no-preference decisions are
+        # therefore session/goal-level blocks and must survive this reset.
+        state.attribute_call_count = _fresh_attribute_call_count()
+        state.clarification_cycle = 1
+        state.clarification_stopped = False
         state.last_recommendations = ()
         state.excluded_recommendations.clear()
         state.last_user_message = None
         state.messages.clear()
         state.last_asked = None
+        return state
+
+    def reset_clarification_cycle(self, session_id: str) -> SessionState:
+        """Start a fresh clarification pass without changing the goal."""
+
+        state = self.get(session_id)
+        state.clarification_cycle += 1
+        state.attribute_call_count = _fresh_attribute_call_count()
+        state.last_asked = None
+        state.clarification_stopped = False
         return state
 
     def record_message(
@@ -507,6 +552,10 @@ class SessionManager:
         state.last_asked = attribute
         if attribute:
             state.asked_attributes.add(attribute)
+            if attribute in NORMAL_CLARIFICATION_ATTRIBUTES:
+                state.attribute_call_count[attribute] = (
+                    state.attribute_call_count.get(attribute, 0) + 1
+                )
 
     def set_recommendations(self, session_id: str, asins: Iterable[str]) -> None:
         state = self.get(session_id)
@@ -525,6 +574,7 @@ __all__ = [
     "OverrideKind",
     "correction_fields",
     "detect_override_kind",
+    "is_generic_clarification_reply",
     "is_no_preference_reply",
     "is_intent_override",
     "merge_constraints",

@@ -92,6 +92,27 @@ class HardEvaluatorTests(unittest.TestCase):
         self.assertIn(material["display"].lower(), first.lower())
         self.assertNotIn(material["display"].lower(), second.lower())
 
+    def test_simulator_other_reveals_any_undisclosed_hidden_fact(self) -> None:
+        session = next(
+            row for row in self.sessions
+            if len(row["hidden_facts"]) >= 2
+        )
+        state = {
+            "disclosed": set(),
+            "active_constraints": set(),
+            "stale_constraints": set(),
+            "no_preference_attributes": set(),
+            "boundary_used": False,
+        }
+
+        first = simulate_customer_reply(session, "other", state, random.Random(1))
+        second = simulate_customer_reply(session, "other", state, random.Random(2))
+        displays = {str(fact["display"]).lower() for fact in session["hidden_facts"]}
+
+        self.assertTrue(any(display in first.lower() for display in displays))
+        self.assertTrue(any(display in second.lower() for display in displays))
+        self.assertEqual(len(state["disclosed"]), 2)
+
     def test_response_contract_rejects_unknown_fields_and_bad_usage(self) -> None:
         valid = {
             "message": "Question",

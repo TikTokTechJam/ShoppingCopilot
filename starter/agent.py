@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from starter.clarification import ClarificationPolicy
+from starter.clarification import (
+    ClarificationPolicy,
+    NORMAL_CLARIFICATION_ATTRIBUTES,
+)
 from starter.followup import fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
 from starter.retrieval import ProductRetriever, is_critical_user, normalized_rating
@@ -17,9 +20,9 @@ from starter.session import (
     SessionManager,
     correction_fields,
     detect_override_kind,
+    is_generic_clarification_reply,
     is_no_preference_reply,
 )
-
 
 
 def _user_prior_rating(profile: Mapping[str, Any] | None) -> float | None:
@@ -144,12 +147,18 @@ class Agent:
         state = self.sessions.get(session_id)
         message = user_message or ""
         pending_attribute = state.last_asked
+        pending_other = pending_attribute == "other"
         no_preference_reply = is_no_preference_reply(message, pending_attribute)
-        # A no-preference answer is clarification metadata, not a product
-        # constraint. Skip the extractor so its words cannot become facts.
+        generic_clarification_reply = is_generic_clarification_reply(message)
+        skip_constraint_extraction = (
+            no_preference_reply or generic_clarification_reply
+        )
+        # No-preference answers and evaluator clarification filler are
+        # conversation metadata, not product constraints. Skip the extractor
+        # so words such as "you" and "one" cannot become accidental facts.
         delta = (
             ShoppingConstraints()
-            if no_preference_reply
+            if skip_constraint_extraction
             else self._extract(message)
         )
         had_messages = bool(state.messages)
@@ -159,7 +168,13 @@ class Agent:
             override_kind = detect_override_kind(message, state.constraints, delta)
 
         if (
-            not no_preference_reply
+            no_preference_reply
+            and pending_attribute in NORMAL_CLARIFICATION_ATTRIBUTES
+        ):
+            state.no_preference_attributes.add(pending_attribute)
+
+        if (
+            not skip_constraint_extraction
             and override_kind is OverrideKind.NONE
             and pending_attribute
             and _scoping_could_change(delta, pending_attribute)
@@ -177,6 +192,8 @@ class Agent:
             if hasattr(delta, "structured_only")
             else delta
         )
+        has_new_information = bool(delta.populated_fields())
+        other_cycle_has_information = pending_other and has_new_information
 
         if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)
@@ -216,10 +233,24 @@ class Agent:
         self.sessions.record_message(
             session_id,
             message,
-            include_in_query=not no_preference_reply,
+            include_in_query=not skip_constraint_extraction,
         )
         state.turn = int(turn)
 
+        # ``other`` is a boundary between clarification cycles.  It is not a
+        # field answer and therefore does not consume an ordinary attribute
+        # slot.  A useful answer starts a new cycle after the current delta has
+        # been applied; a non-answer stops clarification instead of reopening
+        # the same questions indefinitely.
+        if other_cycle_has_information and override_kind is not OverrideKind.FULL_GOAL:
+            state = self.sessions.reset_clarification_cycle(session_id)
+        other_cycle_stopped = (
+            pending_other
+            and not other_cycle_has_information
+            and override_kind is OverrideKind.NONE
+        )
+        if other_cycle_stopped:
+            state.clarification_stopped = True
         # The rating tie-breaker is profile-derived, so the ablation arm must
         # not see it: with no prior rating the weight falls back to the default
         # and no critical-shopper boost applies.
@@ -266,14 +297,33 @@ class Agent:
         # No turn cutoff is needed here any more: a question asked on the final
         # turn has zero horizon in the Section 12b utility, so the policy
         # abstains on its own arithmetic rather than on a literal.
-        ask_attribute = self.clarification.choose(
-            candidates,
-            state.constraints,
-            state.asked_attributes,
-            mode=state.mode or "BROWSING",
-            profile_factor=affinity.factor if affinity is not None else None,
-            turn=state.turn,
-        )
+        if state.clarification_stopped:
+            ask_attribute = None
+        else:
+            # Counts are the source of truth for the current cycle. The
+            # lifetime asked_attributes set remains available for legacy
+            # consumers/debugging, but it must not block a field after a
+            # legitimate cycle reset.
+            clarification_asked = {
+                field_name
+                for field_name in NORMAL_CLARIFICATION_ATTRIBUTES
+                if state.attribute_call_count.get(field_name, 0) > 0
+            }
+            clarification_asked.update(state.no_preference_attributes)
+            ask_attribute = self.clarification.choose(
+                candidates,
+                state.constraints,
+                clarification_asked,
+                mode=state.mode or "BROWSING",
+                profile_factor=affinity.factor if affinity is not None else None,
+                turn=state.turn,
+            )
+            if ask_attribute is None:
+                # No useful normal field remains in this cycle. ``other`` is
+                # the boundary marker and may be used again after a useful
+                # answer starts a new cycle. If its next answer is empty, the
+                # stopped flag above prevents another question.
+                ask_attribute = "other"
         self.sessions.mark_asked(session_id, ask_attribute)
         self.sessions.set_recommendations(
             session_id,

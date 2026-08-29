@@ -13,6 +13,7 @@ from starter.session import (
     OverrideKind,
     SessionManager,
     detect_override_kind,
+    is_generic_clarification_reply,
     is_no_preference_reply,
 )
 
@@ -149,6 +150,9 @@ class OverrideHandlingTests(unittest.TestCase):
         state.mode = "BROWSING"
         state.messages[:] = ["old goal"]
         state.asked_attributes.update({"color", "material"})
+        state.no_preference_attributes.add("color")
+        state.attribute_call_count["material"] = 1
+        state.clarification_cycle = 2
         state.last_asked = "material"
         state.last_recommendations = ("A", "B")
         state.excluded_recommendations.update({"A", "B"})
@@ -171,6 +175,9 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertEqual(state.constraints.material, ("nylon",))
         self.assertEqual(state.messages, [])
         self.assertEqual(state.asked_attributes, set())
+        self.assertEqual(state.no_preference_attributes, {"color"})
+        self.assertEqual(state.attribute_call_count["material"], 0)
+        self.assertEqual(state.clarification_cycle, 1)
         self.assertIsNone(state.last_asked)
         self.assertEqual(state.last_recommendations, ())
         self.assertEqual(state.excluded_recommendations, set())
@@ -249,6 +256,93 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertTrue(is_no_preference_reply("I don't know.", "material"))
         self.assertTrue(is_no_preference_reply("I don't have.", "material"))
         self.assertFalse(is_no_preference_reply("I don't know.", None))
+
+    def test_generic_clarification_reply_matches_evaluator_variants_only(self) -> None:
+        self.assertTrue(
+            is_generic_clarification_reply(
+                "Those options are not quite right yet. You can ask me about one specific attribute."
+            )
+        )
+        self.assertTrue(
+            is_generic_clarification_reply(
+                "Those options are not quite right yet. Ask me about one specific attribute."
+            )
+        )
+        self.assertFalse(
+            is_generic_clarification_reply(
+                "Those options are not quite right yet. I want one specific attribute."
+            )
+        )
+
+    def test_generic_clarification_reply_skips_extraction_and_semantic_query(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self.make_agent(root)
+            agent.reset("session", {})
+            state = agent.sessions.get("session")
+            state.mode = "BUYING"
+            state.constraints = ShoppingConstraints(category=("shoes",))
+            state.messages.append("I need shoes")
+            state.last_asked = "other"
+            state.asked_attributes.add("other")
+
+            with patch(
+                "starter.agent.Agent._extract",
+                side_effect=AssertionError(
+                    "generic clarification filler must not be extracted"
+                ),
+            ):
+                agent.respond(
+                    "session",
+                    "Those options are not quite right yet. You can ask me about one specific attribute.",
+                    2,
+                    2,
+                )
+
+            self.assertEqual(state.constraints.category, ("shoes",))
+            self.assertEqual(state.constraints.brand, ())
+            self.assertEqual(state.constraints.feature, ())
+            self.assertEqual(state.query_text, "I need shoes")
+            self.assertEqual(
+                state.last_user_message,
+                "Those options are not quite right yet. You can ask me about one specific attribute.",
+            )
+
+    def test_other_without_new_information_stops_clarification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog_path = root / "catalog.jsonl"
+            write_jsonl(
+                catalog_path,
+                [
+                    {
+                        "parent_asin": f"S{index}",
+                        "categories": ["shoes"],
+                        "price": 20.0,
+                    }
+                    for index in range(4)
+                ],
+            )
+            agent = Agent(
+                catalog_path,
+                facts_path=root / "missing-facts.jsonl",
+                embeddings_path=root / "missing-embeddings.npy",
+                metadata_path=root / "missing-metadata.json",
+                router=FixedRouter(),
+            )
+            agent.reset("session", {})
+
+            first = agent.respond("session", "shoes", 1, 3)
+            second = agent.respond(
+                "session",
+                "I don't have a specific preference.",
+                2,
+                3,
+            )
+
+            self.assertEqual(first["ask_attribute"], "other")
+            self.assertIsNone(second["ask_attribute"])
+            self.assertTrue(agent.sessions.get("session").clarification_stopped)
 
     def test_normal_clarification_keeps_transcript_and_promotes_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
