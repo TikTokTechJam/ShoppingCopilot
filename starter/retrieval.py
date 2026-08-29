@@ -536,10 +536,8 @@ class ProductRetriever:
             )
         return similarities
 
-    @classmethod
     def _semantic_scores(
-        cls,
-        products: Mapping[str, ProductRecord],
+        self,
         asins: Iterable[str],
         constraints: object | None,
     ) -> tuple[dict[str, float], dict[str, tuple[str, ...]]]:
@@ -547,8 +545,8 @@ class ProductRetriever:
 
         Each accepted semantic value contributes its retained cosine
         similarity only when the product contains that canonical value. The
-        normalized mean is the dense track score; exact structured matching
-        is calculated separately.
+        dense track score is the accumulated similarity points; exact
+        structured matching is calculated separately.
         """
 
         if constraints is None:
@@ -564,34 +562,41 @@ class ProductRetriever:
                 "feature",
                 "use_case",
             )
-            if cls._constraint_values(constraints, field_name)
+            if self._constraint_values(constraints, field_name)
         )
         if not fields:
             return {}, {}
 
-        similarities = cls._constraint_similarities(constraints)
+        similarities = self._constraint_similarities(constraints)
+        eligible_asins = tuple(asins)
+        eligible_set = set(eligible_asins)
         scores: dict[str, float] = {}
-        labels: dict[str, tuple[str, ...]] = {}
-        for asin in asins:
-            product = products[asin]
-            total = 0.0
-            matched = 0.0
-            matched_labels: list[str] = []
-            for field_name in fields:
-                for value in cls._constraint_values(constraints, field_name):
-                    canonical_key = (
-                        f"{field_name}:{normalize_text(value).replace(' ', '_')}"
+        labels: dict[str, list[str]] = {}
+        for field_name in fields:
+            for value in self._constraint_values(constraints, field_name):
+                canonical_key = (
+                    f"{field_name}:{normalize_text(value).replace(' ', '_')}"
+                )
+                similarity = similarities.get(canonical_key, 1.0)
+                posting = self.inverted_index.get(field_name, {}).get(value, ())
+                for asin in posting:
+                    if asin not in eligible_set:
+                        continue
+                    scores[asin] = scores.get(asin, 0.0) + similarity
+                    labels.setdefault(asin, []).append(
+                        f"{field_name}:{value}@{similarity:.3f}"
                     )
-                    similarity = similarities.get(canonical_key, 1.0)
-                    total += 1.0
-                    if value in product.facts.get(field_name, ()):
-                        matched += similarity
-                        matched_labels.append(
-                            f"{field_name}:{value}@{similarity:.3f}"
-                        )
-            scores[asin] = matched / total if total else 0.0
-            labels[asin] = tuple(matched_labels)
-        return scores, labels
+
+        if not scores:
+            # Preserve the fact that semantic constraints were present so the
+            # caller does not silently switch to the separate query-level
+            # dense fallback merely because no posting list matched.
+            return {asin: 0.0 for asin in eligible_asins}, {}
+
+        normalized_labels = {
+            asin: tuple(values) for asin, values in labels.items()
+        }
+        return scores, normalized_labels
 
     def _matches_field(self, asin: str, field_name: str, constraints: object) -> bool:
         product = self.product_by_asin[asin]
@@ -777,14 +782,6 @@ class ProductRetriever:
             for asin in (excluded_asins or ())
             if str(asin).strip()
         }
-        semantic_scores, semantic_labels = self._semantic_scores(
-            self.product_by_asin,
-            self._catalog_order,
-            semantic_constraints,
-        )
-        dense_scores = semantic_scores
-        if not dense_scores and self.dense_available:
-            dense_scores = self._dense_scores(query_text)
         constraint_fields = self._constraint_fields(constraints)
         requested_by_field = {
             field_name: self._constraint_values(constraints, field_name)
@@ -803,6 +800,14 @@ class ProductRetriever:
         ]
         price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
+
+        semantic_scores, semantic_labels = self._semantic_scores(
+            eligible_asins,
+            semantic_constraints,
+        )
+        dense_scores = semantic_scores
+        if not dense_scores and self.dense_available:
+            dense_scores = self._dense_scores(query_text)
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
@@ -883,7 +888,11 @@ class ProductRetriever:
                 ranked_asins = ranked_asins[:limit]
         else:
             final_scores = {
-                asin: _final_score(mode, structured_score(asin), dense_scores[asin])
+                asin: _final_score(
+                    mode,
+                    structured_score(asin),
+                    dense_scores.get(asin, 0.0),
+                )
                 for asin in eligible_asins
             }
             rank_key = lambda asin: (
