@@ -76,75 +76,41 @@ function similarityRows(similarities) {
     </div>`).join("")}</div>`;
 }
 
-function rrfContribution(rank, constant = 60) {
-  const numericRank = Number(rank);
-  const numericConstant = Number(constant);
-  if (!Number.isFinite(numericRank) || numericRank <= 0 || !Number.isFinite(numericConstant)) return "N/A";
-  return (1 / (numericConstant * numericRank)).toFixed(6);
-}
-
-function targetPhraseRank(targetRanks, phrase, constant) {
-  if (targetRanks == null) return '<span class="muted">target rank unavailable</span>';
-  if (!Object.prototype.hasOwnProperty.call(targetRanks, phrase) || targetRanks[phrase] == null) {
-    return '<span class="muted">target not in results</span>';
-  }
-  const rank = Number(targetRanks[phrase]);
-  return `<strong class="target-bm25-rank">target #${esc(rank)} <small>RRF ${rrfContribution(rank, constant)}</small></strong>`;
-}
-
 function bm25Fusion(debug, targetRank = null) {
   if (!debug || !debug.bm25_available) {
-    return '<span class="muted">BM25 fusion unavailable for this turn.</span>';
+    return '<span class="muted">Combined BM25 search unavailable for this turn.</span>';
   }
-  const targetRanks = targetRank && typeof targetRank === "object" ? targetRank : null;
-  const combinedTargetRank = targetRanks ? null : targetRank;
-  const singleOrQuery = debug.fusion?.method === "single_or_query";
   const phrases = Array.isArray(debug.phrases)
     ? debug.phrases
     : (Array.isArray(debug.constraints) ? debug.constraints : []);
   const fused = Array.isArray(debug.top_fused) ? debug.top_fused : [];
-  const rankConstant = debug.fusion?.rank_constant ?? 60;
   const rows = phrases.length ? phrases.map(item => {
     const phrase = item.phrase || (item.original_phrases || []).join(", ") || "—";
     const expansions = (item.expansions || []).map(exp =>
       `<span class="chip" title="${esc(exp.attribute || "semantic")} · ${esc(exp.value)} · similarity ${esc(exp.similarity)}">${exp.attribute ? `<span class="chip-source">${esc(exp.attribute)}:</span> ` : ""}${esc(exp.value)} <span class="chip-score">${score(exp.similarity)}</span></span>`
     ).join("") || '<span class="muted">none</span>';
-    const topRanks = (item.top_ranks || []).slice(0, 5).map(hit =>
-      `${esc(hit.parent_asin)} #${esc(hit.rank)}`
-    ).join(" · ");
-    const rankDetails = singleOrQuery
-      ? '<span class="muted">Included in combined OR query</span>'
-      : targetPhraseRank(targetRanks, phrase, rankConstant);
-    const resultDetails = singleOrQuery
-      ? `terms: ${esc((item.terms || []).join(" OR ") || "none")}`
-      : `ranks: ${topRanks || "none"}`;
+    const resultDetails = `terms: ${esc((item.terms || []).join(" OR ") || "none")}`;
     return `<div class="bm25-fusion-row">
       <div class="bm25-fusion-label"><strong>Phrase</strong><span title="${esc(phrase)}">${esc(phrase)}</span></div>
       <div class="constraint-values">${expansions}</div>
-      <div class="bm25-target-rank">${rankDetails}</div>
+      <div class="bm25-target-rank"><span class="muted">Included in combined OR query</span></div>
       <small class="muted">${resultDetails}</small>
     </div>`;
   }).join("") : '<span class="muted">No active phrase queries.</span>';
   const fusedRows = fused.map((item, index) => {
-    const ranks = singleOrQuery
-      ? `combined #${esc(item.combined_rank ?? "—")}`
-      : Object.entries(item.phrase_ranks || item.constraint_ranks || {})
-        .map(([phrase, rank]) => `${esc(phrase)} #${esc(rank)}`).join(" · ");
-    return `<div class="bm25-fused-candidate"><span>#${index + 1} <code>${esc(item.parent_asin)}</code></span><strong>${score(item.final_score)}</strong><small>raw #${esc(item.raw_rank ?? "—")} · ${ranks || "no attribute hit"}</small></div>`;
+    return `<div class="bm25-fused-candidate"><span>#${index + 1} <code>${esc(item.parent_asin)}</code></span><strong>${score(item.bm25_score ?? item.final_score)}</strong><small>raw #${esc(item.raw_rank ?? "—")} · combined #${esc(item.combined_rank ?? "—")}</small></div>`;
   }).join("");
-  const combinedDetails = singleOrQuery
-    ? `<div class="kv"><span>Combined OR query</span><code title="${esc(debug.combined_bm25_query || "")}">${esc(debug.combined_bm25_query || "—")}</code></div>
+  const combinedDetails = `<div class="kv"><span>Combined OR query</span><code title="${esc(debug.combined_bm25_query || "")}">${esc(debug.combined_bm25_query || "—")}</code></div>
        <div class="kv"><span>Combined results</span><b>${esc(debug.combined_bm25_rank_count ?? 0)}</b></div>
-       <div class="kv"><span>Target combined rank</span><b>${esc(combinedTargetRank ?? "MISS")}</b></div>
-       <div class="bm25-target-help muted">Raw terms and all accepted BGE expansion terms are searched together with OR.</div>`
-    : `<div class="bm25-target-help muted">Target rank is shown for each phrase BM25 list; RRF is that phrase's contribution.</div>`;
+       <div class="kv"><span>Target combined rank</span><b>${esc(targetRank ?? "MISS")}</b></div>
+       <div class="kv"><span>BM25 scoring</span><b>native BM25 points</b></div>
+       <div class="bm25-target-help muted">Raw terms and all accepted BGE expansion terms are searched together with OR.</div>`;
   return `<div class="bm25-fusion">
     <div class="kv"><span>Raw query</span><code title="${esc(debug.raw_bm25_query || "")}">${esc(debug.raw_bm25_query || "—")}</code></div>
     <div class="kv"><span>Raw results</span><b>${esc(debug.raw_bm25_rank_count ?? 0)}</b></div>
-    <div class="kv"><span>Fusion</span><b>1 / (${esc(rankConstant)} × rank)</b></div>
     ${combinedDetails}
     ${rows}
-    <h4>Top fused candidates</h4>
+    <h4>Top combined BM25 candidates</h4>
     <div class="bm25-fused-list">${fusedRows || '<span class="muted">none</span>'}</div>
   </div>`;
 }

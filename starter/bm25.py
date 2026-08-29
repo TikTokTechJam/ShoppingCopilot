@@ -171,6 +171,40 @@ class BM25Index:
                 break
         return ranks
 
+    def search_terms_scores(
+        self,
+        terms: Iterable[str],
+        *,
+        allowed_asins: Collection[str] | None = None,
+        max_results: int | None = None,
+        max_query_terms: int | None = MAX_QUERY_TERMS,
+    ) -> dict[str, float]:
+        """Return native higher-is-better BM25 points for a token query.
+
+        Results preserve SQLite BM25 order.  The raw FTS5 value is negative
+        with lower-is-better semantics, so it is converted once to the native
+        positive point value used by retrieval and diagnostics.
+        """
+
+        unique_terms = tuple(dict.fromkeys(terms))
+        if max_query_terms is not None:
+            unique_terms = unique_terms[:max_query_terms]
+        expression = _match_expression(unique_terms)
+        if not expression:
+            return {}
+
+        rows = self._rows(expression)
+        allowed = None if allowed_asins is None else set(allowed_asins)
+        scores: dict[str, float] = {}
+        for asin, raw_score in rows:
+            asin = str(asin)
+            if allowed is not None and asin not in allowed:
+                continue
+            scores[asin] = max(0.0, -float(raw_score))
+            if max_results is not None and len(scores) >= max_results:
+                break
+        return scores
+
     def search_ranked(
         self,
         query_text: str,

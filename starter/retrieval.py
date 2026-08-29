@@ -88,11 +88,6 @@ CRITICAL_USER_RATING_THRESHOLD = 3.5
 RATING_BOOST_WEIGHT = 0.15
 RATING_DEFAULT_WEIGHT = 0.02
 
-# BM25 rank fusion deliberately has one contribution per cleaned phrase. BGE
-# matches from different attributes are grouped inside that phrase, so a
-# product cannot gain extra points merely because one phrase matched multiple
-# semantic attribute views.
-BM25_RRF_K = 60
 BM25_MAX_RANK = 1000
 BM25_BGE_MIN_SIMILARITY = 0.90
 BM25_CONSTRAINT_ATTRIBUTES = (
@@ -1002,10 +997,6 @@ class ProductRetriever:
         return tuple(queries)
 
     @staticmethod
-    def _rrf(rank: int | None) -> float:
-        return 0.0 if rank is None else 1.0 / (BM25_RRF_K * rank)
-
-    @staticmethod
     def _rank_preview(ranks: Mapping[str, int], limit: int = 20) -> list[dict[str, object]]:
         return [
             {"parent_asin": asin, "rank": int(rank)}
@@ -1027,6 +1018,23 @@ class ProductRetriever:
                 allowed_asins=eligible_asins,
                 max_results=BM25_MAX_RANK,
                 max_query_terms=max_query_terms,
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return {}
+
+    def _bm25_scored_terms(
+        self,
+        terms: Iterable[str],
+        eligible_asins: Collection[str],
+    ) -> dict[str, float]:
+        if self.bm25_index is None:
+            return {}
+        try:
+            return self.bm25_index.search_terms_scores(
+                terms,
+                allowed_asins=eligible_asins,
+                max_results=BM25_MAX_RANK,
+                max_query_terms=None,
             )
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
@@ -1303,15 +1311,16 @@ class ProductRetriever:
                 )
             )
         )
-        combined_ranks = self._bm25_ranked_terms(
+        combined_scores = self._bm25_scored_terms(
             combined_terms,
             eligible_set,
-            max_query_terms=None,
         )
-
-        fused_scores: dict[str, float] = {
-            asin: self._rrf(rank) for asin, rank in combined_ranks.items()
+        combined_ranks = {
+            asin: rank
+            for rank, asin in enumerate(combined_scores, 1)
         }
+
+        bm25_scores: dict[str, float] = dict(combined_scores)
         candidate_pool: set[str] = set(combined_ranks)
 
         bm25_active = self.bm25_index is not None
@@ -1320,7 +1329,7 @@ class ProductRetriever:
             # returned by a BM25 list receive zero fused evidence and remain
             # available for deterministic Top10 padding/debug rank-all.
             candidate_pool.update(eligible_asins)
-            ranking_base = fused_scores
+            ranking_base = bm25_scores
         else:
             # Safe degraded mode when the FTS index could not initialize.
             # Structured scoring remains available, but no dense or hash
@@ -1347,6 +1356,14 @@ class ProductRetriever:
             "combined_bm25_terms": list(combined_terms),
             "combined_bm25_rank_count": len(combined_ranks),
             "combined_bm25_top_ranks": self._rank_preview(combined_ranks),
+            "combined_bm25_top_scores": [
+                {
+                    "parent_asin": asin,
+                    "score": combined_scores[asin],
+                    "rank": combined_ranks[asin],
+                }
+                for asin in list(combined_scores)[:20]
+            ],
             "phrases": [
                 {
                     **query.as_dict(),
@@ -1356,7 +1373,7 @@ class ProductRetriever:
             ],
             "fusion": {
                 "method": "single_or_query",
-                "rank_constant": BM25_RRF_K,
+                "score": "native_bm25_points",
                 "raw_terms_included": True,
                 "expansion_terms_included": True,
                 "bge_min_similarity": BM25_BGE_MIN_SIMILARITY,
@@ -1368,6 +1385,7 @@ class ProductRetriever:
                     "final_score": ranking_base.get(asin, 0.0),
                     "raw_rank": raw_ranks.get(asin),
                     "combined_rank": combined_ranks.get(asin),
+                    "bm25_score": combined_scores.get(asin, 0.0),
                 }
                 for asin in ranked_asins[:10]
             ],
@@ -1384,7 +1402,7 @@ class ProductRetriever:
                 matched_fields.get(asin, set()),
                 constraint_fields,
                 semantic_labels.get(asin, ()),
-                self._rrf(combined_ranks.get(asin)),
+                combined_scores.get(asin, 0.0),
                 w_rating=w_rating,
                 score_override=ranking_base.get(asin, 0.0),
                 bm25_rank=combined_ranks.get(asin),
@@ -1430,7 +1448,6 @@ __all__ = [
     "Candidate",
     "BM25_SCORE_WEIGHT",
     "BM25_BGE_MIN_SIMILARITY",
-    "BM25_RRF_K",
     "BM25Constraint",
     "InMemoryRetriever",
     "MODE_SCORE_WEIGHTS",

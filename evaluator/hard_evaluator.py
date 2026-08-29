@@ -1078,7 +1078,7 @@ def _debug_print_bm25_fusion(retriever: Any) -> None:
     if isinstance(fusion, Mapping) and fusion.get("method") == "single_or_query":
         print(f"Combined OR query: {trace.get('combined_bm25_query', '') or '(empty)'}")
         print(f"Combined results: {trace.get('combined_bm25_rank_count', 0)}")
-    print(f"RRF: 1 / ({trace.get('fusion', {}).get('rank_constant', 60)} * rank)")
+        print("BM25 scoring: native BM25 points")
     for item in trace.get("top_fused", ())[:10]:
         if isinstance(item, Mapping):
             print(
