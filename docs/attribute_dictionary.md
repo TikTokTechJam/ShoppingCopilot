@@ -145,6 +145,18 @@ identify `BAAI/bge-small-en-v1.5`. The product Layer 2 Jina artifact and its
 `SHOPPING_EMBEDDING_MODEL` configuration are independent and are not rebuilt
 by this flow.
 
+The same builder also accepts the catalog-ordered V5 aggregate. V5 records
+provide nested facts without the V4 annotation wrapper; the omitted style field
+is treated as empty. The dictionary still exposes the same seven-field
+registry contract, while price remains outside the semantic dictionary and is
+ignored.
+
+Build an exact-only dictionary from V5 with:
+
+~~~powershell
+python -m scripts.build_attribute_dictionary --input data/derived/annotations/v5/annotations.jsonl --input-format v5 --output-dir data/derived/annotations/v5/dictionary --no-embeddings
+~~~
+
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed
 without these artifacts.
