@@ -71,8 +71,8 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.30,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 1.00, "dense": 0.20},
-    "BROWSING": {"structured": 0.25, "dense": 1.00},
+    "BUYING": {"structured": 1.00, "dense": 1.00},
+    "BROWSING": {"structured": 1.00, "dense": 1.00},
 }
 # Backward-compatible name for callers that inspect the Buying contribution.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
