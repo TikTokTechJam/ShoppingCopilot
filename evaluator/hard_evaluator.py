@@ -420,6 +420,212 @@ def add_score_fields(summary: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+class Manual400SessionRunner:
+    """Run one fixed benchmark session one evaluator turn at a time.
+
+    This is the shared execution path for the batch evaluator and local debug
+    tooling.  The target is retained here only for evaluator-side scoring; it
+    is never passed to the Agent.
+    """
+
+    def __init__(
+        self,
+        agent: Any,
+        session: Mapping[str, Any],
+        catalog_ids: set[str],
+        *,
+        strict: bool = True,
+    ) -> None:
+        self.agent = agent
+        self.session = dict(session)
+        self.catalog_ids = catalog_ids
+        self.strict = strict
+        self.sample_id = str(self.session["sample_id"])
+        self.target = str(self.session["target_asin"])
+        self.scenario = str(self.session["scenario_type"])
+        self.session_id = f"manual400:{self.sample_id}"
+        self.agent.reset(
+            self.session_id,
+            dict(self.session.get("user_profile") or {}),
+        )
+
+        self.rng = random.Random(
+            f"manual400-reply:{self.sample_id}:{self.target}"
+        )
+        initial_id = parse_fact_id(self.session.get("initial_fact_id"))
+        self.simulator_state: dict[str, Any] = {
+            "disclosed": {initial_id} if initial_id is not None else set(),
+            "active_constraints": {initial_id} if initial_id is not None else set(),
+            "stale_constraints": set(),
+            "no_preference_attributes": set(),
+            "boundary_used": False,
+        }
+        self.user_message = str(self.session["initial_message"])
+        self.override_applied = self.scenario != "intent_override"
+        self.next_turn_number = 1
+        self.first_hit_turn: int | None = None
+        self.best_rank: int | None = None
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.events: list[dict[str, Any]] = []
+        self.done = False
+
+    def _apply_benchmark_override(self, turn: int) -> None:
+        if self.override_applied or turn != int(self.session["override_turn"]):
+            return
+
+        self.override_applied = True
+        initial_id = parse_fact_id(self.session.get("initial_fact_id"))
+        if initial_id is not None:
+            self.simulator_state["stale_constraints"].add(initial_id)
+            self.simulator_state["active_constraints"].discard(initial_id)
+
+        override_id = parse_fact_id(self.session.get("override_fact_id"))
+        if override_id is not None:
+            self.simulator_state["disclosed"].add(override_id)
+            self.simulator_state["active_constraints"].add(override_id)
+
+        self.user_message = str(self.session["override_message"])
+
+    def next_turn(
+        self,
+        *,
+        before_turn_callback: Any | None = None,
+        after_turn_callback: Any | None = None,
+    ) -> dict[str, Any] | None:
+        """Execute exactly one evaluator turn and return its raw turn record."""
+
+        if self.done:
+            return None
+
+        turn = self.next_turn_number
+        self._apply_benchmark_override(turn)
+        user_message = self.user_message
+
+        callback_args = {
+            "session": self.session,
+            "session_id": self.session_id,
+            "turn": turn,
+            "user_message": user_message,
+            "agent": self.agent,
+            "override_applied": self.override_applied,
+        }
+        if before_turn_callback is not None:
+            before_turn_callback(**callback_args)
+
+        try:
+            raw_response = self.agent.respond(
+                self.session_id,
+                user_message,
+                turn,
+                TOP_K,
+            )
+            response = validate_agent_response(raw_response)
+        except Exception as exc:
+            if self.strict:
+                raise RuntimeError(
+                    f"Agent failed validation in {self.sample_id} on turn {turn}"
+                ) from exc
+            response = {
+                "message": "",
+                "ask_attribute": None,
+                "recommendations": [],
+            }
+
+        usage = response.get("usage")
+        if isinstance(usage, dict):
+            self.prompt_tokens += int(usage["prompt_tokens"])
+            self.completion_tokens += int(usage["completion_tokens"])
+
+        ranked = normalize_recommendations(
+            response.get("recommendations"),
+            self.catalog_ids,
+        )
+        target_in_top10 = self.target in ranked
+        scoreable_hit = bool(self.override_applied and target_in_top10)
+        session_complete = scoreable_hit or turn == MAX_TURNS
+        event = {
+            "session_id": self.session_id,
+            "sample_id": self.sample_id,
+            "scenario_type": self.scenario,
+            "target_asin": self.target,
+            "turn": turn,
+            "user_message": user_message,
+            "response": response,
+            "ranked": ranked,
+            "override_applied": self.override_applied,
+            "pre_override_hit": bool(target_in_top10 and not self.override_applied),
+            "scoreable_hit": scoreable_hit,
+            "session_complete": session_complete,
+        }
+
+        if after_turn_callback is not None:
+            after_turn_callback(
+                **callback_args,
+                response=response,
+                ranked=ranked,
+                session_complete=session_complete,
+            )
+
+        self.events.append(event)
+        if scoreable_hit:
+            self.best_rank = ranked.index(self.target) + 1
+            self.first_hit_turn = turn
+            self.done = True
+        elif turn == MAX_TURNS:
+            self.done = True
+        else:
+            if (
+                not self.override_applied
+                and turn + 1 == int(self.session["override_turn"])
+            ):
+                # The configured override becomes the next user message.
+                pass
+            else:
+                self.user_message = simulate_customer_reply(
+                    self.session,
+                    response.get("ask_attribute"),
+                    self.simulator_state,
+                    self.rng,
+                )
+            self.next_turn_number += 1
+
+        return event
+
+    def run_to_end(
+        self,
+        *,
+        before_turn_callback: Any | None = None,
+        after_turn_callback: Any | None = None,
+    ) -> list[dict[str, Any]]:
+        """Run remaining turns sequentially and return only new events."""
+
+        start = len(self.events)
+        while not self.done:
+            self.next_turn(
+                before_turn_callback=before_turn_callback,
+                after_turn_callback=after_turn_callback,
+            )
+        return self.events[start:]
+
+    def result(self) -> dict[str, Any]:
+        """Return the batch-evaluator result for this session."""
+
+        return {
+            "sample_id": self.sample_id,
+            "scenario_type": self.scenario,
+            "target_asin": self.target,
+            "hit": self.first_hit_turn is not None,
+            "first_hit_turn": self.first_hit_turn,
+            "best_rank": self.best_rank,
+            "reciprocal_rank": (
+                0.0
+                if self.best_rank is None
+                else 1.0 / self.best_rank
+            ),
+        }
+
+
 def evaluate(
     agent: Any,
     sessions: Iterable[Mapping[str, Any]],
@@ -441,149 +647,25 @@ def evaluate(
     completion_tokens = 0
 
     for session in rows:
-        sample_id = str(session["sample_id"])
-        target = str(session["target_asin"])
-        scenario = str(session["scenario_type"])
-        session_id = f"manual400:{sample_id}"
-
-        agent.reset(session_id, dict(session.get("user_profile") or {}))
-
-        rng = random.Random(f"manual400-reply:{sample_id}:{target}")
-
-        initial_id = parse_fact_id(session.get("initial_fact_id"))
-
-        state: dict[str, Any] = {
-            "disclosed": {initial_id} if initial_id is not None else set(),
-            "active_constraints": {initial_id} if initial_id is not None else set(),
-            "stale_constraints": set(),
-            "no_preference_attributes": set(),
-            "boundary_used": False,
-        }
-
-        user_message = str(session["initial_message"])
-
-        # Non-override sessions are scoreable immediately.
-        override_applied = scenario != "intent_override"
-
-        first_hit_turn: int | None = None
-        best_rank: int | None = None
-
-        for turn in range(1, MAX_TURNS + 1):
-            # The override message is what the Agent sees on the configured
-            # override turn (3 or 4). The old initial preference becomes stale.
-            if not override_applied and turn == int(session["override_turn"]):
-                override_applied = True
-
-                if initial_id is not None:
-                    state["stale_constraints"].add(initial_id)
-                    state["active_constraints"].discard(initial_id)
-
-                override_id = parse_fact_id(session.get("override_fact_id"))
-                if override_id is not None:
-                    state["disclosed"].add(override_id)
-                    state["active_constraints"].add(override_id)
-
-                user_message = str(session["override_message"])
-
-            if before_turn_callback is not None:
-                before_turn_callback(
-                    session=session,
-                    session_id=session_id,
-                    turn=turn,
-                    user_message=user_message,
-                    agent=agent,
-                    override_applied=override_applied,
-                )
-
-            try:
-                raw_response = agent.respond(
-                    session_id,
-                    user_message,
-                    turn,
-                    TOP_K,
-                )
-                response = validate_agent_response(raw_response)
-            except Exception as exc:
-                if strict:
-                    raise RuntimeError(
-                        f"Agent failed validation in {sample_id} on turn {turn}"
-                    ) from exc
-                response = {
-                    "message": "",
-                    "ask_attribute": None,
-                    "recommendations": [],
-                }
-
-            usage = response.get("usage")
-            if isinstance(usage, dict):
-                prompt_tokens += int(usage["prompt_tokens"])
-                completion_tokens += int(usage["completion_tokens"])
-
-            ranked = normalize_recommendations(
-                response.get("recommendations"),
-                catalog_ids,
-            )
-
-            session_complete = (
-                (override_applied and target in ranked)
-                or turn == MAX_TURNS
-            )
-            if after_turn_callback is not None:
-                after_turn_callback(
-                    session=session,
-                    session_id=session_id,
-                    turn=turn,
-                    user_message=user_message,
-                    response=response,
-                    ranked=ranked,
-                    agent=agent,
-                    override_applied=override_applied,
-                    session_complete=session_complete,
-                )
-
-            # Intent Override sessions cannot score before the override.
-            if override_applied and target in ranked:
-                best_rank = ranked.index(target) + 1
-                first_hit_turn = turn
-                break
-
-            if turn == MAX_TURNS:
-                break
-
-            # If next turn is the override turn, do not also fabricate a normal
-            # clarification response. The override itself becomes the next
-            # customer message.
-            if (
-                not override_applied
-                and turn + 1 == int(session["override_turn"])
-            ):
-                continue
-
-            user_message = simulate_customer_reply(
-                session,
-                response.get("ask_attribute"),
-                state,
-                rng,
-            )
-
-        results.append(
-            {
-                "sample_id": sample_id,
-                "scenario_type": scenario,
-                "target_asin": target,
-                "hit": first_hit_turn is not None,
-                "first_hit_turn": first_hit_turn,
-                "best_rank": best_rank,
-                "reciprocal_rank": (
-                    0.0 if best_rank is None else 1.0 / best_rank
-                ),
-            }
+        runner = Manual400SessionRunner(
+            agent,
+            session,
+            catalog_ids,
+            strict=strict,
         )
+        runner.run_to_end(
+            before_turn_callback=before_turn_callback,
+            after_turn_callback=after_turn_callback,
+        )
+        result = runner.result()
+        results.append(result)
+        prompt_tokens += runner.prompt_tokens
+        completion_tokens += runner.completion_tokens
 
         if session_callback is not None:
             session_callback(
                 session=session,
-                result=results[-1],
+                result=result,
                 completed_results=results,
             )
 

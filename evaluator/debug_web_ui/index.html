@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shopping Copilot Debugger</title>
+    <link rel="stylesheet" href="/debug_web_ui/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">LOCAL EVALUATOR TOOL</p>
+          <h1>Shopping Copilot Debugger</h1>
+          <p class="muted">One Manual400 session, one real Agent turn at a time.</p>
+        </div>
+        <div class="controls">
+          <select id="scenario" aria-label="Scenario filter">
+            <option value="ANY">Any scenario</option>
+            <option value="BUYING">Buying</option>
+            <option value="BROWSING">Browsing</option>
+            <option value="INTENT_OVERRIDE">Intent override</option>
+            <option value="BOUNDARY">Boundary</option>
+          </select>
+          <button id="random">New Random Session</button>
+          <input id="session-id" placeholder="manual400_0095" aria-label="Session ID" />
+          <button id="load" class="secondary">Load</button>
+        </div>
+      </header>
+
+      <div id="error" class="error hidden"></div>
+      <section id="session-banner" class="panel empty">Choose a session to begin.</section>
+
+      <div class="grid">
+        <section class="panel conversation-panel">
+          <div class="panel-heading">
+            <h2>Conversation</h2>
+            <div class="actions">
+              <button id="next" disabled>Next Turn</button>
+              <button id="run-end" class="secondary" disabled>Run To End</button>
+            </div>
+          </div>
+          <div id="conversation" class="conversation empty">No turns executed.</div>
+        </section>
+
+        <aside class="side-column">
+          <section class="panel">
+            <h2>State</h2>
+            <div id="state" class="empty">—</div>
+          </section>
+          <section class="panel">
+            <h2>Target diagnostics</h2>
+            <div id="diagnostics" class="empty">—</div>
+          </section>
+          <section class="panel">
+            <h2>Target product</h2>
+            <div id="target" class="empty">—</div>
+          </section>
+        </aside>
+      </div>
+    </main>
+    <script src="/debug_web_ui/app.js"></script>
+  </body>
+</html>
