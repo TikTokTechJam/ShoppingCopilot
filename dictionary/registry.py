@@ -609,19 +609,22 @@ class AttributeDictionary:
         *,
         stopwords: Iterable[str] | None = None,
         max_ngram: int = 3,
-        top_k_per_attribute: int = 1,
+        top_k_per_attribute: int | None = None,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
     ) -> tuple[LookupMatch, ...]:
         """Search stopword-filtered 1/2/3-grams across every semantic view.
 
         Each phrase is encoded once and scored independently against the
         category, color, material, style, feature, and use-case matrices.
-        Brand intentionally has no semantic view and remains exact-only.
+        Brand intentionally has no semantic view and remains exact-only. When
+        ``top_k_per_attribute`` is omitted, every value meeting
+        ``min_similarity`` is returned for each phrase/view; duplicate
+        canonical IDs are reduced to their best score below.
         """
 
         if max_ngram < 1 or max_ngram > 3:
             raise ValueError("max_ngram must be between one and three")
-        if top_k_per_attribute < 1:
+        if top_k_per_attribute is not None and top_k_per_attribute < 1:
             raise ValueError("top_k_per_attribute must be at least one")
         if not self.has_semantic_embeddings:
             return ()
@@ -738,14 +741,16 @@ class AttributeDictionary:
         matrix: Any,
         np: Any,
         *,
-        top_k: int,
+        top_k: int | None,
         min_similarity: float,
         min_margin: float,
     ) -> tuple[LookupMatch, ...]:
         if query is None or not rows:
             return ()
         scores = np.asarray(matrix @ query).reshape(-1)
-        order = np.argsort(-scores, kind="stable")[:top_k]
+        order = np.argsort(-scores, kind="stable")
+        if top_k is not None:
+            order = order[:top_k]
         if len(order) == 0:
             return ()
         best_score = float(scores[order[0]])
