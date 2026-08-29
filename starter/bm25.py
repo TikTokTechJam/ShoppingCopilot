@@ -142,6 +142,7 @@ class BM25Index:
         *,
         allowed_asins: Collection[str] | None = None,
         max_results: int | None = None,
+        max_query_terms: int | None = MAX_QUERY_TERMS,
     ) -> dict[str, int]:
         """Return one-based BM25 ranks for a token query.
 
@@ -151,7 +152,10 @@ class BM25Index:
         therefore cannot consume a useful rank.
         """
 
-        expression = _match_expression(tuple(dict.fromkeys(terms))[:MAX_QUERY_TERMS])
+        unique_terms = tuple(dict.fromkeys(terms))
+        if max_query_terms is not None:
+            unique_terms = unique_terms[:max_query_terms]
+        expression = _match_expression(unique_terms)
         if not expression:
             return {}
 
@@ -215,4 +219,4 @@ class BM25Index:
         return scores
 
 
-__all__ = ["BM25_FIELD_WEIGHTS", "BM25Index"]
+__all__ = ["BM25_FIELD_WEIGHTS", "MAX_QUERY_TERMS", "BM25Index"]

@@ -23,7 +23,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
-from starter.bm25 import BM25Index
+from starter.bm25 import BM25Index, MAX_QUERY_TERMS
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -1015,6 +1015,8 @@ class ProductRetriever:
         self,
         terms: Iterable[str],
         eligible_asins: Collection[str],
+        *,
+        max_query_terms: int | None = MAX_QUERY_TERMS,
     ) -> dict[str, int]:
         if self.bm25_index is None:
             return {}
@@ -1023,6 +1025,7 @@ class ProductRetriever:
                 terms,
                 allowed_asins=eligible_asins,
                 max_results=BM25_MAX_RANK,
+                max_query_terms=max_query_terms,
             )
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
@@ -1298,8 +1301,12 @@ class ProductRetriever:
                     *(term for query in constraint_queries for term in query.terms),
                 )
             )
-        )[:40]
-        combined_ranks = self._bm25_ranked_terms(combined_terms, eligible_set)
+        )
+        combined_ranks = self._bm25_ranked_terms(
+            combined_terms,
+            eligible_set,
+            max_query_terms=None,
+        )
 
         fused_scores: dict[str, float] = {
             asin: self._rrf(rank) for asin, rank in combined_ranks.items()
