@@ -33,3 +33,9 @@ The page supports a seeded/random session pool, scenario filtering, loading a
 specific `manual400_####` session, one-turn stepping, and sequential Run To
 End. Target facts and ranks are evaluator-side display data only; they are
 never passed to `Agent.respond()`.
+
+Diagnostics show two independent state tracks. Structured constraints contain
+exact and numeric evidence only. Dense semantic constraints contain accepted
+BGE canonical values and their cosine similarities. Retrieval calculates both
+scores separately, then the existing mode-specific reranker combines them into
+the final score used for Top10 ordering.

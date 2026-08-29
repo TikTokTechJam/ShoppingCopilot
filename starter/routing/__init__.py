@@ -1,6 +1,7 @@
 """Reusable routing components for the shopping agent."""
 
 from starter.routing.constraints import (
+    SemanticShoppingConstraints,
     ShoppingConstraints,
     extract_constraints,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "IntentRouter",
     "LexicalIntentRouter",
     "SessionIntentTracker",
+    "SemanticShoppingConstraints",
     "ShoppingConstraints",
     "Signal",
     "Tier",

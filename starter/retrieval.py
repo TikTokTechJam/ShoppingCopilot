@@ -71,8 +71,8 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.30,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 1.00, "dense": 0.20},
-    "BROWSING": {"structured": 0.25, "dense": 1.00},
+    "BUYING": {"structured": 1.00, "dense": 1.00},
+    "BROWSING": {"structured": 1.00, "dense": 1.00},
 }
 # Backward-compatible name for callers that inspect the Buying contribution.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
@@ -232,14 +232,18 @@ class Candidate:
     relaxed_constraints: tuple[str, ...] = ()
     retrieval_mode: str = "BROWSING"
     attributes: Mapping[str, tuple[str, ...]] = field(default_factory=dict, repr=False, compare=False)
+    semantic_score: float = 0.0
+    matched_semantic_constraints: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
             "parent_asin": self.parent_asin,
             "score": self.score,
             "dense_score": self.dense_score,
+            "semantic_score": self.semantic_score,
             "constraint_score": self.constraint_score,
             "matched_constraints": list(self.matched_constraints),
+            "matched_semantic_constraints": list(self.matched_semantic_constraints),
             "violated_constraints": list(self.violated_constraints),
             "relaxed_constraints": list(self.relaxed_constraints),
             "retrieval_mode": self.retrieval_mode,
@@ -532,6 +536,63 @@ class ProductRetriever:
             )
         return similarities
 
+    @classmethod
+    def _semantic_scores(
+        cls,
+        products: Mapping[str, ProductRecord],
+        asins: Iterable[str],
+        constraints: object | None,
+    ) -> tuple[dict[str, float], dict[str, tuple[str, ...]]]:
+        """Score product facts against the independent Layer 2 state.
+
+        Each accepted semantic value contributes its retained cosine
+        similarity only when the product contains that canonical value. The
+        normalized mean is the dense track score; exact structured matching
+        is calculated separately.
+        """
+
+        if constraints is None:
+            return {}, {}
+
+        fields = tuple(
+            field_name
+            for field_name in (
+                "category",
+                "color",
+                "material",
+                "style",
+                "feature",
+                "use_case",
+            )
+            if cls._constraint_values(constraints, field_name)
+        )
+        if not fields:
+            return {}, {}
+
+        similarities = cls._constraint_similarities(constraints)
+        scores: dict[str, float] = {}
+        labels: dict[str, tuple[str, ...]] = {}
+        for asin in asins:
+            product = products[asin]
+            total = 0.0
+            matched = 0.0
+            matched_labels: list[str] = []
+            for field_name in fields:
+                for value in cls._constraint_values(constraints, field_name):
+                    canonical_key = (
+                        f"{field_name}:{normalize_text(value).replace(' ', '_')}"
+                    )
+                    similarity = similarities.get(canonical_key, 1.0)
+                    total += 1.0
+                    if value in product.facts.get(field_name, ()):
+                        matched += similarity
+                        matched_labels.append(
+                            f"{field_name}:{value}@{similarity:.3f}"
+                        )
+            scores[asin] = matched / total if total else 0.0
+            labels[asin] = tuple(matched_labels)
+        return scores, labels
+
     def _matches_field(self, asin: str, field_name: str, constraints: object) -> bool:
         product = self.product_by_asin[asin]
         if field_name == "price":
@@ -666,6 +727,7 @@ class ProductRetriever:
         matched_constraints: tuple[str, ...],
         matched_fields: set[str],
         constraint_fields: tuple[str, ...],
+        matched_semantic_constraints: tuple[str, ...] = (),
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
@@ -682,6 +744,8 @@ class ProductRetriever:
             violated_constraints=violated,
             retrieval_mode=mode,
             attributes=self.product_by_asin[asin].facts,
+            semantic_score=float(dense_score),
+            matched_semantic_constraints=matched_semantic_constraints,
         )
 
     def retrieve(
@@ -690,6 +754,7 @@ class ProductRetriever:
         query_text: str,
         constraints: object,
         *,
+        semantic_constraints: object | None = None,
         limit: int = 100,
         minimum_candidates: int = 50,
         excluded_asins: Collection[str] | None = None,
@@ -712,7 +777,14 @@ class ProductRetriever:
             for asin in (excluded_asins or ())
             if str(asin).strip()
         }
-        dense_scores = self._dense_scores(query_text) if self.dense_available else {}
+        semantic_scores, semantic_labels = self._semantic_scores(
+            self.product_by_asin,
+            self._catalog_order,
+            semantic_constraints,
+        )
+        dense_scores = semantic_scores
+        if not dense_scores and self.dense_available:
+            dense_scores = self._dense_scores(query_text)
         constraint_fields = self._constraint_fields(constraints)
         requested_by_field = {
             field_name: self._constraint_values(constraints, field_name)
@@ -837,6 +909,7 @@ class ProductRetriever:
                 labels_for(asin),
                 matched_fields.get(asin, set()),
                 constraint_fields,
+                semantic_labels.get(asin, ()),
             )
             for asin in ranked_asins
         ]
@@ -847,6 +920,7 @@ class ProductRetriever:
         query_text: str,
         constraints: object,
         *,
+        semantic_constraints: object | None = None,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
     ) -> list[Candidate]:
@@ -856,6 +930,7 @@ class ProductRetriever:
             mode,
             query_text,
             constraints,
+            semantic_constraints=semantic_constraints,
             limit=len(self.product_by_asin),
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,

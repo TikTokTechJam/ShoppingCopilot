@@ -792,6 +792,34 @@ def _debug_constraints(state: Any) -> dict[str, Any]:
     return payload
 
 
+def _debug_semantic_constraints(state: Any) -> dict[str, Any]:
+    constraints = getattr(state, "semantic_constraints", state)
+    if constraints is None:
+        return {}
+
+    payload: dict[str, Any] = {}
+    for field_name in DEBUG_FACT_FIELDS:
+        values = _debug_values(constraints, field_name)
+        if values:
+            payload[field_name] = values
+
+    evidence = getattr(constraints, "evidence", ())
+    similarities: dict[str, float] = {}
+    for item in evidence if isinstance(evidence, (list, tuple)) else ():
+        canonical_id = getattr(item, "canonical_id", None)
+        confidence = getattr(item, "confidence", None)
+        if not isinstance(canonical_id, str):
+            continue
+        try:
+            score = float(confidence)
+        except (TypeError, ValueError):
+            continue
+        similarities[canonical_id] = score
+    if similarities:
+        payload["similarities"] = similarities
+    return payload
+
+
 def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
     sessions = getattr(agent, "sessions", None)
     getter = getattr(sessions, "get", None)
@@ -800,10 +828,18 @@ def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
     state = getter(session_id)
     return {
         "constraints": _debug_constraints(state),
+        "semantic_constraints": _debug_semantic_constraints(state),
         "mode": getattr(state, "mode", None),
         "override_kind": getattr(state, "last_override_kind", None),
         "override_delta": _debug_constraints(
             getattr(state, "last_override_delta", None)
+        ),
+        "override_semantic_delta": _debug_semantic_constraints(
+            getattr(
+                getattr(state, "last_override_delta", None),
+                "semantic_constraints",
+                None,
+            )
         ),
         "query_text": getattr(state, "query_text", ""),
         "excluded": sorted(
@@ -845,12 +881,14 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
     mode = getattr(state, "mode", None) or "BROWSING"
     query_text = getattr(state, "query_text", "")
     constraints = getattr(state, "constraints", None)
+    semantic_constraints = getattr(state, "semantic_constraints", None)
     exclusions = getattr(state, "excluded_recommendations", set())
 
     eligible = rank_all(
         mode,
         query_text,
         constraints,
+        semantic_constraints=semantic_constraints,
         excluded_asins=exclusions,
         apply_budget=True,
     )
@@ -858,6 +896,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         mode,
         query_text,
         constraints,
+        semantic_constraints=semantic_constraints,
         excluded_asins=None,
         apply_budget=False,
     )
@@ -1037,8 +1076,16 @@ class InteractiveDebugPrinter:
         print("USER:")
         print(user_message)
         print()
-        print("AGENT CONSTRAINTS SO FAR")
+        print("STRUCTURED CONSTRAINTS SO FAR")
         print(json.dumps(_debug_constraints(state), indent=2, ensure_ascii=False))
+        print("DENSE SEMANTIC CONSTRAINTS SO FAR")
+        print(
+            json.dumps(
+                _debug_semantic_constraints(state),
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         print(f"Intent mode: {getattr(state, 'mode', None) or 'BROWSING'}")
         print(f"Override kind: {override_kind or 'NONE'}")
         if override_detected:

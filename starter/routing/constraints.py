@@ -289,10 +289,26 @@ class ConstraintEvidence:
 
 
 @_dataclass(frozen=True)
-class CanonicalShoppingConstraints(ShoppingConstraints):
-    """Runtime constraint output with optional resolver provenance."""
+class SemanticShoppingConstraints:
+    """Layer 2 canonical matches kept separate from exact constraints."""
 
-    evidence: tuple[ConstraintEvidence, ...] = _field(default=())
+    category: tuple[str, ...] = ()
+    color: tuple[str, ...] = ()
+    material: tuple[str, ...] = ()
+    style: tuple[str, ...] = ()
+    feature: tuple[str, ...] = ()
+    use_case: tuple[str, ...] = ()
+    evidence: tuple[ConstraintEvidence, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "category": list(self.category),
+            "color": list(self.color),
+            "material": list(self.material),
+            "style": list(self.style),
+            "feature": list(self.feature),
+            "use_case": list(self.use_case),
+        }
 
     def evidence_dict(self) -> list[dict[str, object]]:
         return [
@@ -306,6 +322,60 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
             }
             for item in self.evidence
         ]
+
+    def populated_fields(self) -> tuple[str, ...]:
+        return tuple(
+            field_name
+            for field_name in _SEMANTIC_ATTRIBUTES
+            if getattr(self, field_name)
+        )
+
+
+@_dataclass(frozen=True)
+class CanonicalShoppingConstraints(ShoppingConstraints):
+    """Runtime constraint output with optional resolver provenance."""
+
+    evidence: tuple[ConstraintEvidence, ...] = _field(default=())
+    semantic_constraints: SemanticShoppingConstraints = _field(
+        default_factory=SemanticShoppingConstraints
+    )
+
+    def evidence_dict(self) -> list[dict[str, object]]:
+        return [
+            {
+                "canonical_id": item.canonical_id,
+                "attribute": item.attribute,
+                "raw_text": item.raw_text,
+                "match_method": item.match_method,
+                "confidence": item.confidence,
+                "layer": item.layer,
+            }
+            for item in self.evidence
+        ]
+
+    def structured_only(self) -> "CanonicalShoppingConstraints":
+        """Return only the Layer 1 view of this extraction."""
+
+        semantic_ids = {
+            item.canonical_id for item in self.semantic_constraints.evidence
+        }
+        values: dict[str, tuple[str, ...]] = {}
+        for field_name in CATEGORICAL_FIELDS:
+            values[field_name] = tuple(
+                value
+                for value in getattr(self, field_name)
+                if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
+                not in semantic_ids
+            )
+        return CanonicalShoppingConstraints(
+            price_min=self.price_min,
+            price_max=self.price_max,
+            unmapped=self.unmapped,
+            evidence=tuple(
+                item for item in self.evidence if item.layer != "layer2"
+            ),
+            **values,
+        )
 
 
 @_dataclass(frozen=True)
@@ -758,7 +828,11 @@ def _extract_dictionary_constraints(
 ) -> CanonicalShoppingConstraints:
     text = _normalise_known_phrases(message or "")
     values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
+    semantic_values: dict[str, list[str]] = {
+        name: [] for name in _SEMANTIC_ATTRIBUTES
+    }
     evidence: list[ConstraintEvidence] = []
+    semantic_evidence: list[ConstraintEvidence] = []
     unmapped: set[str] = set()
     claimed: list[tuple[int, int]] = []
 
@@ -832,16 +906,17 @@ def _extract_dictionary_constraints(
             if entry.value in values[entry.attribute]:
                 continue
             values[entry.attribute].append(entry.value)
-            evidence.append(
-                ConstraintEvidence(
-                    entry.canonical_id,
-                    entry.attribute,
-                    item.phrase,
-                    f"semantic_{len(item.phrase.split())}gram",
-                    item.score,
-                    "layer2",
-                )
+            semantic_values[entry.attribute].append(entry.value)
+            item_evidence = ConstraintEvidence(
+                entry.canonical_id,
+                entry.attribute,
+                item.phrase,
+                f"semantic_{len(item.phrase.split())}gram",
+                item.score,
+                "layer2",
             )
+            evidence.append(item_evidence)
+            semantic_evidence.append(item_evidence)
             accepted_count += 1
         if accepted_count == 0:
             unmapped.add(residual)
@@ -856,6 +931,13 @@ def _extract_dictionary_constraints(
         price_max=price_max,
         unmapped=tuple(sorted(unmapped)),
         evidence=tuple(evidence),
+        semantic_constraints=SemanticShoppingConstraints(
+            evidence=tuple(semantic_evidence),
+            **{
+                name: tuple(found)
+                for name, found in semantic_values.items()
+            },
+        ),
         **{name: tuple(found) for name, found in values.items()},
     )
 
