@@ -314,5 +314,49 @@ class AmbiguityResolutionTests(unittest.TestCase):
         self.assertIn("orange", constraints.unmapped)
 
 
+    def test_semantic_path_is_independent_of_structured_claims(self) -> None:
+        dictionary = _dictionary(
+            ("category", "rain boots", 10),
+            ("feature", "waterproof", 10),
+        )
+        seen_phrases: list[str] = []
+
+        def matcher(phrase: str) -> list[dict[str, object]]:
+            seen_phrases.append(phrase)
+            matches = {
+                "rain boots": {
+                    "canonical_id": "category:rain_boots",
+                    "similarity": 0.95,
+                },
+                "waterproof": {
+                    "canonical_id": "feature:waterproof",
+                    "similarity": 0.93,
+                },
+            }
+            match = matches.get(phrase)
+            return [match] if match is not None else []
+
+        constraints = extract_constraints(
+            "I'm looking for rain boots. I'd like something waterproof.",
+            dictionary=dictionary,
+            semantic_matcher=matcher,
+        )
+
+        self.assertIn("rain boots", seen_phrases)
+        self.assertIn("waterproof", seen_phrases)
+        self.assertEqual(constraints.category, ("rain boots",))
+        self.assertEqual(constraints.feature, ("waterproof",))
+        self.assertEqual(
+            constraints.semantic_constraints.category,
+            ("rain boots",),
+        )
+        self.assertEqual(
+            constraints.semantic_constraints.feature,
+            ("waterproof",),
+        )
+        self.assertEqual(constraints.structured_only().category, ("rain boots",))
+        self.assertEqual(constraints.structured_only().feature, ("waterproof",))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -274,6 +274,11 @@ from dictionary.registry import DEFAULT_MIN_SIMILARITY as _DEFAULT_MIN_SIMILARIT
 from dictionary.registry import LookupMatch as _LookupMatch
 from dictionary.registry import SEMANTIC_ATTRIBUTES as _SEMANTIC_ATTRIBUTES
 from dictionary.registry import normalize_text as _normalize_dictionary_text
+from dictionary.registry import (
+    SEMANTIC_QUERY_STOPWORDS as _SEMANTIC_QUERY_STOPWORDS,
+)
+from dictionary.registry import semantic_query_ngrams as _semantic_query_ngrams
+from dictionary.registry import semantic_query_tokens as _semantic_query_tokens
 
 
 @_dataclass(frozen=True)
@@ -359,14 +364,29 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
         semantic_ids = {
             item.canonical_id for item in self.semantic_constraints.evidence
         }
+        structured_ids = {
+            item.canonical_id
+            for item in self.evidence
+            if item.layer != "layer2"
+        }
         values: dict[str, tuple[str, ...]] = {}
         for field_name in CATEGORICAL_FIELDS:
-            values[field_name] = tuple(
-                value
-                for value in getattr(self, field_name)
-                if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
-                not in semantic_ids
-            )
+            if self.evidence:
+                values[field_name] = tuple(
+                    value
+                    for value in getattr(self, field_name)
+                    if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
+                    in structured_ids
+                )
+            else:
+                # Preserve compatibility for manually constructed constraint
+                # objects that have no provenance attached.
+                values[field_name] = tuple(
+                    value
+                    for value in getattr(self, field_name)
+                    if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
+                    not in semantic_ids
+                )
         return CanonicalShoppingConstraints(
             price_min=self.price_min,
             price_max=self.price_max,
@@ -429,22 +449,16 @@ COMMON_BRAND_COLLISION_TERMS = frozenset(
 )
 
 
-_RESIDUAL_STOPWORDS = frozenset(
-    {
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for",
-        "from", "i", "in", "is", "it", "me", "my", "of", "on", "or", "please",
-        "some", "that", "the", "this", "to", "want", "with", "would", "you",
-        "looking", "need", "like", "something", "show", "find", "under", "below",
-        "less", "than", "more", "over", "between", "around", "about", "within",
-    }
-)
+# Backward-compatible local name used by the extraction path. The actual
+# policy is owned by dictionary.registry so semantic filtering cannot diverge
+# between query text construction and registry n-gram matching.
+_RESIDUAL_STOPWORDS = _SEMANTIC_QUERY_STOPWORDS
 
 
 @lru_cache(maxsize=1)
 def _load_default_dictionary() -> _AttributeDictionary | None:
     directories = (
         _Path("data/derived/annotations/v5/dictionary"),
-        _Path("data/derived/dictionary"),
     )
     for directory in directories:
         if not (directory / "canonical_values.json").exists():
@@ -501,7 +515,7 @@ def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
     if dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
 
     alternatives = tuple(
@@ -674,9 +688,19 @@ def _context_attributes(
 
     found: list[str] = []
     candidate_attributes = {candidate.attribute for candidate in candidates}
+    material_from_context = directly_before(("made", "from"))
     for attribute in _DICTIONARY_ATTRIBUTES:
         before_patterns = _EXPLICIT_CONTEXT_BEFORE.get(attribute, ())
         after_patterns = _EXPLICIT_CONTEXT_AFTER.get(attribute, ())
+
+        # ``from`` can introduce a brand (``from Nike``), but in the longer
+        # phrase ``made from polyester`` it is part of the material cue. The
+        # specific two-token cue must win so the same value is not rejected as
+        # having both brand and material context.
+        if attribute == "brand" and material_from_context:
+            before_patterns = tuple(
+                pattern for pattern in before_patterns if pattern != ("from",)
+            )
 
         if any(directly_before(pattern) for pattern in before_patterns):
             if (
@@ -764,28 +788,22 @@ def _resolve_dictionary_match(
     return None
 
 
-def _residual_phrase(text: str, claimed: list[tuple[int, int]]) -> str:
-    remaining = list(text)
-    for start, end in claimed:
-        for index in range(max(0, start), min(len(remaining), end)):
-            remaining[index] = " "
-    tokens = re.findall(r"[A-Za-z][A-Za-z0-9']*", "".join(remaining).lower())
-    return " ".join(token for token in tokens if token not in _RESIDUAL_STOPWORDS)
+def _semantic_text(text: str) -> str:
+    """Build the independent Layer 2 input without Layer 1 span claims."""
+
+    return " ".join(_semantic_query_tokens(text))
+
+
+def _semantic_tokens(text: str) -> tuple[str, ...]:
+    """Return contraction-aware tokens for semantic attribute matching."""
+
+    return _semantic_query_tokens(text)
 
 
 def _semantic_ngrams(phrase: str, *, max_ngram: int = 3) -> tuple[str, ...]:
     """Return deterministic stopword-filtered 1-, 2-, and 3-gram phrases."""
 
-    tokens = [
-        token
-        for token in _normalize_dictionary_text(phrase).split()
-        if token not in _RESIDUAL_STOPWORDS
-    ]
-    phrases: list[str] = []
-    for width in range(1, max_ngram + 1):
-        for start in range(0, len(tokens) - width + 1):
-            phrases.append(" ".join(tokens[start : start + width]))
-    return tuple(dict.fromkeys(phrases))
+    return _semantic_query_ngrams(phrase, max_ngram=max_ngram)
 
 
 def _semantic_items_from_result(
@@ -854,11 +872,11 @@ def _extract_dictionary_constraints(
     evidence: list[ConstraintEvidence] = []
     semantic_evidence: list[ConstraintEvidence] = []
     unmapped: set[str] = set()
-    claimed: list[tuple[int, int]] = []
+    structured_claimed: list[tuple[int, int]] = []
 
     price_min, price_max = _extract_prices(text)
     if price_min is not None or price_max is not None:
-        claimed.extend(
+        structured_claimed.extend(
             (match.start(), match.end())
             for match in PRICE_EXPRESSION.finditer(text)
         )
@@ -868,9 +886,12 @@ def _extract_dictionary_constraints(
             evidence.append(ConstraintEvidence("price_max", "price", "", "structured", 1.0))
 
     for match in SIZE_NUMERIC.finditer(text):
-        if any(match.start() < end and match.end() > start for start, end in claimed):
+        if any(
+            match.start() < end and match.end() > start
+            for start, end in structured_claimed
+        ):
             continue
-        claimed.append((match.start(), match.end()))
+        structured_claimed.append((match.start(), match.end()))
         value = match.group(1)
         if value not in values["size"]:
             values["size"].append(value)
@@ -881,9 +902,12 @@ def _extract_dictionary_constraints(
             )
 
     for match in _dictionary_surface_matches(dictionary, text):
-        if any(match.start < end and match.end > start for start, end in claimed):
+        if any(
+            match.start < end and match.end > start
+            for start, end in structured_claimed
+        ):
             continue
-        claimed.append((match.start, match.end))
+        structured_claimed.append((match.start, match.end))
         entry = _resolve_dictionary_match(
             text, match, dictionary, allowed_attribute=scoped_attribute
         )
@@ -900,23 +924,23 @@ def _extract_dictionary_constraints(
                 )
             )
 
-    residual = _residual_phrase(text, claimed)
-    if residual:
+    semantic_text = _semantic_text(text)
+    if semantic_text:
         semantic_matches: tuple[_SemanticCandidate, ...] = ()
         if semantic_matcher is None and dictionary.semantic_available:
             semantic_matches = _semantic_items_from_result(
                 dictionary.semantic_match_ngrams(
-                    residual,
+                    semantic_text,
                     allowed_attribute=scoped_attribute,
                     stopwords=_RESIDUAL_STOPWORDS,
                     max_ngram=3,
                     min_similarity=semantic_threshold,
                 ),
-                residual,
+                semantic_text,
             )
         elif semantic_matcher is not None:
             semantic_items: list[_SemanticCandidate] = []
-            for phrase in _semantic_ngrams(residual, max_ngram=3):
+            for phrase in _semantic_ngrams(semantic_text, max_ngram=3):
                 semantic_items.extend(_semantic_items(semantic_matcher, phrase))
             semantic_matches = _dedupe_semantic_items(semantic_items)
 
@@ -930,9 +954,10 @@ def _extract_dictionary_constraints(
                 continue
             if scoped_attribute is not None and entry.attribute != scoped_attribute:
                 continue
-            if entry.value in values[entry.attribute]:
+            if entry.value not in values[entry.attribute]:
+                values[entry.attribute].append(entry.value)
+            if entry.value in semantic_values[entry.attribute]:
                 continue
-            values[entry.attribute].append(entry.value)
             semantic_values[entry.attribute].append(entry.value)
             item_evidence = ConstraintEvidence(
                 entry.canonical_id,
@@ -946,7 +971,7 @@ def _extract_dictionary_constraints(
             semantic_evidence.append(item_evidence)
             accepted_count += 1
         if accepted_count == 0:
-            unmapped.add(residual)
+            unmapped.add(semantic_text)
 
     for word in ATTRIBUTE_TOPIC.findall(text):
         field_name = _TOPIC_FIELD.get(word.lower(), "")
@@ -979,10 +1004,10 @@ def extract_constraints(
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
-    Structured price/size parsing runs first. Exact dictionary values are then
-    matched longest-first. Remaining text is stopword-filtered into deterministic
-    1/2/3-gram phrases for the Layer 2 semantic matcher; results below the
-    threshold remain unresolved.
+    Structured price/size parsing and exact dictionary matching run in their
+    own path. Independently, the same utterance is stopword-filtered into
+    deterministic 1/2/3-gram phrases for the Layer 2 semantic matcher; Layer 1
+    exact-match claims do not remove text from that path.
     The generated dictionary is required for categorical extraction.
 
     ``asked_attribute`` narrows both the exact and the semantic pass to the
@@ -994,7 +1019,7 @@ def extract_constraints(
     if active_dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
     return _extract_dictionary_constraints(
         text,

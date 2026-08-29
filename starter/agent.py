@@ -17,6 +17,7 @@ from starter.session import (
     SessionManager,
     correction_fields,
     detect_override_kind,
+    is_no_preference_reply,
 )
 
 
@@ -126,11 +127,15 @@ class Agent:
     ) -> dict[str, object]:
         state = self.sessions.get(session_id)
         message = user_message or ""
-        # Read the attribute we asked last turn before any goal reset clears it.
-        asked_attribute = state.last_asked
-        # The unscoped reading comes first: deciding whether this message is an
-        # override rather than an answer requires seeing every attribute in it.
-        delta = self._extract(message)
+        pending_attribute = state.last_asked
+        no_preference_reply = is_no_preference_reply(message, pending_attribute)
+        # A no-preference answer is clarification metadata, not a product
+        # constraint. Skip the extractor so its words cannot become facts.
+        delta = (
+            ShoppingConstraints()
+            if no_preference_reply
+            else self._extract(message)
+        )
         had_messages = bool(state.messages)
         override_kind = OverrideKind.NONE
 
@@ -138,14 +143,17 @@ class Agent:
             override_kind = detect_override_kind(message, state.constraints, delta)
 
         if (
-            override_kind is OverrideKind.NONE
-            and asked_attribute
-            and _scoping_could_change(delta, asked_attribute)
+            not no_preference_reply
+            and override_kind is OverrideKind.NONE
+            and pending_attribute
+            and _scoping_could_change(delta, pending_attribute)
         ):
             # This message is an answer to our own question, so it is read as
             # being about that attribute alone. An override is a change of goal
-            # rather than an answer and keeps the full reading above.
-            delta = self._extract(message, asked_attribute=asked_attribute)
+            # rather than an answer and keeps the full reading above. A
+            # no-preference reply produced no delta at all, so there is nothing
+            # to narrow.
+            delta = self._extract(message, asked_attribute=pending_attribute)
 
         semantic_delta = getattr(delta, "semantic_constraints", None)
         structured_delta = (
@@ -189,7 +197,11 @@ class Agent:
             replace_fields=replacements,
             source=source,
         )
-        self.sessions.record_message(session_id, message)
+        self.sessions.record_message(
+            session_id,
+            message,
+            include_in_query=not no_preference_reply,
+        )
         state.turn = int(turn)
 
         candidates = self.retriever.retrieve(

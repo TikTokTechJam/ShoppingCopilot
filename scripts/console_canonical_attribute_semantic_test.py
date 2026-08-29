@@ -15,12 +15,13 @@ from dictionary.registry import (
 from dictionary.semantic import (
     ATTRIBUTE_EMBEDDING_DIMENSION,
     ATTRIBUTE_EMBEDDING_MODEL,
+    embedding_models_compatible,
     load_bge_attribute_encoder,
     resolve_attribute_model_path,
 )
 
 
-DEFAULT_DICTIONARY = Path("data/derived/dictionary")
+DEFAULT_DICTIONARY = Path("data/derived/annotations/v5/dictionary")
 TOP_K = 10
 ATTRIBUTE_OPTIONS = tuple(SEMANTIC_ATTRIBUTES)
 
@@ -51,7 +52,10 @@ def load_search_context(
             f"canonical attribute embeddings are unavailable in {root}; "
             "build with a local BGE model first"
         )
-    if dictionary.embedding_model != ATTRIBUTE_EMBEDDING_MODEL:
+    if not embedding_models_compatible(
+        ATTRIBUTE_EMBEDDING_MODEL,
+        dictionary.embedding_model,
+    ):
         raise RuntimeError(
             "canonical attribute artifact model mismatch: "
             f"{dictionary.embedding_model} != {ATTRIBUTE_EMBEDDING_MODEL}"
