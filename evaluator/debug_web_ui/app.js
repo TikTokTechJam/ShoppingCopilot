@@ -58,6 +58,8 @@ function renderState(data) {
   const state = data.state;
   if (!state) { $("state").innerHTML = "—"; return; }
   const layer2 = data.layer2 || {};
+  const benchmark = data.benchmark || {};
+  const metrics = benchmark.metrics || {};
   $("state").innerHTML = `
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
@@ -66,7 +68,14 @@ function renderState(data) {
     <h3>Excluded recommendations (${(state.excluded || []).length})</h3>
     <details><summary>show IDs</summary><pre>${json(state.excluded || [])}</pre></details>
     <h3>Layer 2</h3>
-    <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>`;
+    <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
+    <h3>Hard evaluator score</h3>
+    <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
+    <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
+    <div class="kv"><span>MTTC</span><b>${score(metrics.mttc)}</b></div>
+    <div class="kv"><span>Efficiency</span><b>${score(metrics.efficiency)}</b></div>
+    <div class="kv"><span>TechnicalScore</span><b>${score(metrics.technical_score)}</b></div>
+    <div class="muted">${benchmark.complete ? "Final session score" : "Provisional until session completes"}</div>`;
 }
 
 function renderDiagnostics(data) {
