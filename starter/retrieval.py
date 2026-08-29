@@ -60,15 +60,15 @@ DEFAULT_LAYER2_ARTIFACT_PATHS = (
 # One shared structured score is used by Buying and Browsing. Values are
 # configured weighted points, and the final score is the accumulated weighted sum.
 STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
-    "category": 1.00,
-    "price": 1.00,
-    "brand": 0.90,
+    "category": 0.70,
+    "price": 1.50,
+    "brand": 3.00,
     "size": 0.80,
-    "color": 0.70,
-    "material": 0.70,
-    "style": 0.30,
-    "feature": 0.30,
-    "use_case": 0.30,
+    "color": 1.00,
+    "material": 1.20,
+    "style": 0.50,
+    "feature": 0.50,
+    "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
     "BUYING": {"structured": 1.00, "dense": 1.00},
