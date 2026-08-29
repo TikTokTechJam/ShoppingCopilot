@@ -124,6 +124,26 @@ Build an exact-only dictionary from V5 with:
 python -m scripts.build_attribute_dictionary --input data/derived/annotations/v5/annotations.jsonl --input-format v5 --output-dir data/derived/annotations/v5/dictionary --no-embeddings
 ~~~
 
+The V5 dictionary can then be embedded as separate attribute-scoped matrices.
+Each matrix contains one L2-normalized vector per canonical value, in
+deterministic canonical-ID order. The current canonical semantic model is
+BAAI/bge-small-en-v1.5, with no retrieval prefix for these short values. The
+builder is local-only and logs progress for every batch, attribute, and the
+final completion.
+
+~~~powershell
+python -m scripts.build_v5_attribute_embeddings --dictionary-dir data/derived/annotations/v5/dictionary --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings --model models/bge-small-en-v1.5 --batch-size 32
+~~~
+
+The output contains category_embeddings.npy, color_embeddings.npy,
+material_embeddings.npy, style_embeddings.npy, feature_embeddings.npy,
+use_case_embeddings.npy, metadata.json, and manifest.json. Brand is
+intentionally excluded from semantic embeddings: it remains available in the
+exact dictionary and Layer 1, but the embedding builder rejects `brand` and
+does not retain a stale `brand_embeddings.npy`. V5 currently has no style
+values, so its matrix is an empty zero-row matrix with the same declared
+embedding dimension.
+
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed
 without these artifacts.
