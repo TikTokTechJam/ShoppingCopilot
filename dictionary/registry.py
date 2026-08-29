@@ -73,6 +73,145 @@ def normalize_text(value: str) -> str:
     return "".join(output).strip()
 
 
+# This is deliberately narrower than a general NLP stopword list.  It is used
+# only while creating semantic attribute-query phrases, where conversational
+# scaffolding should not become a BGE candidate.  The safe additions from the
+# Snowball English list are limited to unambiguous conversational, pronoun,
+# auxiliary, and interrogative forms. Product concepts such as ``wear``,
+# ``work``, ``fit``, ``dry``, and ``id`` therefore remain meaningful.
+SEMANTIC_QUERY_STOPWORDS = frozenset(
+    {
+        "i", "i'd", "i'm", "i've", "i'll",
+        "me", "my", "mine", "myself",
+        "we", "we're", "we'd", "we'll", "we've", "our", "ours", "ourselves",
+        "you", "you're", "you'd", "you'll", "you've", "your", "yours",
+        "yourself", "yourselves",
+        "he", "he's", "him", "his", "himself",
+        "she", "she's", "her", "hers", "herself",
+        "they", "they're", "they'd", "they'll", "they've", "them", "their",
+        "themselves", "it", "it's", "that's",
+        "a", "an", "the", "this", "that", "these", "those",
+        "what", "which", "who", "whom",
+        "some", "something", "anything", "please",
+        "want", "wants", "wanted", "need", "needs", "needed",
+        "like", "likes", "liked", "prefer", "prefers", "preferred",
+        "looking", "look", "looks", "find", "finds", "found", "show", "shows",
+        "give", "gives", "given", "make", "makes", "made", "making",
+        "use", "uses", "used", "using",
+        "mainly", "primarily", "mostly",
+        "would", "could", "should", "can", "will", "may", "might", "must",
+        "shall", "ought",
+        "am", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "having", "do", "does", "did", "doing",
+        "for", "from", "of", "to", "with", "by", "at", "as", "and", "or", "but",
+        "actually", "rather",
+        "under", "below", "less", "than", "more", "over", "between",
+        "around", "about", "within",
+        "let's", "who's", "what's", "here's", "there's", "when's", "where's",
+        "why's", "how's",
+        "if", "because", "until", "while", "against", "into", "through",
+        "during", "before", "after",
+        "again", "further", "then", "once",
+        "here", "there", "when", "where", "why", "how",
+        "all", "any", "both", "each", "few", "most", "other", "such",
+        "so", "too", "very", "ever", "also", "just", "whether", "however",
+    }
+)
+
+_SEMANTIC_NEGATIVE_CONTRACTIONS = {
+    "don't", "doesn't", "didn't", "can't", "won't", "isn't", "aren't",
+    "wasn't", "weren't", "haven't", "hasn't", "hadn't", "wouldn't",
+    "couldn't", "shouldn't", "cannot", "shan't", "mustn't", "daren't",
+    "needn't", "oughtn't", "mightn't",
+}
+_SEMANTIC_APOSTROPHES = frozenset({"'", "’", "ʼ", "＇"})
+
+
+def _semantic_query_tokenize(value: str) -> tuple[str, ...]:
+    """Tokenize semantic input while preserving known internal apostrophes."""
+
+    folded = unicodedata.normalize("NFKC", value or "").casefold()
+    tokens: list[str] = []
+    current: list[str] = []
+
+    def finish() -> None:
+        if current:
+            tokens.append("".join(current))
+            current.clear()
+
+    for index, character in enumerate(folded):
+        if character.isalnum():
+            current.append(character)
+        elif (
+            character in _SEMANTIC_APOSTROPHES
+            and current
+            and index + 1 < len(folded)
+            and folded[index + 1].isalnum()
+        ):
+            # Normalize apostrophe variants for comparison, but keep the
+            # apostrophe so ``i'd`` cannot become the literal product token
+            # ``id`` before the stopword decision is made.
+            current.append("'")
+        else:
+            finish()
+    finish()
+    return tuple(tokens)
+
+
+def _semantic_stopword_keys(stopwords: Iterable[str] | None) -> frozenset[str]:
+    # Callers may add field-specific stopwords, but the repository policy is
+    # always active. This keeps direct registry calls and the extraction path
+    # consistent even when a caller passes an empty/custom iterable.
+    keys: set[str] = set(SEMANTIC_QUERY_STOPWORDS)
+    for value in stopwords or ():
+        keys.update(_semantic_query_tokenize(str(value)))
+    return frozenset(keys)
+
+
+def semantic_query_tokens(
+    value: str,
+    *,
+    stopwords: Iterable[str] | None = None,
+) -> tuple[str, ...]:
+    """Return cleaned semantic tokens without changing the caller's raw text.
+
+    Positive conversational contractions disappear as whole tokens. Negative
+    contractions become ``not`` so semantic cleanup does not erase polarity.
+    Unknown apostrophe-containing words fall through to the existing lexical
+    normalizer, preserving possessive/brand safety.
+    """
+
+    active_stopwords = _semantic_stopword_keys(stopwords)
+    result: list[str] = []
+    for token in _semantic_query_tokenize(value):
+        if token in _SEMANTIC_NEGATIVE_CONTRACTIONS:
+            result.append("not")
+            continue
+        if token in active_stopwords:
+            continue
+        normalized_parts = normalize_text(token).split()
+        result.extend(
+            part for part in normalized_parts if part not in active_stopwords
+        )
+    return tuple(result)
+
+
+def semantic_query_ngrams(
+    value: str,
+    *,
+    max_ngram: int = 3,
+    stopwords: Iterable[str] | None = None,
+) -> tuple[str, ...]:
+    """Return deterministic cleaned contiguous semantic n-grams."""
+
+    tokens = semantic_query_tokens(value, stopwords=stopwords)
+    phrases: list[str] = []
+    for width in range(1, max_ngram + 1):
+        for start in range(0, len(tokens) - width + 1):
+            phrases.append(" ".join(tokens[start : start + width]))
+    return tuple(dict.fromkeys(phrases))
+
+
 def canonical_id(attribute: str, value: str) -> str:
     """Build the stable cross-index key used by all lookup paths."""
 
@@ -484,7 +623,7 @@ class AttributeDictionary:
         self,
         raw_text: str,
         *,
-        stopwords: Iterable[str] = (),
+        stopwords: Iterable[str] | None = None,
         max_ngram: int = 3,
         top_k_per_attribute: int | None = None,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
@@ -506,22 +645,11 @@ class AttributeDictionary:
         if not self.has_semantic_embeddings:
             return ()
 
-        stopword_surfaces = {
-            normalize_text(word) for word in stopwords if normalize_text(str(word))
-        }
-        tokens = [
-            token
-            for token in normalize_text(raw_text).split()
-            if token not in stopword_surfaces
-        ]
-        phrases: list[str] = []
-        seen_phrases: set[str] = set()
-        for width in range(1, max_ngram + 1):
-            for start in range(0, len(tokens) - width + 1):
-                phrase = " ".join(tokens[start : start + width])
-                if phrase and phrase not in seen_phrases:
-                    seen_phrases.add(phrase)
-                    phrases.append(phrase)
+        phrases = semantic_query_ngrams(
+            raw_text,
+            max_ngram=max_ngram,
+            stopwords=stopwords,
+        )
 
         try:
             import numpy as np

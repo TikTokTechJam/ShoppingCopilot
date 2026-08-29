@@ -274,6 +274,11 @@ from dictionary.registry import DEFAULT_MIN_SIMILARITY as _DEFAULT_MIN_SIMILARIT
 from dictionary.registry import LookupMatch as _LookupMatch
 from dictionary.registry import SEMANTIC_ATTRIBUTES as _SEMANTIC_ATTRIBUTES
 from dictionary.registry import normalize_text as _normalize_dictionary_text
+from dictionary.registry import (
+    SEMANTIC_QUERY_STOPWORDS as _SEMANTIC_QUERY_STOPWORDS,
+)
+from dictionary.registry import semantic_query_ngrams as _semantic_query_ngrams
+from dictionary.registry import semantic_query_tokens as _semantic_query_tokens
 
 
 @_dataclass(frozen=True)
@@ -444,22 +449,16 @@ COMMON_BRAND_COLLISION_TERMS = frozenset(
 )
 
 
-_RESIDUAL_STOPWORDS = frozenset(
-    {
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for",
-        "from", "i", "in", "is", "it", "me", "my", "of", "on", "or", "please",
-        "some", "that", "the", "this", "to", "want", "with", "would", "you",
-        "looking", "need", "like", "something", "show", "find", "under", "below",
-        "less", "than", "more", "over", "between", "around", "about", "within",
-    }
-)
+# Backward-compatible local name used by the extraction path. The actual
+# policy is owned by dictionary.registry so semantic filtering cannot diverge
+# between query text construction and registry n-gram matching.
+_RESIDUAL_STOPWORDS = _SEMANTIC_QUERY_STOPWORDS
 
 
 @lru_cache(maxsize=1)
 def _load_default_dictionary() -> _AttributeDictionary | None:
     directories = (
         _Path("data/derived/annotations/v5/dictionary"),
-        _Path("data/derived/dictionary"),
     )
     for directory in directories:
         if not (directory / "canonical_values.json").exists():
@@ -516,7 +515,7 @@ def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
     if dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
 
     alternatives = tuple(
@@ -689,9 +688,19 @@ def _context_attributes(
 
     found: list[str] = []
     candidate_attributes = {candidate.attribute for candidate in candidates}
+    material_from_context = directly_before(("made", "from"))
     for attribute in _DICTIONARY_ATTRIBUTES:
         before_patterns = _EXPLICIT_CONTEXT_BEFORE.get(attribute, ())
         after_patterns = _EXPLICIT_CONTEXT_AFTER.get(attribute, ())
+
+        # ``from`` can introduce a brand (``from Nike``), but in the longer
+        # phrase ``made from polyester`` it is part of the material cue. The
+        # specific two-token cue must win so the same value is not rejected as
+        # having both brand and material context.
+        if attribute == "brand" and material_from_context:
+            before_patterns = tuple(
+                pattern for pattern in before_patterns if pattern != ("from",)
+            )
 
         if any(directly_before(pattern) for pattern in before_patterns):
             if (
@@ -769,27 +778,19 @@ def _resolve_dictionary_match(
 def _semantic_text(text: str) -> str:
     """Build the independent Layer 2 input without Layer 1 span claims."""
 
-    tokens = [
-        token
-        for token in _normalize_dictionary_text(text).split()
-        if token not in _RESIDUAL_STOPWORDS
-    ]
-    return " ".join(tokens)
+    return " ".join(_semantic_query_tokens(text))
+
+
+def _semantic_tokens(text: str) -> tuple[str, ...]:
+    """Return contraction-aware tokens for semantic attribute matching."""
+
+    return _semantic_query_tokens(text)
 
 
 def _semantic_ngrams(phrase: str, *, max_ngram: int = 3) -> tuple[str, ...]:
     """Return deterministic stopword-filtered 1-, 2-, and 3-gram phrases."""
 
-    tokens = [
-        token
-        for token in _normalize_dictionary_text(phrase).split()
-        if token not in _RESIDUAL_STOPWORDS
-    ]
-    phrases: list[str] = []
-    for width in range(1, max_ngram + 1):
-        for start in range(0, len(tokens) - width + 1):
-            phrases.append(" ".join(tokens[start : start + width]))
-    return tuple(dict.fromkeys(phrases))
+    return _semantic_query_ngrams(phrase, max_ngram=max_ngram)
 
 
 def _semantic_items_from_result(
@@ -986,7 +987,7 @@ def extract_constraints(
     if active_dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
     return _extract_dictionary_constraints(
         text,
