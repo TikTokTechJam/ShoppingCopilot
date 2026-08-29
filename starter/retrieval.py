@@ -94,6 +94,7 @@ RATING_DEFAULT_WEIGHT = 0.02
 # semantic attribute views.
 BM25_RRF_K = 60
 BM25_MAX_RANK = 1000
+BM25_BGE_MIN_SIMILARITY = 0.90
 BM25_CONSTRAINT_ATTRIBUTES = (
     "category",
     "brand",
@@ -870,7 +871,7 @@ class ProductRetriever:
                 score = float(similarity)
             except (TypeError, ValueError):
                 return
-            if not math.isfinite(score) or score < 0.80:
+            if not math.isfinite(score) or score < BM25_BGE_MIN_SIMILARITY:
                 return
             group["source_attributes"].add(attribute)
             key = (attribute, _normalise_value(text))
@@ -935,7 +936,7 @@ class ProductRetriever:
                     matches = dictionary.semantic_match_ngrams(
                         raw_phrase,
                         max_ngram=3,
-                        min_similarity=0.80,
+                        min_similarity=BM25_BGE_MIN_SIMILARITY,
                     )
                 except (OSError, RuntimeError, TypeError, ValueError):
                     matches = ()
@@ -1358,6 +1359,7 @@ class ProductRetriever:
                 "rank_constant": BM25_RRF_K,
                 "raw_terms_included": True,
                 "expansion_terms_included": True,
+                "bge_min_similarity": BM25_BGE_MIN_SIMILARITY,
                 "candidate_pool_size": len(candidate_pool),
             },
             "top_fused": [
@@ -1427,6 +1429,7 @@ __all__ = [
     "CRITICAL_USER_RATING_THRESHOLD",
     "Candidate",
     "BM25_SCORE_WEIGHT",
+    "BM25_BGE_MIN_SIMILARITY",
     "BM25_RRF_K",
     "BM25Constraint",
     "InMemoryRetriever",
