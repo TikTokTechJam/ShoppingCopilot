@@ -8,6 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from starter.agent import Agent
+from starter.retrieval import (
+    MODE_SCORE_WEIGHTS,
+    OVERRIDE_BM25_RETENTION,
+    OVERRIDE_SCORE_WEIGHTS,
+    score_weights,
+)
 from starter.routing.constraints import ShoppingConstraints, extract_constraints
 from starter.session import (
     OverrideKind,
@@ -390,6 +396,106 @@ class OverrideHandlingTests(unittest.TestCase):
         false_machine = extract_constraints("machine wash")
         self.assertNotIn("machine", false_machine.brand)
         self.assertNotIn("wash", false_machine.brand)
+
+
+class OverrideScoreWeightTests(unittest.TestCase):
+    """The lexical channel is demoted once an override is detected."""
+
+    make_agent = OverrideHandlingTests.make_agent
+
+    def test_redistribution_is_mass_preserving_and_only_demotes_bm25(self) -> None:
+        for mode, normal in MODE_SCORE_WEIGHTS.items():
+            override = OVERRIDE_SCORE_WEIGHTS[mode]
+            with self.subTest(mode=mode):
+                self.assertAlmostEqual(
+                    sum(override.values()), sum(normal.values())
+                )
+                self.assertAlmostEqual(
+                    override["bm25"], normal["bm25"] * OVERRIDE_BM25_RETENTION
+                )
+                self.assertGreater(override["structured"], normal["structured"])
+                self.assertGreater(override["dense"], normal["dense"])
+                # The freed weight is split in proportion to what each
+                # surviving channel already carried, so their ratio is fixed.
+                self.assertAlmostEqual(
+                    override["structured"] / override["dense"],
+                    normal["structured"] / normal["dense"],
+                )
+
+    def test_score_weights_selects_the_table_from_the_flag(self) -> None:
+        self.assertEqual(score_weights("BUYING"), MODE_SCORE_WEIGHTS["BUYING"])
+        self.assertEqual(
+            score_weights("BUYING", override_active=True),
+            OVERRIDE_SCORE_WEIGHTS["BUYING"],
+        )
+
+    def test_override_latches_the_flag_for_the_rest_of_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self.make_agent(root)
+            agent.reset("session", {})
+            deltas = iter(
+                (
+                    ShoppingConstraints(category=("shoes",), color=("red",)),
+                    ShoppingConstraints(feature=("pockets",)),
+                    ShoppingConstraints(material=("nylon",)),
+                )
+            )
+
+            with patch(
+                "starter.agent.constraint_module.extract_constraints",
+                side_effect=sequenced_extract(deltas),
+            ):
+                agent.respond("session", "shoes in red", 1, 3)
+                state = agent.sessions.get("session")
+                self.assertFalse(state.override_active)
+
+                agent.respond(
+                    "session",
+                    "Actually, my priority changed. Pockets matter.",
+                    2,
+                    3,
+                )
+                self.assertTrue(state.override_active)
+
+                # A plain clarification answer afterwards must not clear it:
+                # the discarded transcript never comes back.
+                agent.respond("session", "nylon", 3, 3)
+                self.assertTrue(state.override_active)
+
+    def test_retrieval_receives_the_flag_once_an_override_is_seen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self.make_agent(root)
+            agent.reset("session", {})
+            seen: list[bool] = []
+            inner = agent.retriever.retrieve
+
+            def spy(*args, **kwargs):
+                seen.append(bool(kwargs.get("override_active")))
+                return inner(*args, **kwargs)
+
+            agent.retriever.retrieve = spy
+            deltas = iter(
+                (
+                    ShoppingConstraints(category=("shoes",)),
+                    ShoppingConstraints(feature=("pockets",)),
+                )
+            )
+            with patch(
+                "starter.agent.constraint_module.extract_constraints",
+                side_effect=sequenced_extract(deltas),
+            ):
+                agent.respond("session", "shoes", 1, 3)
+                agent.respond(
+                    "session",
+                    "Actually, my priority changed. Pockets matter.",
+                    2,
+                    3,
+                )
+
+            self.assertEqual(seen[0], False)
+            self.assertEqual(seen[-1], True)
 
 
 if __name__ == "__main__":
