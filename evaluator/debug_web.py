@@ -1,8 +1,9 @@
-"""Small localhost-only web viewer for one Manual400 session at a time.
+"""Small localhost-only web viewer for Manual400 or interactive sessions.
 
 The session execution lives in :class:`evaluator.hard_evaluator.Manual400SessionRunner`;
-this module only selects sessions, calls one runner turn, and serializes the
-existing evaluator-side diagnostics for a browser.
+this module also supports a developer-driven console session against a selected
+catalog target, and serializes the existing evaluator-side diagnostics for a
+browser.
 """
 
 from __future__ import annotations
@@ -10,8 +11,9 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import threading
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
@@ -31,7 +33,9 @@ from evaluator.hard_evaluator import (
     load_catalog_ids,
     load_jsonl,
     metric_summary,
+    normalize_recommendations,
     TOP_K,
+    validate_agent_response,
     validate_sessions,
 )
 from starter.retrieval import MODE_SCORE_WEIGHTS
@@ -367,6 +371,87 @@ class SessionPool:
         return None
 
 
+class InteractiveSessionRunner:
+    """Run one developer-driven session with replies entered in the console.
+
+    The selected catalog product is retained only for debug-side ranking
+    diagnostics.  The Agent receives the operator's messages and an opaque
+    session id, never the target ASIN or its product facts.
+    """
+
+    def __init__(
+        self,
+        agent: Any,
+        target_asin: str,
+        initial_message: str,
+        catalog_ids: set[str],
+        user_profile: Mapping[str, Any] | None = None,
+    ) -> None:
+        target = str(target_asin).strip()
+        if target not in catalog_ids:
+            raise ValueError(f"catalog product not found: {target!r}")
+        message = str(initial_message or "").strip()
+        if not message:
+            raise ValueError("initial message must not be empty")
+
+        self.agent = agent
+        self.catalog_ids = catalog_ids
+        self.target = target
+        self.session_id = "interactive:debug"
+        self.session = {
+            "sample_id": "interactive",
+            "scenario_type": "interactive",
+            "target_asin": target,
+            "initial_message": message,
+        }
+        self.agent.reset(self.session_id, dict(user_profile or {}))
+        self.next_turn_number = 1
+        self.events: list[dict[str, Any]] = []
+        self.done = False
+
+    def next_turn(self, user_message: str) -> dict[str, Any]:
+        if self.done:
+            raise RuntimeError("the interactive session reached the 10-turn limit")
+        message = str(user_message or "").strip()
+        if not message:
+            raise ValueError("reply must not be empty")
+
+        turn = self.next_turn_number
+        raw_response = self.agent.respond(
+            self.session_id,
+            message,
+            turn,
+            TOP_K,
+        )
+        response = validate_agent_response(raw_response)
+        ranked = normalize_recommendations(
+            response.get("recommendations"),
+            self.catalog_ids,
+        )
+        target_in_top10 = self.target in ranked
+        session_complete = turn == MAX_TURNS
+        event = {
+            "session_id": self.session_id,
+            "sample_id": "interactive",
+            "scenario_type": "interactive",
+            "target_asin": self.target,
+            "turn": turn,
+            "user_message": message,
+            "response": response,
+            "ranked": ranked,
+            "override_applied": False,
+            "pre_override_hit": False,
+            "scoreable_hit": target_in_top10,
+            "session_complete": session_complete,
+        }
+        self.events.append(event)
+        if session_complete:
+            self.done = True
+        else:
+            self.next_turn_number += 1
+        return event
+
+
 class DebugWebController:
     """Own one active evaluator runner and serialize its debug state."""
 
@@ -377,11 +462,18 @@ class DebugWebController:
         catalog_ids: set[str],
         *,
         seed: int | None = None,
+        interactive_mode: bool = False,
     ) -> None:
         self.agent = agent
-        self.pool = SessionPool(sessions, seed=seed)
+        self.pool = (
+            None
+            if interactive_mode
+            else SessionPool(sessions, seed=seed)
+        )
         self.catalog_ids = catalog_ids
+        self.interactive_mode = bool(interactive_mode)
         self.runner: Manual400SessionRunner | None = None
+        self.interactive_runner: InteractiveSessionRunner | None = None
         self.turn_records: list[dict[str, Any]] = []
         self.before_state: dict[str, Any] = {}
         self.before_constraints: dict[str, Any] = {}
@@ -390,9 +482,12 @@ class DebugWebController:
 
     @property
     def session(self) -> Mapping[str, Any] | None:
-        return None if self.runner is None else self.runner.session
+        if self.runner is not None:
+            return self.runner.session
+        return None if self.interactive_runner is None else self.interactive_runner.session
 
     def _new_runner(self, session: Mapping[str, Any]) -> dict[str, Any]:
+        self.interactive_runner = None
         self.runner = Manual400SessionRunner(
             self.agent,
             session,
@@ -406,17 +501,137 @@ class DebugWebController:
         return self.state_payload()
 
     def new_random(self, scenario: str = "ANY") -> dict[str, Any]:
+        if self.pool is None:
+            raise RuntimeError("random benchmark sessions are unavailable in interactive mode")
         return self._new_runner(self.pool.next(scenario))
 
     def load(self, session_id: str) -> dict[str, Any]:
+        if self.pool is None:
+            raise RuntimeError("benchmark sessions are unavailable in interactive mode")
         session = self.pool.by_id(session_id)
         if session is None:
             raise KeyError(f"session {session_id!r} was not found")
         return self._new_runner(session)
 
+    def search_catalog(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Find catalog products for developer target selection only."""
+
+        terms = tuple(
+            part.casefold()
+            for part in str(query).split()
+            if part.strip()
+        )
+        if not terms:
+            return []
+
+        results: list[tuple[int, int, dict[str, Any]]] = []
+        retriever = self.agent.retriever
+        for asin in getattr(retriever, "_catalog_order", ()):
+            product = retriever.product_by_asin.get(asin)
+            if product is None:
+                continue
+            raw = getattr(product, "raw", {})
+            title = _first_text(raw.get("title", raw.get("name", "")))
+            haystack = title.casefold()
+            matched = sum(term in haystack for term in terms)
+            if matched == 0:
+                continue
+            exact_phrase = 1 if " ".join(terms) in haystack else 0
+            results.append(
+                (
+                    exact_phrase,
+                    matched,
+                    {
+                        "parent_asin": str(asin),
+                        "title": title,
+                        "price": product.price,
+                    },
+                )
+            )
+        results.sort(key=lambda item: (-item[0], -item[1], item[2]["parent_asin"]))
+        return [item[2] for item in results[: max(1, int(limit))]]
+
+    def start_interactive(
+        self,
+        target_asin: str,
+        initial_message: str,
+        user_profile: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.interactive_mode:
+            raise RuntimeError("start the debug server with --interactive first")
+        lookup = {asin.casefold(): asin for asin in self.catalog_ids}
+        target = lookup.get(str(target_asin).strip().casefold())
+        if target is None:
+            raise ValueError(f"catalog product not found: {target_asin!r}")
+        self.runner = None
+        self.interactive_runner = InteractiveSessionRunner(
+            self.agent,
+            target,
+            initial_message,
+            self.catalog_ids,
+            user_profile,
+        )
+        self.turn_records = []
+        self.before_state = {}
+        self.before_constraints = {}
+        self.before_semantic_constraints = {}
+        self.before_exclusions = []
+        self.interactive_turn(initial_message)
+        return self.state_payload()
+
+    def interactive_turn(self, user_message: str) -> dict[str, Any]:
+        runner = self.interactive_runner
+        if runner is None:
+            raise RuntimeError("start an interactive session before entering a reply")
+        session_id = runner.session_id
+        state = self.agent.sessions.get(session_id)
+        self.before_state = _state_payload(self.agent, session_id)
+        self.before_constraints = _constraint_payload(state.constraints)
+        self.before_semantic_constraints = dict(
+            self.before_state.get("semantic_constraints", {})
+        )
+        self.before_exclusions = sorted(
+            str(value) for value in state.excluded_recommendations
+        )
+        event = runner.next_turn(user_message)
+        record = self._record_event(
+            event,
+            runner.target,
+            self.before_state,
+            self.before_constraints,
+            self.before_semantic_constraints,
+            self.before_exclusions,
+        )
+        self.turn_records.append(record)
+        return self.state_payload()
+
     def state_payload(self) -> dict[str, Any]:
+        if self.interactive_runner is not None:
+            runner = self.interactive_runner
+            state = _state_payload(self.agent, runner.session_id)
+            return {
+                "interactive_mode": True,
+                "session": {
+                    "session_id": "interactive",
+                    "scenario": "interactive",
+                    "turn": len(runner.events),
+                    "total_turns": MAX_TURNS,
+                    "initial_message": str(runner.session["initial_message"]),
+                    "target": _product_payload(self.agent, runner.target),
+                },
+                "turn": len(runner.events),
+                "total_turns": MAX_TURNS,
+                "done": bool(runner.done),
+                "state": state,
+                "layer2": _layer2_status(self.agent),
+                "bm25": _bm25_status(self.agent),
+                "benchmark": None,
+                "score_weights": MODE_SCORE_WEIGHTS,
+                "turns": self.turn_records,
+            }
         if self.runner is None:
             return {
+                "interactive_mode": self.interactive_mode,
                 "session": None,
                 "turn": 0,
                 "total_turns": MAX_TURNS,
@@ -430,6 +645,7 @@ class DebugWebController:
         state = _state_payload(self.agent, self.runner.session_id)
         target = str(session["target_asin"])
         return {
+            "interactive_mode": False,
             "session": {
                 "session_id": str(session["sample_id"]),
                 "scenario": str(session["scenario_type"]),
@@ -459,6 +675,83 @@ class DebugWebController:
             "metrics": add_score_fields(metric_summary([result])),
         }
 
+    def _record_event(
+        self,
+        event: Mapping[str, Any],
+        target: str,
+        before_state: Mapping[str, Any],
+        before_constraints: Mapping[str, Any],
+        before_semantic_constraints: Mapping[str, Any],
+        before_exclusions: list[str],
+    ) -> dict[str, Any]:
+        """Build the same debug turn payload for benchmark and console runs."""
+
+        session_id = str(event["session_id"])
+        after_state = _state_payload(self.agent, session_id)
+        extracted_this_turn = {
+            "structured": _changed_constraint_payload(
+                before_constraints,
+                after_state.get("constraints", {}),
+            ),
+            "semantic": _changed_constraint_payload(
+                before_semantic_constraints,
+                after_state.get("semantic_constraints", {}),
+            ),
+        }
+        ranking = _ranking_payload(
+            self.agent,
+            session_id,
+            target,
+            event["ranked"],
+        )
+        override_kind = after_state.get("override_kind")
+        return {
+            "turn": event["turn"],
+            "user_message": event["user_message"],
+            "agent": {
+                "message": event["response"]["message"],
+                "ask_attribute": event["response"]["ask_attribute"],
+            },
+            "state": {
+                "mode": after_state.get("mode"),
+                "constraints": after_state.get("constraints", {}),
+                "semantic_constraints": after_state.get(
+                    "semantic_constraints", {}
+                ),
+                "extracted_this_turn": extracted_this_turn,
+                "query_text": after_state.get("query_text", ""),
+                "asked_attributes": after_state.get("asked_attributes", []),
+                "last_asked": after_state.get("last_asked"),
+                "exclusions": after_state.get("excluded", []),
+            },
+            "clarification": {
+                "previous_asked": before_state.get("last_asked"),
+                "next_asked": after_state.get("last_asked"),
+            },
+            "target": _product_payload(self.agent, target),
+            "target_facts": _debug_target_facts(self.agent, target),
+            "ranking": ranking,
+            "override": {
+                "detected": override_kind in {"FULL_GOAL", "PREFERENCE"},
+                "kind": override_kind,
+                "old_mode": before_state.get("mode"),
+                "new_mode": after_state.get("mode"),
+                "constraints_before": before_constraints,
+                "constraints_after": after_state.get("constraints", {}),
+                "semantic_constraints_before": before_semantic_constraints,
+                "semantic_constraints_after": after_state.get(
+                    "semantic_constraints", {}
+                ),
+                "exclusions_before": before_exclusions,
+                "exclusions_after": after_state.get("excluded", []),
+            },
+            "hit": bool(event["scoreable_hit"]),
+            "pre_override_hit": bool(event["pre_override_hit"]),
+            "scoreable": bool(event["override_applied"]),
+            "done": bool(event["session_complete"]),
+            "benchmark": self._benchmark_payload(),
+        }
+
     def _run_one(self) -> dict[str, Any]:
         if self.runner is None:
             raise RuntimeError("load a session before running a turn")
@@ -479,72 +772,14 @@ class DebugWebController:
         event = self.runner.next_turn()
         if event is None:
             raise RuntimeError("the active session is complete")
-        after_state = _state_payload(self.agent, session_id)
-        extracted_this_turn = {
-            "structured": _changed_constraint_payload(
-                self.before_constraints,
-                after_state.get("constraints", {}),
-            ),
-            "semantic": _changed_constraint_payload(
-                self.before_semantic_constraints,
-                after_state.get("semantic_constraints", {}),
-            ),
-        }
-        ranking = _ranking_payload(
-            self.agent,
-            session_id,
+        record = self._record_event(
+            event,
             str(self.runner.target),
-            event["ranked"],
+            self.before_state,
+            self.before_constraints,
+            self.before_semantic_constraints,
+            self.before_exclusions,
         )
-        override_kind = after_state.get("override_kind")
-        record = {
-            "turn": event["turn"],
-            "user_message": event["user_message"],
-            "agent": {
-                "message": event["response"]["message"],
-                "ask_attribute": event["response"]["ask_attribute"],
-            },
-            "state": {
-                "mode": after_state.get("mode"),
-                "constraints": after_state.get("constraints", {}),
-                "semantic_constraints": after_state.get(
-                    "semantic_constraints", {}
-                ),
-                "extracted_this_turn": extracted_this_turn,
-                "query_text": after_state.get("query_text", ""),
-                "asked_attributes": after_state.get("asked_attributes", []),
-                "last_asked": after_state.get("last_asked"),
-                "exclusions": after_state.get("excluded", []),
-            },
-            "clarification": {
-                "previous_asked": self.before_state.get("last_asked"),
-                "next_asked": after_state.get("last_asked"),
-            },
-            "target": _product_payload(self.agent, str(self.runner.target)),
-            "target_facts": _debug_target_facts(
-                self.agent, str(self.runner.target)
-            ),
-            "ranking": ranking,
-            "override": {
-                "detected": override_kind in {"FULL_GOAL", "PREFERENCE"},
-                "kind": override_kind,
-                "old_mode": self.before_state.get("mode"),
-                "new_mode": after_state.get("mode"),
-                "constraints_before": self.before_constraints,
-                "constraints_after": after_state.get("constraints", {}),
-                "semantic_constraints_before": self.before_semantic_constraints,
-                "semantic_constraints_after": after_state.get(
-                    "semantic_constraints", {}
-                ),
-                "exclusions_before": self.before_exclusions,
-                "exclusions_after": after_state.get("excluded", []),
-            },
-            "hit": bool(event["scoreable_hit"]),
-            "pre_override_hit": bool(event["pre_override_hit"]),
-            "scoreable": bool(event["override_applied"]),
-            "done": bool(event["session_complete"]),
-            "benchmark": self._benchmark_payload(),
-        }
         self.turn_records.append(record)
         return record
 
@@ -652,22 +887,169 @@ class DebugRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
+def _print_interactive_turn(record: Mapping[str, Any]) -> None:
+    """Print a compact console view while the browser shows full diagnostics."""
+
+    agent = record.get("agent", {})
+    ranking = record.get("ranking", {})
+    print(f"\nTurn {record.get('turn')}")
+    print(f"Agent: {agent.get('message', '')}")
+    print(f"Asked: {agent.get('ask_attribute') or 'none'}")
+    print(
+        "Target ranks: "
+        f"structured={ranking.get('structured_rank', 'N/A')} "
+        f"dense={ranking.get('dense_rank', 'N/A')} "
+        f"bm25={ranking.get('bm25_rank', 'N/A')} "
+        f"hybrid={ranking.get('hybrid_rank', 'N/A')}"
+    )
+    print("Top 10:")
+    for item in ranking.get("top10", ()):
+        print(
+            f"  {item.get('rank', '?'):>2} "
+            f"{item.get('parent_asin', '')} "
+            f"final={score if (score := item.get('final_score')) is not None else 'N/A'}"
+        )
+    if record.get("hit"):
+        print("Target is currently in Top 10.")
+
+
+def _run_interactive_session(
+    app: DebugWebController,
+    target_asin: str,
+) -> tuple[str, str | None]:
+    """Collect one initial message and manual replies for one target."""
+
+    while True:
+        try:
+            initial_message = input("initial message> ").strip()
+        except EOFError:
+            return "quit", None
+        if initial_message.casefold() == "q":
+            return "quit", None
+        if not initial_message:
+            print("Please enter a message, or type q to quit.")
+            continue
+
+        try:
+            app.start_interactive(target_asin, initial_message)
+        except (RuntimeError, ValueError) as exc:
+            print(f"Unable to start interactive session: {exc}")
+            continue
+        _print_interactive_turn(app.turn_records[-1])
+
+        restart = False
+        while app.interactive_runner is not None and not app.interactive_runner.done:
+            asked = app.agent.sessions.get(
+                app.interactive_runner.session_id
+            ).last_asked
+            try:
+                reply = input(
+                    f"reply (asked={asked or 'none'}, q/restart/target <ASIN>)> "
+                ).strip()
+            except EOFError:
+                return "quit", None
+            lowered = reply.casefold()
+            if lowered == "q":
+                return "quit", None
+            if lowered == "restart":
+                restart = True
+                break
+            if lowered.startswith("target "):
+                return "target", reply.split(None, 1)[1].strip()
+            if not reply:
+                print("Please enter a reply, or use q/restart.")
+                continue
+            try:
+                app.interactive_turn(reply)
+            except (RuntimeError, ValueError) as exc:
+                print(f"Unable to process reply: {exc}")
+                continue
+            _print_interactive_turn(app.turn_records[-1])
+
+        if restart:
+            print("Restarting the same target.")
+            continue
+        print("Interactive session reached the 10-turn limit.")
+        return "choose", None
+
+
+def run_interactive_console(app: DebugWebController) -> None:
+    """Run the target picker and stdin-driven Agent conversation."""
+
+    print("Interactive debug mode")
+    print("Choose a catalog ASIN, or use search <words>. Type q to quit.")
+    pending_target: str | None = None
+    choices: dict[str, str] = {}
+    while True:
+        if pending_target is not None:
+            command = pending_target
+            pending_target = None
+        else:
+            try:
+                command = input("target> ").strip()
+            except EOFError:
+                return
+        if command.casefold() == "q":
+            return
+        if command.casefold().startswith("search "):
+            matches = app.search_catalog(command.split(None, 1)[1])
+            choices = {str(index): item["parent_asin"] for index, item in enumerate(matches, 1)}
+            if not matches:
+                print("No title matches found.")
+            else:
+                for index, item in enumerate(matches, 1):
+                    price = item.get("price")
+                    price_text = "price N/A" if price is None else f"${float(price):.2f}"
+                    print(
+                        f"{index}. {item['parent_asin']} · {price_text} · "
+                        f"{item.get('title', '')}"
+                    )
+            continue
+        if command.casefold().startswith("target "):
+            command = command.split(None, 1)[1].strip()
+        target = choices.get(command, command)
+        resolved = {asin.casefold(): asin for asin in app.catalog_ids}.get(
+            target.casefold()
+        )
+        if resolved is None:
+            print(f"Catalog product not found: {target}")
+            continue
+        result, next_target = _run_interactive_session(app, resolved)
+        if result == "quit":
+            return
+        if result == "target":
+            pending_target = next_target
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Local Manual400 session debug UI")
+    parser = argparse.ArgumentParser(description="Local Manual400 and interactive debug UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--catalog", default=DEFAULT_CATALOG)
     parser.add_argument("--sessions", default=DEFAULT_SESSIONS)
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="select a catalog target and enter shopper replies in the console",
+    )
     return parser
 
 
 def create_application(args: argparse.Namespace) -> DebugWebController:
-    sessions = load_jsonl(args.sessions)
     catalog_ids = load_catalog_ids(args.catalog)
-    sessions = validate_sessions(sessions, catalog_ids)
+    sessions: list[dict[str, Any]] = []
+    if not args.interactive:
+        sessions = load_jsonl(args.sessions)
+        sessions = validate_sessions(sessions, catalog_ids)
     agent = build_evaluator_agent(args.catalog)
-    return DebugWebController(agent, sessions, catalog_ids, seed=args.seed)
+    return DebugWebController(
+        agent,
+        sessions,
+        catalog_ids,
+        seed=args.seed,
+        interactive_mode=args.interactive,
+    )
 
 
 def main() -> None:
@@ -684,9 +1066,26 @@ def main() -> None:
 
     handler = type("ShoppingCopilotDebugHandler", (DebugRequestHandler,), {})
     handler.app = app
-    server = HTTPServer((args.host, args.port), handler)
+    server_type = ThreadingHTTPServer if args.interactive else HTTPServer
+    server = server_type((args.host, args.port), handler)
     print(f"Debug UI: http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop.")
+    if args.interactive:
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            name="shopping-copilot-debug-web",
+            daemon=True,
+        )
+        server_thread.start()
+        try:
+            run_interactive_console(app)
+        except KeyboardInterrupt:
+            print("\nInteractive debug stopped.")
+        finally:
+            server.shutdown()
+            server_thread.join(timeout=2.0)
+            server.server_close()
+        return
     try:
         server.serve_forever()
     except KeyboardInterrupt:

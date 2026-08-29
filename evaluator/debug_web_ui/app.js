@@ -80,7 +80,9 @@ function renderBanner(data) {
   const session = data.session;
   if (!session) {
     $("session-banner").className = "panel empty";
-    $("session-banner").textContent = "Choose a session to begin.";
+    $("session-banner").textContent = data.interactive_mode
+      ? "Interactive mode is active. Choose a target and enter replies in the terminal."
+      : "Choose a session to begin.";
     return;
   }
   const target = session.target || {};
@@ -98,7 +100,11 @@ function renderState(data) {
   const layer2 = data.layer2 || {};
   const benchmark = data.benchmark || {};
   const metrics = benchmark.metrics || {};
+  const interactiveHint = data.interactive_mode
+    ? '<div class="muted interactive-hint">Console input is active; this page updates after each reply.</div>'
+    : "";
   $("state").innerHTML = `
+    ${interactiveHint}
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
     <div class="kv"><span>Clarification cycle</span><b>${esc(state.clarification_cycle ?? 1)}</b></div>
@@ -193,11 +199,25 @@ function renderConversation(data) {
   }).join("");
 }
 
+let interactivePoll = null;
+
+function updateInteractivePolling(data) {
+  if (data.interactive_mode && interactivePoll === null) {
+    interactivePoll = setInterval(() => loadState(() => api("/api/state")), 1000);
+  } else if (!data.interactive_mode && interactivePoll !== null) {
+    clearInterval(interactivePoll);
+    interactivePoll = null;
+  }
+}
+
 function render(data) {
   renderBanner(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
-  const active = Boolean(data.session) && !data.done;
+  const active = !data.interactive_mode && Boolean(data.session) && !data.done;
   $("next").disabled = !active;
   $("run-end").disabled = !active;
+  $("random").disabled = Boolean(data.interactive_mode);
+  $("load").disabled = Boolean(data.interactive_mode);
+  updateInteractivePolling(data);
 }
 
 async function loadState(request) {
@@ -210,5 +230,16 @@ $("load").onclick = () => loadState(() => api("/api/session/load", "POST", {sess
 $("next").onclick = () => loadState(() => api("/api/session/next", "POST"));
 $("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"));
 
-// Select a session on first page load, but do not execute an Agent turn yet.
-loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}));
+async function initialLoad() {
+  try {
+    const data = await api("/api/state");
+    render(data);
+    if (!data.interactive_mode && !data.session) {
+      await loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}));
+    }
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+initialLoad();
