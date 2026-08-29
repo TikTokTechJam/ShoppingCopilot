@@ -76,12 +76,29 @@ function similarityRows(similarities) {
     </div>`).join("")}</div>`;
 }
 
-function bm25Fusion(debug) {
+function rrfContribution(rank, constant = 60) {
+  const numericRank = Number(rank);
+  const numericConstant = Number(constant);
+  if (!Number.isFinite(numericRank) || numericRank <= 0 || !Number.isFinite(numericConstant)) return "N/A";
+  return (1 / (numericConstant * numericRank)).toFixed(6);
+}
+
+function targetConstraintRank(targetRanks, attribute, constant) {
+  if (targetRanks == null) return '<span class="muted">target rank unavailable</span>';
+  if (!Object.prototype.hasOwnProperty.call(targetRanks, attribute) || targetRanks[attribute] == null) {
+    return '<span class="muted">target not in results</span>';
+  }
+  const rank = Number(targetRanks[attribute]);
+  return `<strong class="target-bm25-rank">target #${esc(rank)} <small>RRF ${rrfContribution(rank, constant)}</small></strong>`;
+}
+
+function bm25Fusion(debug, targetRanks = null) {
   if (!debug || !debug.bm25_available) {
     return '<span class="muted">BM25 fusion unavailable for this turn.</span>';
   }
   const constraints = Array.isArray(debug.constraints) ? debug.constraints : [];
   const fused = Array.isArray(debug.top_fused) ? debug.top_fused : [];
+  const rankConstant = debug.fusion?.rank_constant ?? 60;
   const rows = constraints.length ? constraints.map(item => {
     const originals = (item.original_phrases || []).join(", ");
     const expansions = (item.expansions || []).map(exp =>
@@ -93,6 +110,7 @@ function bm25Fusion(debug) {
     return `<div class="bm25-fusion-row">
       <div class="bm25-fusion-label"><strong>${esc(item.attribute)}</strong><span title="${esc(originals)}">${esc(originals || "—")}</span></div>
       <div class="constraint-values">${expansions}</div>
+      <div class="bm25-target-rank">${targetConstraintRank(targetRanks, item.attribute, rankConstant)}</div>
       <small class="muted">ranks: ${topRanks || "none"}</small>
     </div>`;
   }).join("") : '<span class="muted">No active attribute queries.</span>';
@@ -104,7 +122,8 @@ function bm25Fusion(debug) {
   return `<div class="bm25-fusion">
     <div class="kv"><span>Raw query</span><code title="${esc(debug.raw_bm25_query || "")}">${esc(debug.raw_bm25_query || "—")}</code></div>
     <div class="kv"><span>Raw results</span><b>${esc(debug.raw_bm25_rank_count ?? 0)}</b></div>
-    <div class="kv"><span>Fusion</span><b>1 / (${esc(debug.fusion?.rank_constant ?? 60)} × rank)</b></div>
+    <div class="kv"><span>Fusion</span><b>1 / (${esc(rankConstant)} × rank)</b></div>
+    <div class="bm25-target-help muted">Target rank is shown for each constraint BM25 list; RRF is that list's contribution.</div>
     ${rows}
     <h4>Top fused candidates</h4>
     <div class="bm25-fused-list">${fusedRows || '<span class="muted">none</span>'}</div>
@@ -133,6 +152,9 @@ function renderState(data) {
   const layer2 = data.layer2 || {};
   const benchmark = data.benchmark || {};
   const metrics = benchmark.metrics || {};
+  const turns = data.turns || [];
+  const latestTurn = turns.length ? turns[turns.length - 1] : null;
+  const targetRanks = latestTurn?.ranking?.target_constraint_bm25_ranks ?? null;
   $("state").innerHTML = `
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
@@ -153,7 +175,7 @@ function renderState(data) {
     <h3>BM25 lexical search</h3>
     <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
     <h3>BM25 fusion details</h3>
-    ${bm25Fusion(state.retrieval_debug)}
+    ${bm25Fusion(state.retrieval_debug, targetRanks)}
     <h3>Hard evaluator score</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
@@ -225,7 +247,7 @@ function renderConversation(data) {
       <h4>Semantic extracted this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
-      <h4>BM25 fusion details</h4><div>${bm25Fusion(state.retrieval_debug)}</div>
+      <h4>BM25 fusion details</h4><div>${bm25Fusion(state.retrieval_debug, turn.ranking?.target_constraint_bm25_ranks ?? null)}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
       <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");
