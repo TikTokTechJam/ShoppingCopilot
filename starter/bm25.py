@@ -14,7 +14,9 @@ from typing import Any
 from dictionary.registry import semantic_query_tokens
 
 
-BM25_FIELD_WEIGHTS = (6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
+# One weight is required for every FTS column, including the UNINDEXED ASIN.
+# The ASIN weight is zero so identifiers never influence lexical relevance.
+BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
 
 
