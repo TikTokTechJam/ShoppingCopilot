@@ -71,7 +71,7 @@ def build_catalog_facts(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build deterministic canonical catalog facts.")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
-    parser.add_argument("--annotations", default="data/derived/annotations/v4/annotations.jsonl")
+    parser.add_argument("--annotations", default="data/derived/annotations/v5/annotations.jsonl")
     parser.add_argument("--output", default="data/derived/catalog_facts/catalog_facts.jsonl")
     args = parser.parse_args()
     print(json.dumps(build_catalog_facts(args.catalog, args.annotations, args.output), indent=2))

@@ -110,7 +110,7 @@ Use the actual V4 annotation output directly:
 
 ```powershell
 python -m scripts.build_attribute_dictionary `
-  --input data/derived/annotations/v4/annotations.jsonl `
+  --input data/derived/annotations/v5/annotations.jsonl `
   --output-dir data/derived/dictionary `
   --no-embeddings
 
@@ -118,10 +118,12 @@ python -m scripts.validate_attribute_dictionary `
   --directory data/derived/dictionary
 ```
 
-The build command defaults to `data/derived/annotations/v4/annotations.jsonl`,
-the current V4 annotation output in this repository. Use `--input` to point it
-at another V4 annotation JSONL location, such as a generated release under
-`data/derived/annotations/v4/annotations.jsonl`.
+The build command defaults to `data/derived/annotations/v5/annotations.jsonl`,
+the current annotation output in this repository. Use `--input` to point it
+at another annotation JSONL location, such as a generated release under
+`data/derived/annotations/v5/annotations.jsonl`. The optional embedding command
+requires the dependencies in `requirements-embeddings.txt`; it is intentionally
+not run as part of normal repository checks.
 
 For the BGE semantic attribute artifact, download the model once and build only
 the canonical attribute vectors:
@@ -130,60 +132,13 @@ the canonical attribute vectors:
 python -m scripts.setup_bge_attribute_model
 
 python -m scripts.build_attribute_dictionary `
-  --input data/derived/annotations/v4/annotations.jsonl `
+  --input data/derived/annotations/v5/annotations.jsonl `
   --output-dir data/derived/dictionary `
   --embedding-model models/bge-small-en-v1.5
 
 python -m scripts.validate_attribute_dictionary `
   --directory data/derived/dictionary
 ```
-
-The setup command is the only command that may download from Hugging Face.
-Dictionary building and runtime loading are local-only. To use a different
-local snapshot location, set `SHOPPING_ATTRIBUTE_EMBEDDING_MODEL`; it must
-identify `BAAI/bge-small-en-v1.5`. No product-level embedding artifact or
-product retrieval model is loaded by this flow.
-
-The same builder also accepts the catalog-ordered V5 aggregate. V5 records
-provide nested facts without the V4 annotation wrapper; the omitted style field
-is treated as empty. The dictionary still exposes the same seven-field
-registry contract, while price remains outside the semantic dictionary and is
-ignored.
-
-Build an exact-only dictionary from V5 with:
-
-~~~powershell
-python -m scripts.build_attribute_dictionary --input data/derived/annotations/v5/annotations.jsonl --input-format v5 --output-dir data/derived/annotations/v5/dictionary --no-embeddings
-~~~
-
-The V5 dictionary can then be embedded as separate attribute-scoped matrices.
-Each matrix contains one L2-normalized vector per canonical value, in
-deterministic canonical-ID order. The current canonical semantic model is
-BAAI/bge-small-en-v1.5, with no retrieval prefix for these short values. The
-builder is local-only and logs progress for every batch, attribute, and the
-final completion.
-
-~~~powershell
-python -m scripts.build_v5_attribute_embeddings --dictionary-dir data/derived/annotations/v5/dictionary --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings --model models/bge-small-en-v1.5 --batch-size 32
-~~~
-
-The output contains category_embeddings.npy, color_embeddings.npy,
-material_embeddings.npy, style_embeddings.npy, feature_embeddings.npy,
-use_case_embeddings.npy, metadata.json, and manifest.json. Brand is
-intentionally excluded from semantic embeddings: it remains available in the
-exact dictionary and Layer 1, but the embedding builder rejects `brand` and
-does not retain a stale `brand_embeddings.npy`. V5 currently has no style
-values, so its matrix is an empty zero-row matrix with the same declared
-embedding dimension.
-
-At runtime, Layer 1 keeps the existing exact dictionary matching flow. Layer 2
-takes the remaining user text, removes the configured stopwords, and searches
-every available semantic attribute matrix with deterministic 1-gram, 2-gram,
-and 3-gram phrases. Only matches with cosine similarity at least `0.80` are
-added to the session constraint state. Their Layer 2 evidence preserves the
-matched phrase and similarity, and the existing product scorer uses that
-similarity when calculating structured points before final ranking. Brand is
-not searched semantically; it remains exact-only.
 
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed

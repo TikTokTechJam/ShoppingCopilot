@@ -481,7 +481,7 @@ def run_annotation(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Resume-safe catalog annotation runner.")
     parser.add_argument("--catalog", default="data/catalog.jsonl")
-    parser.add_argument("--output-dir", default="data/derived/annotations/v4")
+    parser.add_argument("--output-dir", default="data/derived/annotations/v5")
     parser.add_argument(
         "--env-file",
         help="Optional local KEY=VALUE file; never commit this file.",

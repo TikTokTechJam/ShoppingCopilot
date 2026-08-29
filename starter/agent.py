@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from starter.clarification import ClarificationPolicy
+from starter.followup import fill_to_top_k
+from starter.profile_affinity import ProfileAffinity
 from starter.retrieval import ProductRetriever
 from starter.routing import constraints as constraint_module
 from starter.routing.constraints import ShoppingConstraints
@@ -36,6 +38,7 @@ class Agent:
         embeddings_path: str | Path | None = None,
         metadata_path: str | Path | None = None,
         query_encoder: object | None = None,
+        use_user_profile: bool = True,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
         retriever: ProductRetriever | None = None,
@@ -57,6 +60,8 @@ class Agent:
         self.router = router or TwoPhaseIntentRouter()
         self._fallback_router = LexicalIntentRouter()
         self.clarification = ClarificationPolicy()
+        self.use_user_profile = bool(use_user_profile)
+        self._profile_affinity: dict[str, ProfileAffinity] = {}
 
     @staticmethod
     def _extract(message: str) -> ShoppingConstraints:
@@ -74,6 +79,14 @@ class Agent:
 
     def reset(self, session_id: str, user_profile: Mapping[str, Any]) -> None:
         self.sessions.reset(session_id, user_profile)
+        # preference_tags are fixed for a session, so the prior is built once
+        # here and reuses the already-loaded Layer 2 encoder.
+        self._profile_affinity.pop(session_id, None)
+        if self.use_user_profile:
+            self._profile_affinity[session_id] = ProfileAffinity(
+                user_profile,
+                encoder=getattr(self.retriever, "query_encoder", None),
+            )
 
     def respond(
         self,
@@ -162,25 +175,37 @@ class Agent:
         except (TypeError, ValueError):
             requested_k = 0
         valid_asins = self.retriever.valid_asins
-        recommendations: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            asin = str(candidate.parent_asin).strip()
-            if asin not in valid_asins or asin in seen:
-                continue
-            seen.add(asin)
-            recommendations.append({"parent_asin": asin})
-            if len(recommendations) >= requested_k:
-                break
-
-        ask_attribute = None
-        if int(turn) < 10:
-            ask_attribute = self.clarification.choose(
-                candidates,
-                state.constraints,
-                state.asked_attributes,
-                mode=state.mode or "BROWSING",
+        ranked = fill_to_top_k(
+            (candidate.parent_asin for candidate in candidates),
+            (),
+            requested_k,
+            valid_asins=valid_asins,
+        )
+        if len(ranked) < requested_k:
+            # Invariant 2 of Section 12b.4: returning fewer than top_k while
+            # more valid catalog IDs exist is a pure expected-value loss, since
+            # padding below the ranked items cannot change their ranks. The
+            # backfill is lazy, so a full pool costs nothing.
+            ranked = fill_to_top_k(
+                ranked,
+                self._relaxed_backfill(state, requested_k),
+                requested_k,
+                valid_asins=valid_asins,
             )
+        recommendations = [{"parent_asin": asin} for asin in ranked]
+
+        affinity = self._profile_affinity.get(session_id)
+        # No turn cutoff is needed here any more: a question asked on the final
+        # turn has zero horizon in the Section 12b utility, so the policy
+        # abstains on its own arithmetic rather than on a literal.
+        ask_attribute = self.clarification.choose(
+            candidates,
+            state.constraints,
+            state.asked_attributes,
+            mode=state.mode or "BROWSING",
+            profile_factor=affinity.factor if affinity is not None else None,
+            turn=state.turn,
+        )
         self.sessions.mark_asked(session_id, ask_attribute)
         self.sessions.set_recommendations(
             session_id,
@@ -193,6 +218,24 @@ class Agent:
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         }
+
+    def _relaxed_backfill(self, state: Any, limit: int) -> list[str]:
+        """Candidates for padding a short list, weakest evidence relaxed first.
+
+        Section 10.2 ordering: drop the budget filter and the previously-shown
+        exclusions before returning fewer than the requested top_k.
+        """
+        try:
+            relaxed = self.retriever.retrieve(
+                state.mode or "BROWSING",
+                state.query_text,
+                state.constraints,
+                limit=max(int(limit) * 4, 50),
+                apply_budget=False,
+            )
+        except Exception:
+            return []
+        return [candidate.parent_asin for candidate in relaxed]
 
 
 __all__ = ["Agent"]

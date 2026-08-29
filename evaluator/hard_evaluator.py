@@ -5,6 +5,7 @@ import json
 import math
 import random
 import statistics
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -16,6 +17,9 @@ from starter.retrieval import MODE_SCORE_WEIGHTS, STRUCTURED_FIELD_WEIGHTS
 
 MAX_TURNS = 10
 TOP_K = 10
+
+# How often the no-tqdm fallback reports, in sessions.
+PROGRESS_INTERVAL = 20
 
 SCENARIO_COUNTS = {
     "buying": 160,
@@ -420,28 +424,62 @@ def add_score_fields(summary: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _print_evaluation_progress(
-    completed_results: list[dict[str, Any]],
-    total_sessions: int,
-    current_result: Mapping[str, Any],
-) -> None:
-    """Print one flushed cumulative score line after each completed session."""
+class _Progress:
+    """Session counter for long runs.
 
-    metrics = add_score_fields(metric_summary(completed_results))
-    first_hit = current_result.get("first_hit_turn")
-    print(
-        f"[hard_evaluator] completed={len(completed_results)}/{total_sessions} "
-        f"sample={current_result.get('sample_id', '')} "
-        f"scenario={current_result.get('scenario_type', '')} "
-        f"hit={'YES' if current_result.get('hit') else 'NO'} "
-        f"first_hit_turn={first_hit if first_hit is not None else '-'} "
-        f"cumulative_hit_rate_at_10={float(metrics['hit_rate_at_10']):.6f} "
-        f"cumulative_mrr={float(metrics['mrr']):.6f} "
-        f"cumulative_mttc={float(metrics['mttc']):.6f} "
-        f"cumulative_efficiency={float(metrics['efficiency']):.6f} "
-        f"cumulative_technical_score={float(metrics['technical_score']):.6f}",
-        flush=True,
-    )
+    Writes to stderr only, so the result JSON on stdout stays machine-readable
+    and can still be piped. ``tqdm`` is optional: a missing dependency degrades
+    to periodic lines rather than failing an evaluation that was going to take
+    minutes anyway.
+    """
+
+    def __init__(self, total: int, enabled: bool = False) -> None:
+        self.total = int(total)
+        self.enabled = bool(enabled)
+        self.done = 0
+        self.hits = 0
+        self.bar: Any | None = None
+        if not self.enabled:
+            return
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print(
+                f"[hard_evaluator] tqdm not installed; reporting every "
+                f"{PROGRESS_INTERVAL} sessions",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            self.bar = tqdm(
+                total=self.total,
+                desc="sessions",
+                unit="session",
+                file=sys.stderr,
+                dynamic_ncols=True,
+            )
+
+    def advance(self, hit: bool) -> None:
+        if not self.enabled:
+            return
+        self.done += 1
+        self.hits += bool(hit)
+        rate = self.hits / self.done
+        if self.bar is not None:
+            self.bar.set_postfix_str(f"hit@10={rate:.3f}", refresh=False)
+            self.bar.update(1)
+        elif self.done % PROGRESS_INTERVAL == 0 or self.done == self.total:
+            print(
+                f"[hard_evaluator] {self.done}/{self.total} sessions  "
+                f"hit@10={rate:.3f}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def close(self) -> None:
+        if self.bar is not None:
+            self.bar.close()
+            self.bar = None
 
 
 class Manual400SessionRunner:
@@ -658,8 +696,8 @@ def evaluate(
     before_turn_callback: Any | None = None,
     after_turn_callback: Any | None = None,
     session_callback: Any | None = None,
-    progress_callback: Any | None = None,
     validate: bool = True,
+    progress: bool = False,
 ) -> dict[str, Any]:
     rows = (
         validate_sessions(sessions, catalog_ids)
@@ -670,6 +708,7 @@ def evaluate(
     results: list[dict[str, Any]] = []
     prompt_tokens = 0
     completion_tokens = 0
+    reporter = _Progress(len(rows), progress)
 
     for session in rows:
         runner = Manual400SessionRunner(
@@ -687,12 +726,7 @@ def evaluate(
         prompt_tokens += runner.prompt_tokens
         completion_tokens += runner.completion_tokens
 
-        if progress_callback is not None:
-            progress_callback(
-                completed_results=results,
-                total_sessions=len(rows),
-                current_result=result,
-            )
+        reporter.advance(result["hit"])
 
         if session_callback is not None:
             session_callback(
@@ -700,6 +734,8 @@ def evaluate(
                 result=result,
                 completed_results=results,
             )
+
+    reporter.close()
 
     overall = add_score_fields(metric_summary(results))
 
@@ -1303,6 +1339,17 @@ def main() -> None:
         help="Where to write detailed results.",
     )
     parser.add_argument(
+        "--disable-user-profile",
+        action="store_true",
+        help="Ignore user_profile preference_tags when choosing the follow-up "
+             "attribute to ask.",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Suppress the per-session progress bar on stderr.",
+    )
+    parser.add_argument(
         "--non-strict",
         action="store_true",
         help="Treat malformed Agent responses as empty instead of failing.",
@@ -1333,7 +1380,10 @@ def main() -> None:
         parser.error("--debug-sessions must be positive")
 
     try:
-        agent = build_evaluator_agent(args.catalog)
+        agent = build_evaluator_agent(
+            args.catalog,
+            disable_user_profile=args.disable_user_profile,
+        )
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     if args.debug:
@@ -1355,7 +1405,7 @@ def main() -> None:
         sessions=sessions,
         catalog_ids=catalog_ids,
         strict=not args.non_strict,
-        progress_callback=_print_evaluation_progress,
+        progress=not args.no_progress,
     )
 
     Path(args.output).write_text(

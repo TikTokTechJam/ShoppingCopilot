@@ -174,6 +174,11 @@ class DebugWebTests(unittest.TestCase):
         ):
             controller = DebugWebController(agent, self.sessions, {"OTHER"}, seed=7)
             state = controller.new_random()
+            # Which session the seeded pool draws first is an implementation
+            # detail of random.shuffle, not a contract; test_seeded_pool_is
+            # _reproducible already covers determinism. Assert against the
+            # session actually drawn.
+            selected = state["session"]["session_id"]
             self.assertEqual(state["turn"], 0)
             controller.next_turn()
             self.assertEqual(controller.turn_records[-1]["turn"], 1)
@@ -183,9 +188,9 @@ class DebugWebTests(unittest.TestCase):
             self.assertTrue(end["done"])
             self.assertEqual(len(controller.turn_records), 10)
             self.assertTrue(end["benchmark"]["complete"])
-            self.assertEqual(end["benchmark"]["result"]["sample_id"], "manual400_0001")
+            self.assertEqual(end["benchmark"]["result"]["sample_id"], selected)
             self.assertEqual(end["benchmark"]["metrics"]["sample_count"], 1)
-            controller.load("manual400_0001")
+            controller.load(selected)
             self.assertEqual(len(agent.reset_calls), 2)
             self.assertEqual(controller.state_payload()["turn"], 0)
 

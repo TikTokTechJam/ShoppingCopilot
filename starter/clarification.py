@@ -1,10 +1,28 @@
-"""Deterministic one-step clarification policy for shared retrieval pools."""
+"""Deterministic one-step clarification policy for shared retrieval pools.
+
+Section 12 scores a question by how well an answer would split the candidate
+pool.  Section 12b defines the only objective the Agent may optimize,
+``starter.followup.utility``.  This module combines them into a single number,
+so one utility decides every question:
+
+    ExpectedGain(a, t) = Split(a) * P(answer | a, mode, profile) * Horizon(t)
+
+``Split`` is the original pool term and is unchanged.  ``P(answer)`` is the
+population prior for the shopping mode, updated by the shopper's own profile.
+``Horizon`` is the score still reachable if that answer converts the session on
+the next turn.  The product is in ``TechnicalScore`` units, which turns the
+abstain floor from a magic constant into a bet size and makes the old
+``turn < 10`` guard fall out of the arithmetic.
+"""
 
 from __future__ import annotations
 
+import math
 from collections import Counter
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
+from starter.followup import MAX_TURNS
+from starter.followup import utility as session_utility
 from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
 
 
@@ -58,6 +76,79 @@ MODE_PRIORS = {
 }
 
 
+# MODE_PRIORS are relative weights on [0.60, 1.00], not calibrated
+# probabilities.  Reading the top weight as p = 1.0 would make it infinite odds
+# and therefore immune to any finite profile evidence -- the top-priority
+# attribute could never be displaced, which is precisely the inertness the
+# profile is meant to cure.  The ceiling keeps headroom for evidence.  It
+# scales every attribute equally, so it cannot change an argmax on its own; the
+# floors below absorb it, leaving profile-free decisions untouched.
+PRIOR_CEILING = 0.90
+
+# The historical floor, applied to the pool term alone.
+ASK_SPLIT_FLOOR = 0.035
+
+# The same bet after the priors are read as probabilities.  Used when no turn
+# is supplied, so those callers keep the exact behaviour they had.
+_LEGACY_FLOOR = ASK_SPLIT_FLOOR * PRIOR_CEILING
+
+# And again in score units: the value of a question that clears the historical
+# bar and converts on turn 2.  A question worth less expected score than this
+# is not worth consuming the attribute slot for.
+ASK_UTILITY_FLOOR = _LEGACY_FLOOR * session_utility(2, 1)
+
+
+def _horizon(turn: int | None) -> float:
+    """Score still reachable if the answer converts the session next turn.
+
+    ``None`` keeps the historical unit-free scale for callers that do not track
+    the turn.  On the final turn nothing can act on an answer, so the horizon
+    -- and with it every question's value -- is exactly zero.  The ``turn < 10``
+    guard that used to live in ``Agent.respond`` is this line.
+    """
+    if turn is None:
+        return 1.0
+    try:
+        current = int(turn)
+    except (TypeError, ValueError):
+        return 1.0
+    if current >= MAX_TURNS:
+        return 0.0
+    return session_utility(max(current, 1) + 1, 1)
+
+
+def _answer_probability(
+    attribute: str,
+    mode: str,
+    profile_factor: Callable[[str], float] | None,
+) -> float:
+    """Probability the shopper answers this question with a usable value.
+
+    ``MODE_PRIORS`` is the population prior for the mode.  The profile factor is
+    evidence about *this* shopper, so it enters as a likelihood ratio on the
+    odds rather than as a multiplier on the probability: a ratio can never push
+    the result outside [0, 1], it never truncates a strong signal on an already
+    likely attribute, and it has the most leverage where the prior is least
+    certain.  A factor of exactly zero is the single veto, and
+    ``ProfileAffinity`` reserves it for direct evidence -- the shopper has
+    already declined this attribute.
+    """
+    weight = MODE_PRIORS.get(mode, MODE_PRIORS["BROWSING"]).get(attribute, 0.70)
+    prior = PRIOR_CEILING * weight
+    if profile_factor is None:
+        return prior
+    try:
+        ratio = float(profile_factor(attribute))
+    except (TypeError, ValueError):
+        return prior
+    if not math.isfinite(ratio) or ratio < 0.0:
+        return prior
+    if ratio == 0.0:
+        return 0.0
+    bounded = min(max(prior, 1e-6), 1.0 - 1e-6)
+    odds = bounded / (1.0 - bounded) * ratio
+    return odds / (1.0 + odds)
+
 def _candidate_values(candidate: object, attribute: str) -> tuple[str, ...]:
     attributes = getattr(candidate, "attributes", {})
     if not isinstance(attributes, Mapping):
@@ -89,7 +180,10 @@ def _utility(
     attribute: str,
     candidates: tuple[object, ...],
     mode: str,
+    profile_factor: Callable[[str], float] | None = None,
+    turn: int | None = None,
 ) -> float:
+    """Expected score gain from asking about ``attribute`` on ``turn``."""
     if len(candidates) < 2:
         return float("-inf")
 
@@ -114,12 +208,17 @@ def _utility(
     if gini < 0.10:
         return float("-inf")
 
-    prior = MODE_PRIORS.get(mode, MODE_PRIORS["BROWSING"]).get(attribute, 0.70)
     # Coverage rewards known facts; Gini rewards a useful split and suppresses
     # nearly constant attributes.  The small diversity term makes two equally
-    # balanced fields prefer the one with more meaningful alternatives.
+    # balanced fields prefer the one with more meaningful alternatives.  This
+    # is the Section 12 term: how much an answer would narrow the pool.
     diversity = min(1.0, (len(counts) - 1) / 3.0)
-    return coverage * gini * (0.75 + 0.25 * diversity) * prior
+    split = coverage * gini * (0.75 + 0.25 * diversity)
+
+    # The pool cannot say whether the shopper will answer, and it cannot say
+    # what an answer is still worth this late in the session.  Those are the
+    # other two factors, and the product is the expected score gain.
+    return split * _answer_probability(attribute, mode, profile_factor) * _horizon(turn)
 
 
 class ClarificationPolicy:
@@ -132,6 +231,8 @@ class ClarificationPolicy:
         asked_attributes: Iterable[str] = (),
         *,
         mode: str = "BROWSING",
+        profile_factor: Callable[[str], float] | None = None,
+        turn: int | None = None,
     ) -> str | None:
         pool = tuple(candidates)
         asked = set(asked_attributes)
@@ -144,17 +245,31 @@ class ClarificationPolicy:
             return None
 
         scored = [
-            (self._score(attribute, pool, mode), -SUPPORTED_ATTRIBUTES.index(attribute), attribute)
+            (
+                self._score(attribute, pool, mode, profile_factor, turn),
+                -SUPPORTED_ATTRIBUTES.index(attribute),
+                attribute,
+            )
             for attribute in available
         ]
+        # A turn-aware score is in TechnicalScore units and is measured against
+        # the same bet re-expressed in those units; a turn-free score keeps the
+        # historical pool-only scale and floor.
+        floor = ASK_UTILITY_FLOOR if turn is not None else _LEGACY_FLOOR
         score, _tie, attribute = max(scored)
-        if score == float("-inf") or score < 0.035:
+        if score == float("-inf") or score < floor:
             return None
         return attribute
 
     @staticmethod
-    def _score(attribute: str, candidates: tuple[object, ...], mode: str) -> float:
-        return _utility(attribute, candidates, mode)
+    def _score(
+        attribute: str,
+        candidates: tuple[object, ...],
+        mode: str,
+        profile_factor: Callable[[str], float] | None = None,
+        turn: int | None = None,
+    ) -> float:
+        return _utility(attribute, candidates, mode, profile_factor, turn)
 
     @staticmethod
     def question(attribute: str | None) -> str:
@@ -169,15 +284,25 @@ def choose_attribute(
     asked_attributes: Iterable[str] = (),
     *,
     mode: str = "BROWSING",
+    profile_factor: Callable[[str], float] | None = None,
+    turn: int | None = None,
 ) -> str | None:
     """Functional convenience wrapper for the default deterministic policy."""
 
     return ClarificationPolicy().choose(
-        candidates, constraints, asked_attributes, mode=mode
+        candidates,
+        constraints,
+        asked_attributes,
+        mode=mode,
+        profile_factor=profile_factor,
+        turn=turn,
     )
 
 
 __all__ = [
+    "ASK_SPLIT_FLOOR",
+    "ASK_UTILITY_FLOOR",
+    "PRIOR_CEILING",
     "ATTRIBUTE_QUESTIONS",
     "ClarificationPolicy",
     "SUPPORTED_ATTRIBUTES",
