@@ -19,7 +19,7 @@ from dictionary.registry import (
 
 
 SCHEMA_VERSION = "canonical-attribute-dictionary/v2"
-DEFAULT_INPUT = "data/derived/annotations/v4/annotations.jsonl"
+DEFAULT_INPUT = "data/derived/annotations/v5/annotations.jsonl"
 
 
 @dataclass(frozen=True)

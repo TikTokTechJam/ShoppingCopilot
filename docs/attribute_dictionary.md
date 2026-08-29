@@ -97,7 +97,7 @@ Use the actual V4 annotation output directly:
 
 ```powershell
 python -m scripts.build_attribute_dictionary `
-  --input data/derived/annotations/v4/annotations.jsonl `
+  --input data/derived/annotations/v5/annotations.jsonl `
   --output-dir data/derived/dictionary `
   --no-embeddings
 
@@ -105,10 +105,10 @@ python -m scripts.validate_attribute_dictionary `
   --directory data/derived/dictionary
 ```
 
-The build command defaults to `data/derived/annotations/v4/annotations.jsonl`,
+The build command defaults to `data/derived/annotations/v5/annotations.jsonl`,
 the current V4 annotation output in this repository. Use `--input` to point it at another V4
 annotation JSONL location, such as a generated release under
-`data/derived/annotations/v4/annotations.jsonl`. The optional embedding command
+`data/derived/annotations/v5/annotations.jsonl`. The optional embedding command
 requires the dependencies in `requirements-embeddings.txt`; it is intentionally
 not run as part of normal repository checks.
 

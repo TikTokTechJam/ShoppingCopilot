@@ -14,7 +14,7 @@ from starter.routing.constraints import ShoppingConstraints, extract_constraints
 from starter.routing.intent_router import TwoPhaseIntentRouter
 
 
-DEFAULT_ANNOTATIONS = Path("data/derived/annotations/v4/annotations.jsonl")
+DEFAULT_ANNOTATIONS = Path("data/derived/annotations/v5/annotations.jsonl")
 
 
 @dataclass(frozen=True)

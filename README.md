@@ -55,7 +55,7 @@ Issue #5 provides a reusable product-facts layer without modifying the frozen `d
 ```text
 catalog.jsonl
     -> scripts.annotate_catalog
-    -> data/derived/annotations/v4/annotations.jsonl + failures.jsonl + manifest.json
+    -> data/derived/annotations/v5/annotations.jsonl + failures.jsonl + manifest.json
     -> scripts.build_catalog_facts
     -> data/derived/catalog_facts/catalog_facts.jsonl
 ```
@@ -88,13 +88,13 @@ Progress is printed immediately to stderr, including the selected product, reque
 After that succeeds, run a small batch and review the generated facts before considering larger work:
 
 ```powershell
-python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v4 --limit 10 --timeout 180 --max-tokens 2048 --concurrency 1 --retries 2 --log-every 1
+python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v5 --limit 10 --timeout 180 --max-tokens 2048 --concurrency 1 --retries 2 --log-every 1
 ```
 
 For future larger runs, increase concurrency gradually (1, then 4, 8, and 16) only after checking precision, latency, and failure rates. Do not start a full 50,000-product run until those measurements are understood. After an annotation run completes, build and validate the deterministic facts output:
 
 ```powershell
-python -m scripts.build_catalog_facts --annotations data/derived/annotations/v4/annotations.jsonl
+python -m scripts.build_catalog_facts --annotations data/derived/annotations/v5/annotations.jsonl
 python -m scripts.validate_catalog_facts
 ```
 

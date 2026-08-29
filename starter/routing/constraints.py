@@ -349,7 +349,7 @@ _SHOPPING_FOR_CONTEXT_BLOCKERS = frozenset(
 # Keep this catalog-derived set limited to obvious single-word brand/query
 # collisions. Multi-word brands and all non-brand attributes are unaffected.
 COMMON_BRAND_COLLISION_TERMS = frozenset(
-    {"find", "it", "machine", "wash", "make", "on"}
+    {"find", "it", "make", "on"}
 )
 
 
