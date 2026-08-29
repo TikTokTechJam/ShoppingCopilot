@@ -271,6 +271,7 @@ from dictionary.registry import ATTRIBUTE_FIELDS as _DICTIONARY_ATTRIBUTES
 from dictionary.registry import CanonicalValue as _CanonicalValue
 from dictionary.registry import LookupMatch as _LookupMatch
 from dictionary.registry import normalize_text as _normalize_dictionary_text
+from dictionary.semantic import load_bge_attribute_encoder as _load_bge_attribute_encoder
 
 
 @_dataclass(frozen=True)
@@ -371,7 +372,15 @@ def _load_default_dictionary() -> _AttributeDictionary | None:
         return None
     if not (directory / "normalized_lookup.json").exists():
         return None
-    return _AttributeDictionary.load(directory)
+    dictionary = _AttributeDictionary.load(directory)
+    if dictionary.has_semantic_embeddings:
+        try:
+            dictionary.set_query_encoder(_load_bge_attribute_encoder())
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+            # Exact matching remains usable when the optional local BGE model
+            # is not installed or does not match the generated artifact.
+            pass
+    return dictionary
 
 
 def _dictionary_pattern_surface(value: str) -> str:
@@ -790,9 +799,12 @@ def extract_constraints(
             "generated attribute dictionary is required at "
             "data/derived/dictionary"
         )
+    active_semantic_matcher = semantic_matcher
+    if active_semantic_matcher is None and active_dictionary.semantic_available:
+        active_semantic_matcher = active_dictionary.semantic_match
     return _extract_dictionary_constraints(
         text,
         active_dictionary,
-        semantic_matcher=semantic_matcher,
+        semantic_matcher=active_semantic_matcher,
         semantic_threshold=semantic_threshold,
     )
