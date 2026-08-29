@@ -73,10 +73,10 @@ path does not add stemming, synonym aliases, or plural conversion.
 Optional semantic attribute matching uses a separate local-only
 `BAAI/bge-small-en-v1.5` encoder for short canonical phrases. It generates
 384-dimensional L2-normalized vectors for the six descriptive attributes
-(`brand`, `color`, `material`, `style`, `feature`, and `use_case`). Phrases are
+(`category`, `color`, `material`, `style`, `feature`, and `use_case`). Phrases are
 encoded directly without a retrieval instruction or prefix. This BGE artifact
-is separate from the Jina product Layer 2 artifact; Jina remains the model for
-full-product category/title/features/description retrieval.
+is the active semantic layer. Brand remains exact-only; whole-product vector
+retrieval is retired from the Agent path.
 
 ## Artifacts
 
@@ -141,9 +141,8 @@ python -m scripts.validate_attribute_dictionary `
 The setup command is the only command that may download from Hugging Face.
 Dictionary building and runtime loading are local-only. To use a different
 local snapshot location, set `SHOPPING_ATTRIBUTE_EMBEDDING_MODEL`; it must
-identify `BAAI/bge-small-en-v1.5`. The product Layer 2 Jina artifact and its
-`SHOPPING_EMBEDDING_MODEL` configuration are independent and are not rebuilt
-by this flow.
+identify `BAAI/bge-small-en-v1.5`. No product-level embedding artifact or
+product retrieval model is loaded by this flow.
 
 The same builder also accepts the catalog-ordered V5 aggregate. V5 records
 provide nested facts without the V4 annotation wrapper; the omitted style field
@@ -156,6 +155,35 @@ Build an exact-only dictionary from V5 with:
 ~~~powershell
 python -m scripts.build_attribute_dictionary --input data/derived/annotations/v5/annotations.jsonl --input-format v5 --output-dir data/derived/annotations/v5/dictionary --no-embeddings
 ~~~
+
+The V5 dictionary can then be embedded as separate attribute-scoped matrices.
+Each matrix contains one L2-normalized vector per canonical value, in
+deterministic canonical-ID order. The current canonical semantic model is
+BAAI/bge-small-en-v1.5, with no retrieval prefix for these short values. The
+builder is local-only and logs progress for every batch, attribute, and the
+final completion.
+
+~~~powershell
+python -m scripts.build_v5_attribute_embeddings --dictionary-dir data/derived/annotations/v5/dictionary --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings --model models/bge-small-en-v1.5 --batch-size 32
+~~~
+
+The output contains category_embeddings.npy, color_embeddings.npy,
+material_embeddings.npy, style_embeddings.npy, feature_embeddings.npy,
+use_case_embeddings.npy, metadata.json, and manifest.json. Brand is
+intentionally excluded from semantic embeddings: it remains available in the
+exact dictionary and Layer 1, but the embedding builder rejects `brand` and
+does not retain a stale `brand_embeddings.npy`. V5 currently has no style
+values, so its matrix is an empty zero-row matrix with the same declared
+embedding dimension.
+
+At runtime, Layer 1 keeps the existing exact dictionary matching flow. Layer 2
+takes the remaining user text, removes the configured stopwords, and searches
+every available semantic attribute matrix with deterministic 1-gram, 2-gram,
+and 3-gram phrases. Only matches with cosine similarity at least `0.80` are
+added to the session constraint state. Their Layer 2 evidence preserves the
+matched phrase and similarity, and the existing product scorer uses that
+similarity when calculating structured points before final ranking. Brand is
+not searched semantically; it remains exact-only.
 
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed

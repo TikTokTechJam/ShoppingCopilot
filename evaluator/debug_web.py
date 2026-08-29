@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
+from dictionary.registry import SEMANTIC_ATTRIBUTES
 from evaluator.agent_factory import build_evaluator_agent
 from evaluator.hard_evaluator import (
     DEBUG_FACT_FIELDS,
@@ -31,6 +32,7 @@ from evaluator.hard_evaluator import (
     TOP_K,
 )
 from starter.retrieval import MODE_SCORE_WEIGHTS
+from starter.routing import constraints as constraint_module
 
 
 DEFAULT_CATALOG = "data/catalog.jsonl"
@@ -104,30 +106,29 @@ def _product_payload(agent: Any, asin: str) -> dict[str, Any]:
 
 
 def _layer2_status(agent: Any) -> dict[str, Any]:
-    retriever = agent.retriever
-    available = bool(getattr(retriever, "dense_available", False))
-    index = getattr(retriever, "layer2_index", None)
-    encoder = getattr(retriever, "query_encoder", None)
-    manifest = getattr(index, "manifest", {}) if index is not None else {}
+    del agent
+    loader = getattr(constraint_module, "_load_default_dictionary", None)
+    dictionary = loader() if callable(loader) else None
+    available = bool(
+        dictionary is not None
+        and getattr(dictionary, "semantic_available", False)
+    )
     if available:
+        encoder = getattr(dictionary, "_query_encoder", None)
         return {
             "available": True,
-            "artifact_model": manifest.get("embedding_model", manifest.get("model")),
+            "model": getattr(dictionary, "embedding_model", None),
             "query_model": getattr(encoder, "model_id", None),
-            "dimension": getattr(index, "dimension", None),
+            "dimension": getattr(dictionary, "embedding_dimension", None),
+            "attributes": list(SEMANTIC_ATTRIBUTES),
+            "brand": "exact-only",
         }
-    reason = getattr(retriever, "layer2_compatibility_error", None)
-    if not reason:
-        if index is None:
-            reason = "No compatible Layer 2 artifact was loaded."
-        else:
-            reason = "Layer 2 query encoder is not configured."
     return {
         "available": False,
-        "reason": reason,
+        "reason": "The local BGE canonical-attribute dictionary is unavailable.",
         "setup_hint": (
-            "Install the local Jina model under model/jina-embeddings-v5-text-nano "
-            "or set SHOPPING_EMBEDDING_MODEL to its local path."
+            "Install the local BGE model under models/bge-small-en-v1.5 or set "
+            "SHOPPING_ATTRIBUTE_EMBEDDING_MODEL to its local path."
         ),
     }
 
@@ -549,23 +550,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--catalog", default=DEFAULT_CATALOG)
     parser.add_argument("--sessions", default=DEFAULT_SESSIONS)
-    parser.add_argument("--layer2-artifact-dir")
-    parser.add_argument("--embedding-model")
-    parser.add_argument("--device")
-    parser.add_argument("--half-precision", action="store_true")
     return parser
 
 
 def create_application(args: argparse.Namespace) -> DebugWebController:
     sessions = load_jsonl(args.sessions)
     catalog_ids = load_catalog_ids(args.catalog)
-    agent = build_evaluator_agent(
-        args.catalog,
-        layer2_artifact_dir=args.layer2_artifact_dir,
-        embedding_model=args.embedding_model,
-        half_precision=args.half_precision,
-        device=args.device,
-    )
+    agent = build_evaluator_agent(args.catalog)
     return DebugWebController(agent, sessions, catalog_ids, seed=args.seed)
 
 
@@ -576,9 +567,9 @@ def main() -> None:
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise SystemExit(
             f"Unable to start debug UI: {exc}\n"
-            "Install the embedding dependencies and place the local Jina model "
-            "under model/jina-embeddings-v5-text-nano, or pass "
-            "--embedding-model PATH."
+            "Install the embedding dependencies and place the local BGE model "
+            "under models/bge-small-en-v1.5, or set "
+            "SHOPPING_ATTRIBUTE_EMBEDDING_MODEL."
         ) from exc
 
     handler = type("ShoppingCopilotDebugHandler", (DebugRequestHandler,), {})

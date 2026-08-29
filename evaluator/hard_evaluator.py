@@ -420,6 +420,30 @@ def add_score_fields(summary: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _print_evaluation_progress(
+    completed_results: list[dict[str, Any]],
+    total_sessions: int,
+    current_result: Mapping[str, Any],
+) -> None:
+    """Print one flushed cumulative score line after each completed session."""
+
+    metrics = add_score_fields(metric_summary(completed_results))
+    first_hit = current_result.get("first_hit_turn")
+    print(
+        f"[hard_evaluator] completed={len(completed_results)}/{total_sessions} "
+        f"sample={current_result.get('sample_id', '')} "
+        f"scenario={current_result.get('scenario_type', '')} "
+        f"hit={'YES' if current_result.get('hit') else 'NO'} "
+        f"first_hit_turn={first_hit if first_hit is not None else '-'} "
+        f"cumulative_hit_rate_at_10={float(metrics['hit_rate_at_10']):.6f} "
+        f"cumulative_mrr={float(metrics['mrr']):.6f} "
+        f"cumulative_mttc={float(metrics['mttc']):.6f} "
+        f"cumulative_efficiency={float(metrics['efficiency']):.6f} "
+        f"cumulative_technical_score={float(metrics['technical_score']):.6f}",
+        flush=True,
+    )
+
+
 class Manual400SessionRunner:
     """Run one fixed benchmark session one evaluator turn at a time.
 
@@ -634,6 +658,7 @@ def evaluate(
     before_turn_callback: Any | None = None,
     after_turn_callback: Any | None = None,
     session_callback: Any | None = None,
+    progress_callback: Any | None = None,
     validate: bool = True,
 ) -> dict[str, Any]:
     rows = (
@@ -661,6 +686,13 @@ def evaluate(
         results.append(result)
         prompt_tokens += runner.prompt_tokens
         completion_tokens += runner.completion_tokens
+
+        if progress_callback is not None:
+            progress_callback(
+                completed_results=results,
+                total_sessions=len(rows),
+                current_result=result,
+            )
 
         if session_callback is not None:
             session_callback(
@@ -1224,34 +1256,6 @@ def main() -> None:
         help="Where to write detailed results.",
     )
     parser.add_argument(
-        "--layer2-artifact-dir",
-        help="Enable Layer 2 with artifacts from this directory.",
-    )
-    embedding_group = parser.add_mutually_exclusive_group()
-    embedding_group.add_argument(
-        "--embedding-model",
-        help="Local or cached SentenceTransformer path for Layer 2 queries.",
-    )
-    embedding_group.add_argument(
-        "--hash-dimension",
-        type=int,
-        help="Use the deterministic hash query encoder at this dimension.",
-    )
-    parser.add_argument(
-        "--disable-layer2",
-        action="store_true",
-        help="Explicitly run the Layer 1-only baseline.",
-    )
-    parser.add_argument(
-        "--half-precision",
-        action="store_true",
-        help="Load a SentenceTransformer Layer 2 query model in float16.",
-    )
-    parser.add_argument(
-        "--device",
-        help="SentenceTransformer device for Layer 2 queries, for example cpu or mps.",
-    )
-    parser.add_argument(
         "--non-strict",
         action="store_true",
         help="Treat malformed Agent responses as empty instead of failing.",
@@ -1282,15 +1286,7 @@ def main() -> None:
         parser.error("--debug-sessions must be positive")
 
     try:
-        agent = build_evaluator_agent(
-            args.catalog,
-            layer2_artifact_dir=args.layer2_artifact_dir,
-            embedding_model=args.embedding_model,
-            hash_dimension=args.hash_dimension,
-            disable_layer2=args.disable_layer2,
-            half_precision=args.half_precision,
-            device=args.device,
-        )
+        agent = build_evaluator_agent(args.catalog)
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     if args.debug:
@@ -1312,6 +1308,7 @@ def main() -> None:
         sessions=sessions,
         catalog_ids=catalog_ids,
         strict=not args.non_strict,
+        progress_callback=_print_evaluation_progress,
     )
 
     Path(args.output).write_text(

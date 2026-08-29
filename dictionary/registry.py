@@ -7,13 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .semantic import (
-    ATTRIBUTE_EMBEDDING_DIMENSION,
-    ATTRIBUTE_EMBEDDING_NORMALIZATION,
-    ATTRIBUTE_EMBEDDING_MODEL,
-    embedding_models_compatible,
-    is_bge_small_en_v1_5,
-)
+from .semantic import embedding_models_compatible
 
 
 ATTRIBUTE_FIELDS = (
@@ -26,11 +20,11 @@ ATTRIBUTE_FIELDS = (
     "use_case",
 )
 
-# Semantic lookup is optional and deliberately excludes category, which is a
-# Tier-1 exact/structured field. Size and price are runtime structured fields,
-# not dictionary attributes.
+# Semantic lookup uses the generated per-attribute matrices. Brand deliberately
+# remains exact-only; size and price are runtime structured fields, not
+# dictionary attributes.
 SEMANTIC_ATTRIBUTES = (
-    "brand",
+    "category",
     "color",
     "material",
     "style",
@@ -39,7 +33,7 @@ SEMANTIC_ATTRIBUTES = (
 )
 
 NORMALIZATION_VERSION = "nfkc-casefold-apostrophe-removal-v2"
-DEFAULT_MIN_SIMILARITY = 0.70
+DEFAULT_MIN_SIMILARITY = 0.80
 
 
 def normalize_text(value: str) -> str:
@@ -140,8 +134,9 @@ class AttributeDictionary:
     """In-memory registry with exact and optional semantic lookup.
 
     The JSON registry and normalized lookup are usable without NumPy. Semantic
-    lookup is enabled only when the optional ``attribute_embeddings.npy`` and
-    its metadata are present.
+    lookup uses the optional per-attribute matrices under
+    ``attribute_embeddings``; the older combined matrix remains readable for
+    compatibility.
     """
 
     def __init__(
@@ -153,6 +148,9 @@ class AttributeDictionary:
         embedding_model: str | None = None,
         embedding_dimension: int | None = None,
         embedding_normalization: str | None = None,
+        attribute_embeddings: Mapping[
+            str, tuple[Iterable[Mapping[str, Any]], Any]
+        ] | None = None,
     ) -> None:
         self._values = {value.canonical_id: value for value in values}
         phrase_index: dict[str, list[tuple[tuple[str, ...], str]]] = {}
@@ -176,6 +174,13 @@ class AttributeDictionary:
         self._embedding_model = embedding_model
         self._embedding_dimension = embedding_dimension
         self._embedding_normalization = embedding_normalization
+        self._attribute_embeddings = {
+            str(attribute): (
+                tuple(dict(row) for row in rows),
+                matrix,
+            )
+            for attribute, (rows, matrix) in (attribute_embeddings or {}).items()
+        }
         self._rows_by_attribute: dict[str, tuple[int, ...]] = {}
         for row in self._embedding_rows:
             attribute = str(row["attribute"])
@@ -195,12 +200,6 @@ class AttributeDictionary:
             normalized_lookup.get("attributes"), Mapping
         ):
             normalized_lookup = normalized_lookup["attributes"]
-
-        metadata_path = root / "embedding_metadata.json"
-        rows: list[Mapping[str, Any]] = []
-        if metadata_path.exists():
-            with metadata_path.open(encoding="utf-8") as handle:
-                rows = _metadata_rows(json.load(handle))
 
         embedding_model = None
         embedding_dimension = None
@@ -229,8 +228,14 @@ class AttributeDictionary:
             if isinstance(raw_normalization, str) and raw_normalization.strip():
                 embedding_normalization = raw_normalization.strip()
 
-        embeddings = None
         embeddings_path = root / "attribute_embeddings.npy"
+        metadata_path = root / "embedding_metadata.json"
+        legacy_rows: list[Mapping[str, Any]] = []
+        if metadata_path.exists() and embeddings_path.exists():
+            with metadata_path.open(encoding="utf-8") as handle:
+                legacy_rows = _metadata_rows(json.load(handle))
+
+        embeddings = None
         if embeddings_path.exists():
             try:
                 import numpy as np
@@ -239,6 +244,63 @@ class AttributeDictionary:
                     "semantic lookup requires NumPy; install requirements-embeddings.txt"
                 ) from exc
             embeddings = np.load(embeddings_path, allow_pickle=False)
+
+        attribute_embeddings: dict[
+            str, tuple[tuple[Mapping[str, Any], ...], Any]
+        ] = {}
+        attribute_root = root / "attribute_embeddings"
+        attribute_metadata_path = attribute_root / "metadata.json"
+        if attribute_metadata_path.exists():
+            try:
+                import numpy as np
+            except ImportError as exc:
+                raise RuntimeError(
+                    "semantic lookup requires NumPy; install requirements-embeddings.txt"
+                ) from exc
+            with attribute_metadata_path.open(encoding="utf-8") as handle:
+                attribute_metadata = json.load(handle)
+            if not isinstance(attribute_metadata, Mapping):
+                raise ValueError("attribute embedding metadata must contain an object")
+            raw_model = attribute_metadata.get(
+                "model", attribute_metadata.get("model_path")
+            )
+            raw_dimension = attribute_metadata.get("dimension")
+            raw_normalization = attribute_metadata.get("normalization")
+            if isinstance(raw_model, str) and raw_model.strip():
+                embedding_model = raw_model.strip()
+            if isinstance(raw_dimension, int) and not isinstance(raw_dimension, bool):
+                embedding_dimension = raw_dimension
+            if isinstance(raw_normalization, str) and raw_normalization.strip():
+                embedding_normalization = raw_normalization.strip()
+
+            attributes = attribute_metadata.get("attributes")
+            if not isinstance(attributes, Mapping):
+                raise ValueError("attribute embedding metadata is missing attributes")
+            for attribute in SEMANTIC_ATTRIBUTES:
+                spec = attributes.get(attribute)
+                if spec is None:
+                    continue
+                if not isinstance(spec, Mapping):
+                    raise ValueError(
+                        f"attribute embedding metadata for {attribute} must be an object"
+                    )
+                attribute_rows = spec.get("rows", [])
+                if not isinstance(attribute_rows, list):
+                    raise ValueError(
+                        f"attribute embedding metadata rows are invalid for {attribute}"
+                    )
+                embedding_file = spec.get(
+                    "embedding_file", f"{attribute}_embeddings.npy"
+                )
+                if not isinstance(embedding_file, str) or not embedding_file:
+                    raise ValueError(
+                        f"attribute embedding file is invalid for {attribute}"
+                    )
+                matrix_path = attribute_root / embedding_file
+                if not matrix_path.is_file():
+                    raise OSError(f"missing attribute embedding matrix: {matrix_path}")
+                matrix = np.load(matrix_path, allow_pickle=False)
+                attribute_embeddings[attribute] = (tuple(attribute_rows), matrix)
 
         values = []
         for record in _as_records(registry):
@@ -254,11 +316,12 @@ class AttributeDictionary:
         return cls(
             values,
             normalized_lookup,
-            rows,
+            legacy_rows,
             embeddings,
             embedding_model=embedding_model,
             embedding_dimension=embedding_dimension,
             embedding_normalization=embedding_normalization,
+            attribute_embeddings=attribute_embeddings,
         )
 
     @property
@@ -283,13 +346,18 @@ class AttributeDictionary:
 
     @property
     def has_semantic_embeddings(self) -> bool:
+        if self._attribute_embeddings:
+            return any(
+                bool(rows) and getattr(matrix, "ndim", None) == 2
+                for rows, matrix in self._attribute_embeddings.values()
+            )
         return self._embeddings is not None and bool(self._embedding_rows)
 
     @property
     def semantic_available(self) -> bool:
+        encoder = getattr(self, "_query_encoder", None)
         return self.has_semantic_embeddings and (
-            callable(getattr(self, "_query_encoder", None))
-            or callable(getattr(getattr(self, "_query_encoder", None), "embed_query", None))
+            callable(encoder) or callable(getattr(encoder, "embed_query", None))
         )
 
     @property
@@ -364,18 +432,13 @@ class AttributeDictionary:
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
         min_margin: float = 0.0,
     ) -> tuple[LookupMatch, ...]:
-        """Find confident semantic matches using the shared matrix.
-
-        The matrix is normalized at build time, so the search is an exact
-        in-memory cosine/inner-product search. A weak best match, or an
-        insufficient best-vs-second margin, yields no result.
-        """
+        """Find confident semantic matches in one or all attribute matrices."""
 
         if allowed_attribute is not None and allowed_attribute not in ATTRIBUTE_FIELDS:
             raise ValueError(f"unknown canonical attribute: {allowed_attribute}")
         if top_k < 1:
             raise ValueError("top_k must be at least one")
-        if self._embeddings is None or not self._embedding_rows:
+        if not self.has_semantic_embeddings:
             return ()
         if not isinstance(min_similarity, (int, float)) or not math.isfinite(min_similarity):
             raise ValueError("min_similarity must be finite")
@@ -389,51 +452,205 @@ class AttributeDictionary:
                 "semantic lookup requires NumPy; install requirements-embeddings.txt"
             ) from exc
 
-        query = np.asarray(self._encode_query(raw_text), dtype=np.float32)
+        query = self._prepare_query(self._encode_query(raw_text), np)
+        matches: list[LookupMatch] = []
+        for attribute, rows, matrix in self._embedding_views(allowed_attribute):
+            matches.extend(
+                self._score_embedding_view(
+                    query,
+                    raw_text,
+                    attribute,
+                    rows,
+                    matrix,
+                    np,
+                    top_k=top_k,
+                    min_similarity=min_similarity,
+                    min_margin=min_margin,
+                )
+            )
+        attribute_order = {
+            attribute: index for index, attribute in enumerate(SEMANTIC_ATTRIBUTES)
+        }
+        matches.sort(
+            key=lambda item: (
+                -item.similarity,
+                attribute_order.get(item.attribute, len(attribute_order)),
+                item.canonical_id,
+            )
+        )
+        return tuple(matches[:top_k])
+
+    def semantic_match_ngrams(
+        self,
+        raw_text: str,
+        *,
+        stopwords: Iterable[str] = (),
+        max_ngram: int = 3,
+        top_k_per_attribute: int = 1,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
+    ) -> tuple[LookupMatch, ...]:
+        """Search stopword-filtered 1/2/3-grams across every semantic view.
+
+        Each phrase is encoded once and scored independently against the
+        category, color, material, style, feature, and use-case matrices.
+        Brand intentionally has no semantic view and remains exact-only.
+        """
+
+        if max_ngram < 1 or max_ngram > 3:
+            raise ValueError("max_ngram must be between one and three")
+        if top_k_per_attribute < 1:
+            raise ValueError("top_k_per_attribute must be at least one")
+        if not self.has_semantic_embeddings:
+            return ()
+
+        stopword_surfaces = {
+            normalize_text(word) for word in stopwords if normalize_text(str(word))
+        }
+        tokens = [
+            token
+            for token in normalize_text(raw_text).split()
+            if token not in stopword_surfaces
+        ]
+        phrases: list[str] = []
+        seen_phrases: set[str] = set()
+        for width in range(1, max_ngram + 1):
+            for start in range(0, len(tokens) - width + 1):
+                phrase = " ".join(tokens[start : start + width])
+                if phrase and phrase not in seen_phrases:
+                    seen_phrases.add(phrase)
+                    phrases.append(phrase)
+
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover - depends on optional deps
+            raise RuntimeError(
+                "semantic lookup requires NumPy; install requirements-embeddings.txt"
+            ) from exc
+
+        matches: list[LookupMatch] = []
+        for phrase in phrases:
+            query = self._prepare_query(self._encode_query(phrase), np)
+            for attribute, rows, matrix in self._embedding_views(None):
+                matches.extend(
+                    self._score_embedding_view(
+                        query,
+                        phrase,
+                        attribute,
+                        rows,
+                        matrix,
+                        np,
+                        top_k=top_k_per_attribute,
+                        min_similarity=min_similarity,
+                        min_margin=0.0,
+                    )
+                )
+
+        best_by_id: dict[str, LookupMatch] = {}
+        for match in matches:
+            previous = best_by_id.get(match.canonical_id)
+            if previous is None or match.similarity > previous.similarity:
+                best_by_id[match.canonical_id] = match
+        attribute_order = {
+            attribute: index for index, attribute in enumerate(SEMANTIC_ATTRIBUTES)
+        }
+        return tuple(
+            sorted(
+                best_by_id.values(),
+                key=lambda item: (
+                    -item.similarity,
+                    attribute_order.get(item.attribute, len(attribute_order)),
+                    item.canonical_id,
+                ),
+            )
+        )
+
+    def _embedding_views(
+        self,
+        allowed_attribute: str | None,
+    ) -> tuple[tuple[str, tuple[Mapping[str, Any], ...], Any], ...]:
+        attributes = (
+            (allowed_attribute,)
+            if allowed_attribute is not None
+            else SEMANTIC_ATTRIBUTES
+        )
+        if self._attribute_embeddings:
+            return tuple(
+                (attribute, *self._attribute_embeddings[attribute])
+                for attribute in attributes
+                if attribute in self._attribute_embeddings
+            )
+        if self._embeddings is None or not self._embedding_rows:
+            return ()
+        views: list[tuple[str, tuple[Mapping[str, Any], ...], Any]] = []
+        for attribute in attributes:
+            positions = tuple(
+                index
+                for index, row in enumerate(self._embedding_rows)
+                if str(row["attribute"]) == attribute
+            )
+            if positions:
+                views.append(
+                    (
+                        attribute,
+                        tuple(self._embedding_rows[index] for index in positions),
+                        self._embeddings[list(positions)],
+                    )
+                )
+        return tuple(views)
+
+    def _prepare_query(self, value: Any, np: Any) -> Any:
+        query = np.asarray(value, dtype=np.float32)
         if query.ndim == 2 and query.shape[0] == 1:
             query = query[0]
-        expected_dimension = self._embedding_dimension
         if query.ndim != 1 or (
-            expected_dimension is not None and query.size != expected_dimension
+            self._embedding_dimension is not None
+            and query.size != self._embedding_dimension
         ):
             raise ValueError(
                 "semantic query embedding dimension does not match the attribute "
-                f"artifact: {tuple(query.shape)} != ({expected_dimension},)"
+                f"artifact: {tuple(query.shape)} != ({self._embedding_dimension},)"
             )
         if not np.isfinite(query).all():
             raise ValueError("semantic query embedding contains non-finite values")
-        norm = float(np.linalg.norm(query))
-        if norm == 0.0:
-            return ()
-        query = query / norm
+        norm = float(np.linalg.norm(query.astype(np.float64)))
+        if not math.isfinite(norm) or norm == 0.0:
+            return None
+        return query / norm
 
-        candidate_rows = [
-            int(row["row"])
-            for row in self._embedding_rows
-            if allowed_attribute is None
-            or str(row["attribute"]) == allowed_attribute
-        ]
-        if not candidate_rows:
+    def _score_embedding_view(
+        self,
+        query: Any,
+        raw_text: str,
+        attribute: str,
+        rows: tuple[Mapping[str, Any], ...],
+        matrix: Any,
+        np: Any,
+        *,
+        top_k: int,
+        min_similarity: float,
+        min_margin: float,
+    ) -> tuple[LookupMatch, ...]:
+        if query is None or not rows:
             return ()
-        scores = np.asarray(self._embeddings[candidate_rows] @ query).reshape(-1)
+        scores = np.asarray(matrix @ query).reshape(-1)
         order = np.argsort(-scores, kind="stable")[:top_k]
+        if len(order) == 0:
+            return ()
         best_score = float(scores[order[0]])
         if best_score < min_similarity:
             return ()
         if len(order) > 1 and best_score - float(scores[order[1]]) < min_margin:
             return ()
-
         matches: list[LookupMatch] = []
         for position in order:
-            row = self._embedding_rows[candidate_rows[int(position)]]
-            value = self._values[str(row["canonical_id"])]
             similarity = float(scores[int(position)])
             if similarity < min_similarity:
                 continue
+            value = self._values[str(rows[int(position)]["canonical_id"])]
             matches.append(
                 LookupMatch(
                     canonical_id=value.canonical_id,
-                    attribute=value.attribute,
+                    attribute=attribute,
                     value=value.value,
                     raw_text=raw_text,
                     normalized_text=normalize_text(raw_text),
@@ -486,7 +703,10 @@ class AttributeDictionary:
         embed_query = getattr(encoder, "embed_query", None)
         if callable(embed_query):
             return embed_query(raw_text)
-        raise RuntimeError("semantic query encoder does not expose embed_query()")
+        embed_documents = getattr(encoder, "embed_documents", None)
+        if callable(embed_documents):
+            return embed_documents([raw_text])
+        raise RuntimeError("semantic query encoder does not expose an embedding method")
 
     def set_query_encoder(self, encoder: Any) -> None:
         """Attach ``text -> vector`` encoding for runtime semantic queries."""
@@ -552,36 +772,63 @@ class AttributeDictionary:
                             f"normalized lookup disagrees with registry: {value_id}"
                         )
 
+        if self._attribute_embeddings:
+            try:
+                import numpy as np
+            except ImportError as exc:
+                raise RuntimeError(
+                    "semantic lookup requires NumPy; install requirements-embeddings.txt"
+                ) from exc
+            for attribute, (rows, matrix) in self._attribute_embeddings.items():
+                if attribute not in SEMANTIC_ATTRIBUTES:
+                    raise ValueError(
+                        f"attribute embeddings are not allowed for {attribute}"
+                    )
+                if getattr(matrix, "ndim", None) != 2:
+                    raise ValueError(
+                        f"{attribute} embeddings must be a two-dimensional matrix"
+                    )
+                if int(matrix.shape[0]) != len(rows):
+                    raise ValueError(
+                        f"{attribute} embedding row count does not match metadata"
+                    )
+                if (
+                    self._embedding_dimension is not None
+                    and int(matrix.shape[1]) != self._embedding_dimension
+                ):
+                    raise ValueError(
+                        f"{attribute} embedding dimension does not match metadata"
+                    )
+                if not bool(np.isfinite(matrix).all()):
+                    raise ValueError(
+                        f"{attribute} embeddings contain non-finite values"
+                    )
+                for row in rows:
+                    value_id = str(row.get("canonical_id", ""))
+                    value = self._values.get(value_id)
+                    if value is None:
+                        raise ValueError(
+                            f"{attribute} embeddings reference unknown canonical_id: "
+                            f"{value_id}"
+                        )
+                    if str(row.get("attribute", "")) != attribute:
+                        raise ValueError(
+                            f"{attribute} embedding metadata has the wrong attribute"
+                        )
+                    if str(row.get("value", "")) != value.value:
+                        raise ValueError(
+                            f"{attribute} embedding metadata disagrees with registry: "
+                            f"{value_id}"
+                        )
+
         if self._embeddings is None:
             if self._embedding_rows:
                 raise ValueError("embedding metadata exists without an embedding matrix")
             return
-        if self._embedding_model is None:
-            raise ValueError("attribute embedding model metadata is missing")
-        if not is_bge_small_en_v1_5(self._embedding_model):
-            raise ValueError(
-                "unsupported attribute embedding model; expected "
-                f"{ATTRIBUTE_EMBEDDING_MODEL}"
-            )
-        if self._embedding_dimension != ATTRIBUTE_EMBEDDING_DIMENSION:
-            raise ValueError(
-                "attribute embedding dimension must be "
-                f"{ATTRIBUTE_EMBEDDING_DIMENSION}, got {self._embedding_dimension}"
-            )
-        if self._embedding_normalization not in (None, ATTRIBUTE_EMBEDDING_NORMALIZATION):
-            raise ValueError(
-                "attribute embeddings must use "
-                f"{ATTRIBUTE_EMBEDDING_NORMALIZATION} normalization"
-            )
         if getattr(self._embeddings, "ndim", None) != 2:
             raise ValueError("attribute embeddings must be a two-dimensional matrix")
         if int(self._embeddings.shape[0]) != len(self._embedding_rows):
             raise ValueError("embedding row count does not match embedding metadata")
-        if int(self._embeddings.shape[1]) != self._embedding_dimension:
-            raise ValueError(
-                "attribute embedding matrix dimension does not match manifest: "
-                f"{self._embeddings.shape[1]} != {self._embedding_dimension}"
-            )
         for expected_row, row in enumerate(self._embedding_rows):
             if int(row["row"]) != expected_row:
                 raise ValueError("embedding metadata rows must be contiguous and ordered")
