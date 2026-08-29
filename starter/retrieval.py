@@ -79,6 +79,68 @@ MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
 BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
 
+# Rating tie-breaker (INSTRUCTION.md section 1).  The structured matcher scores
+# most candidates identically -- 9.6 of every 10 returned candidates share one
+# score -- so without a continuous term the top-10 order is catalog position.
+# The catalog's own average_rating supplies that term.
+RATING_SCALE = 5.0
+NEUTRAL_NORMALIZED_RATING = 0.5
+CRITICAL_USER_RATING_THRESHOLD = 3.5
+RATING_BOOST_WEIGHT = 0.15
+RATING_DEFAULT_WEIGHT = 0.02
+
+
+def normalized_rating(rating: float | None) -> float:
+    """Catalog rating on [0, 1].  An unusable rating is neutral, never zero.
+
+    Scoring an unrated product as 0.0 would demote it; the shopper said nothing
+    about it, so it is left where the retrieval score put it.
+    """
+
+    try:
+        value = float(rating)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return NEUTRAL_NORMALIZED_RATING
+    if value != value or value <= 0.0:
+        return NEUTRAL_NORMALIZED_RATING
+    return min(1.0, value / RATING_SCALE)
+
+
+def is_critical_user(user_prior_rating: float | None) -> bool:
+    """Whether the shopper rates strictly enough to weight catalog rating up."""
+
+    try:
+        value = float(user_prior_rating)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return value == value and value < CRITICAL_USER_RATING_THRESHOLD
+
+
+def rating_weight(user_prior_rating: float | None) -> float:
+    """``w_r``: boosted for a critical shopper, default for everyone else.
+
+    A missing prior rating is a cold-start shopper and takes the default, which
+    is the spec's null fallback.
+    """
+
+    return (
+        RATING_BOOST_WEIGHT
+        if is_critical_user(user_prior_rating)
+        else RATING_DEFAULT_WEIGHT
+    )
+
+
+def _rating(value: object) -> float | None:
+    """Parse ``average_rating`` off a raw catalog row."""
+
+    try:
+        rating = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if rating != rating or rating <= 0.0:
+        return None
+    return rating
+
 
 def _encoder_model_id(encoder: object | None) -> str | None:
     if encoder is None:
@@ -224,6 +286,7 @@ class ProductRecord:
     facts: Mapping[str, tuple[str, ...]]
     price: float | None
     catalog_order: int
+    rating: float | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
@@ -243,11 +306,15 @@ class Candidate:
     semantic_score: float = 0.0
     matched_semantic_constraints: tuple[str, ...] = ()
     bm25_score: float = 0.0
+    rating: float | None = None
+    ranking_score: float = 0.0
 
     def as_dict(self) -> dict[str, object]:
         return {
             "parent_asin": self.parent_asin,
             "score": self.score,
+            "rating": self.rating,
+            "ranking_score": self.ranking_score,
             "dense_score": self.dense_score,
             "semantic_score": self.semantic_score,
             "bm25_score": self.bm25_score,
@@ -287,6 +354,7 @@ class ProductRetriever:
             field_name: {} for field_name in FACT_FIELDS
         }
         self.price_lookup: dict[str, float | None] = {}
+        self.rating_lookup: dict[str, float | None] = {}
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
         self.bm25_index: BM25Index | None = None
@@ -436,11 +504,13 @@ class ProductRetriever:
                 facts=facts,
                 price=price,
                 catalog_order=len(self._catalog_order),
+                rating=_rating(row.get("average_rating")),
                 raw=dict(row),
             )
             self.product_by_asin[asin] = product
             self._catalog_order.append(asin)
             self.price_lookup[asin] = price
+            self.rating_lookup[asin] = product.rating
             for field_name, values in facts.items():
                 for value in values:
                     self.inverted_index[field_name].setdefault(value, set()).add(asin)
@@ -775,6 +845,7 @@ class ProductRetriever:
         constraint_fields: tuple[str, ...],
         matched_semantic_constraints: tuple[str, ...] = (),
         bm25_score: float = 0.0,
+        w_rating: float = 0.0,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
@@ -782,6 +853,7 @@ class ProductRetriever:
             if field_name not in matched_fields
         )
         score = _final_score(mode, structured_score, dense_score, bm25_score)
+        rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
             score=float(score),
@@ -794,6 +866,8 @@ class ProductRetriever:
             semantic_score=float(dense_score),
             matched_semantic_constraints=matched_semantic_constraints,
             bm25_score=float(bm25_score),
+            rating=rating,
+            ranking_score=float(score + w_rating * normalized_rating(rating)),
         )
 
     def retrieve(
@@ -807,6 +881,7 @@ class ProductRetriever:
         minimum_candidates: int = 50,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
+        user_prior_rating: float | None = None,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
@@ -913,23 +988,52 @@ class ProductRetriever:
                 labels.extend(price_labels)
             return tuple(labels)
 
-        if not dense_scores and not bm25_scores and not constraint_fields:
-            ranked_asins = eligible_asins[:limit]
-        elif not dense_scores and not bm25_scores:
-            positive_asins = sorted(
-                matched_weight,
-                key=lambda asin: (
-                    -structured_score(asin),
+        w_rating = rating_weight(user_prior_rating)
+
+        def _rank_key(
+            base: Callable[[str], float]
+        ) -> Callable[[str], tuple[float, int]]:
+            """The spec's S(x), descending, with catalog order as last resort."""
+
+            def key(asin: str) -> tuple[float, int]:
+                bonus = w_rating * normalized_rating(self.rating_lookup.get(asin))
+                return (
+                    -(base(asin) + bonus),
                     self.product_by_asin[asin].catalog_order,
-                ),
-            )
+                )
+
+            return key
+
+        def _select(pool: list[str], base: Callable[[str], float]) -> list[str]:
+            """Rank the whole pool *before* slicing to limit (Task 2)."""
+
+            key = _rank_key(base)
+            if limit < len(pool):
+                return heapq.nsmallest(limit, pool, key=key)
+            return sorted(pool, key=key)
+
+        def _zero(_asin: str) -> float:
+            return 0.0
+
+        if not dense_scores and not constraint_fields:
+            # No constraints and no dense signal: every candidate ties at zero,
+            # so the rating is the only thing left to order them by.
+            ranked_asins = _select(eligible_asins, _zero)
+        elif not dense_scores:
+            positive_asins = sorted(matched_weight, key=_rank_key(structured_score))
             ranked_asins = positive_asins[:limit]
             if len(ranked_asins) < limit:
                 selected = set(ranked_asins)
-                ranked_asins.extend(
+                remainder = [
                     asin for asin in eligible_asins if asin not in selected
+                ]
+                # Zero-match padding is ordered by rating too, not by catalog
+                # position, so the pad respects the same preference.
+                ranked_asins.extend(
+                    heapq.nsmallest(
+                        limit - len(ranked_asins), remainder, key=_rank_key(_zero)
+                    )
                 )
-                ranked_asins = ranked_asins[:limit]
         else:
             final_scores = {
                 asin: _final_score(
@@ -940,14 +1044,7 @@ class ProductRetriever:
                 )
                 for asin in eligible_asins
             }
-            rank_key = lambda asin: (
-                -final_scores[asin],
-                self.product_by_asin[asin].catalog_order,
-            )
-            if limit < len(eligible_asins):
-                ranked_asins = heapq.nsmallest(limit, eligible_asins, key=rank_key)
-            else:
-                ranked_asins = sorted(eligible_asins, key=rank_key)
+            ranked_asins = _select(eligible_asins, final_scores.__getitem__)
         return [
             self._candidate(
                 asin,
@@ -959,6 +1056,7 @@ class ProductRetriever:
                 constraint_fields,
                 semantic_labels.get(asin, ()),
                 bm25_scores.get(asin, 0.0),
+                w_rating=w_rating,
             )
             for asin in ranked_asins
         ]
@@ -972,6 +1070,7 @@ class ProductRetriever:
         semantic_constraints: object | None = None,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
+        user_prior_rating: float | None = None,
     ) -> list[Candidate]:
         """Return the complete ranking using the production scorer."""
 
@@ -983,6 +1082,7 @@ class ProductRetriever:
             limit=len(self.product_by_asin),
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,
+            user_prior_rating=user_prior_rating,
         )
 
 
@@ -990,11 +1090,17 @@ InMemoryRetriever = ProductRetriever
 
 
 __all__ = [
+    "CRITICAL_USER_RATING_THRESHOLD",
     "Candidate",
     "BM25_SCORE_WEIGHT",
     "InMemoryRetriever",
     "MODE_SCORE_WEIGHTS",
     "ProductRecord",
     "ProductRetriever",
+    "RATING_BOOST_WEIGHT",
+    "RATING_DEFAULT_WEIGHT",
     "SharedCandidate",
+    "is_critical_user",
+    "normalized_rating",
+    "rating_weight",
 ]

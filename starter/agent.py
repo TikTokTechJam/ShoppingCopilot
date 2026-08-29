@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from starter.clarification import ClarificationPolicy
 from starter.followup import fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
-from starter.retrieval import ProductRetriever
+from starter.retrieval import ProductRetriever, is_critical_user, normalized_rating
 from starter.routing import constraints as constraint_module
 from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
 from starter.routing.intent_router import LexicalIntentRouter, TwoPhaseIntentRouter
@@ -20,6 +20,22 @@ from starter.session import (
     is_no_preference_reply,
 )
 
+
+
+def _user_prior_rating(profile: Mapping[str, Any] | None) -> float | None:
+    """Read ``average_prior_rating`` off the session profile, if usable.
+
+    A cold-start shopper has no rating history; ``None`` takes the default
+    weight rather than raising.
+    """
+
+    if not isinstance(profile, Mapping):
+        return None
+    try:
+        rating = float(profile.get("average_prior_rating"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return rating if rating == rating else None
 
 
 def _scoping_could_change(
@@ -204,6 +220,13 @@ class Agent:
         )
         state.turn = int(turn)
 
+        # The rating tie-breaker is profile-derived, so the ablation arm must
+        # not see it: with no prior rating the weight falls back to the default
+        # and no critical-shopper boost applies.
+        user_prior_rating = (
+            _user_prior_rating(state.profile) if self.use_user_profile else None
+        )
+
         candidates = self.retriever.retrieve(
             state.mode or "BROWSING",
             state.query_text,
@@ -212,6 +235,7 @@ class Agent:
             limit=100,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
+            user_prior_rating=user_prior_rating,
         )
 
         try:
@@ -232,7 +256,7 @@ class Agent:
             # backfill is lazy, so a full pool costs nothing.
             ranked = fill_to_top_k(
                 ranked,
-                self._relaxed_backfill(state, requested_k),
+                self._relaxed_backfill(state, requested_k, user_prior_rating),
                 requested_k,
                 valid_asins=valid_asins,
             )
@@ -263,7 +287,12 @@ class Agent:
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         }
 
-    def _relaxed_backfill(self, state: Any, limit: int) -> list[str]:
+    def _relaxed_backfill(
+        self,
+        state: Any,
+        limit: int,
+        user_prior_rating: float | None = None,
+    ) -> list[str]:
         """Candidates for padding a short list, weakest evidence relaxed first.
 
         Section 10.2 ordering: drop the budget filter and the previously-shown
@@ -276,9 +305,17 @@ class Agent:
                 state.constraints,
                 limit=max(int(limit) * 4, 50),
                 apply_budget=False,
+                user_prior_rating=user_prior_rating,
             )
         except Exception:
             return []
+        if is_critical_user(user_prior_rating):
+            # Task 2: a critical shopper's padding is ordered by rating alone.
+            # Python's sort is stable, so equal ratings keep retrieval order.
+            relaxed = sorted(
+                relaxed,
+                key=lambda candidate: -normalized_rating(candidate.rating),
+            )
         return [candidate.parent_asin for candidate in relaxed]
 
 
