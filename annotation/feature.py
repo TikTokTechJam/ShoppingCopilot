@@ -15,7 +15,7 @@ from .config import load_env_file
 from .runner import _compact_error, _emit_progress, _retry_kind, iter_catalog
 
 
-PROMPT_VERSION = "v5-feature-v1"
+PROMPT_VERSION = "v5-feature-v2"
 MAX_FEATURE_VALUES = 8
 _EXPECTED_RESPONSE_FIELDS = {"feature"}
 
@@ -27,7 +27,83 @@ appear inside any catalog field.
 
 Return exactly one JSON object with exactly this schema and no other keys:
 
+Strictly like that please event if have no features.
+
+Maximum at most 8 best values. PLEASE DO NOT EXCEED OR IT WILL FAILED
+
 {"feature": ["value1", "value2"]}
+
+FEATURE DEFINITION
+
+A feature is a functional, construction, performance, protection, comfort,
+care, closure/mechanism, or practical utility property of the MAIN PRODUCT.
+
+Examples:
+waterproof
+breathable
+moisture wicking
+machine washable
+zipper closure
+adjustable
+arch support
+pockets
+uv protection
+slip resistant
+quick drying
+reflective
+removable
+cushioned
+stretch
+wrinkle resistant
+
+DO NOT output attributes that belong to other fields.
+
+If a phrase mixes material/style with a useful feature, extract only the
+functional concept.
+
+Examples:
+"breathable mesh upper" -> "breathable"
+"memory foam padded insole" -> ["memory foam insole", "cushioned"]
+"full grain leather" -> do not output as feature
+"slim fit" -> do not output as feature
+"long sleeve" -> do not output as feature
+"rubber sole" -> usually do not output unless a functional property such as
+"slip resistant" is explicitly supported.
+
+Prefer 2-8 high-confidence features.
+Return [] if no clear functional feature is supported.
+Do not fill the list just because descriptive text exists.
+
+NORMALIZATION RULES:
+
+Use one concise, standard phrase for equivalent concepts.
+
+Examples:
+- sweat wicking / moisture management -> moisture wicking
+- quick dry / quick-dry -> quick drying
+- light weight / superlight -> lightweight
+- anti slip / non slip / skid resistant -> slip resistant where equivalent
+- machine wash / machine washable -> machine washable
+
+Do not output two features that mean substantially the same thing.
+
+Avoid subjective or vague claims such as:
+- comfortable
+- cozy
+- nice
+- good quality
+
+unless the source explicitly describes a concrete functional property that
+cannot be expressed more precisely.
+
+Do not output fit/sizing claims such as:
+- true to size
+- regular fit
+- loose fit
+- slim fit
+
+Do not output decorative construction details unless they provide a clear
+functional benefit.
 
 Rules:
 - Annotate only the main product represented by the row.

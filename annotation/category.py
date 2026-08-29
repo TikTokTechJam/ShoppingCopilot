@@ -29,6 +29,37 @@ Return exactly one JSON object with exactly this schema and no other keys:
 
 {"category": ["value1", "value2"]}
 
+Keep useful broad browse categories such as:
+- clothing
+- footwear
+- jewelry
+- accessories
+
+But only when they are genuinely useful parent classes of the main product.
+
+Prefer a clean hierarchy:
+
+1. optional broad browse class
+2. concrete base object
+3. optional established subtype
+
+Examples:
+["jewelry", "ring"]
+["jewelry", "earrings", "stud earrings"]
+["footwear", "shoes", "running shoes"]
+["clothing", "shorts", "cargo shorts"]
+
+Do NOT add redundant or weak taxonomy levels such as:
+- women
+- men
+- active
+- casual
+- novelty
+- socks tights
+- liners ankle socks
+
+Broad categories should help browsing, while specific categories should help precise retrieval.
+
 Rules:
 - Identify what object or product type the MAIN PRODUCT actually is.
 - Use title, features, description, details, existing taxonomy, and every other
