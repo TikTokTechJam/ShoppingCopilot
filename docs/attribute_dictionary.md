@@ -144,6 +144,15 @@ does not retain a stale `brand_embeddings.npy`. V5 currently has no style
 values, so its matrix is an empty zero-row matrix with the same declared
 embedding dimension.
 
+At runtime, Layer 1 keeps the existing exact dictionary matching flow. Layer 2
+takes the remaining user text, removes the configured stopwords, and searches
+every available semantic attribute matrix with deterministic 1-gram, 2-gram,
+and 3-gram phrases. Only matches with cosine similarity at least `0.80` are
+added to the session constraint state. Their Layer 2 evidence preserves the
+matched phrase and similarity, and the existing product scorer uses that
+similarity when calculating structured points before final ranking. Brand is
+not searched semantically; it remains exact-only.
+
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed
 without these artifacts.

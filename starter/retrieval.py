@@ -503,6 +503,36 @@ class ProductRetriever:
             fields.append("price")
         return tuple(fields)
 
+    @classmethod
+    def _constraint_similarities(cls, constraints: object) -> dict[str, float]:
+        """Read Layer 2 canonical-match similarity from persisted evidence."""
+
+        evidence = getattr(constraints, "evidence", None)
+        if evidence is None and isinstance(constraints, Mapping):
+            evidence = constraints.get("evidence")
+        if not isinstance(evidence, (list, tuple)):
+            return {}
+        similarities: dict[str, float] = {}
+        for item in evidence:
+            canonical_id = getattr(item, "canonical_id", None)
+            confidence = getattr(item, "confidence", None)
+            if isinstance(item, Mapping):
+                canonical_id = item.get("canonical_id", canonical_id)
+                confidence = item.get("confidence", confidence)
+            if not isinstance(canonical_id, str):
+                continue
+            try:
+                score = float(confidence)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(score):
+                continue
+            similarities[canonical_id] = max(
+                similarities.get(canonical_id, 0.0),
+                min(max(score, 0.0), 1.0),
+            )
+        return similarities
+
     def _matches_field(self, asin: str, field_name: str, constraints: object) -> bool:
         product = self.product_by_asin[asin]
         if field_name == "price":
@@ -707,6 +737,7 @@ class ProductRetriever:
             STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
             for field_name in constraint_fields
         )
+        constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
         matched_fields: dict[str, set[str]] = {}
         matched_labels: dict[str, list[str]] = {}
@@ -714,13 +745,22 @@ class ProductRetriever:
         for field_name in constraint_fields:
             if field_name == "price":
                 field_matches = price_match_asins & eligible_set
+                field_match_similarities: dict[str, float] = {}
             else:
                 field_matches: set[str] = set()
+                field_match_similarities = {}
                 for value in requested_by_field[field_name]:
                     indexed = self.inverted_index.get(field_name, {}).get(value, set())
+                    canonical_key = (
+                        f"{field_name}:{normalize_text(value).replace(' ', '_')}"
+                    )
+                    similarity = constraint_similarities.get(canonical_key, 1.0)
                     if eligible_set is None:
                         field_matches.update(indexed)
                         for asin in indexed:
+                            field_match_similarities[asin] = max(
+                                field_match_similarities.get(asin, 0.0), similarity
+                            )
                             matched_labels.setdefault(asin, []).append(
                                 f"{field_name}:{value}"
                             )
@@ -728,12 +768,17 @@ class ProductRetriever:
                         field_matches.update(indexed & eligible_set)
                         for asin in indexed:
                             if asin in eligible_set:
+                                field_match_similarities[asin] = max(
+                                    field_match_similarities.get(asin, 0.0), similarity
+                                )
                                 matched_labels.setdefault(asin, []).append(
                                     f"{field_name}:{value}"
                                 )
             field_weight = STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
             for asin in field_matches:
-                matched_weight[asin] = matched_weight.get(asin, 0.0) + field_weight
+                matched_weight[asin] = matched_weight.get(asin, 0.0) + (
+                    field_weight * field_match_similarities.get(asin, 1.0)
+                )
                 matched_fields.setdefault(asin, set()).add(field_name)
 
         def structured_score(asin: str) -> float:

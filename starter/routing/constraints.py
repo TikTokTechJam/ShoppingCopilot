@@ -270,7 +270,9 @@ from typing import Callable as _Callable, Iterable as _Iterable, Mapping as _Map
 from dictionary.registry import AttributeDictionary as _AttributeDictionary
 from dictionary.registry import ATTRIBUTE_FIELDS as _DICTIONARY_ATTRIBUTES
 from dictionary.registry import CanonicalValue as _CanonicalValue
+from dictionary.registry import DEFAULT_MIN_SIMILARITY as _DEFAULT_MIN_SIMILARITY
 from dictionary.registry import LookupMatch as _LookupMatch
+from dictionary.registry import SEMANTIC_ATTRIBUTES as _SEMANTIC_ATTRIBUTES
 from dictionary.registry import normalize_text as _normalize_dictionary_text
 
 
@@ -283,6 +285,7 @@ class ConstraintEvidence:
     raw_text: str
     match_method: str
     confidence: float
+    layer: str = "layer1"
 
 
 @_dataclass(frozen=True)
@@ -299,6 +302,7 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
                 "raw_text": item.raw_text,
                 "match_method": item.match_method,
                 "confidence": item.confidence,
+                "layer": item.layer,
             }
             for item in self.evidence
         ]
@@ -316,6 +320,7 @@ class _SpanMatch:
 class _SemanticCandidate:
     canonical_id: str
     score: float
+    phrase: str
 
 
 SemanticMatcher = _Callable[[str], _Iterable[object]]
@@ -377,7 +382,25 @@ def _load_default_dictionary() -> _AttributeDictionary | None:
         if not (directory / "normalized_lookup.json").exists():
             continue
         try:
-            return _AttributeDictionary.load(directory)
+            dictionary = _AttributeDictionary.load(directory)
+            if dictionary.has_semantic_embeddings:
+                try:
+                    from dictionary.semantic import load_bge_attribute_encoder
+
+                    model_hint = dictionary.embedding_model
+                    model_path = (
+                        model_hint
+                        if model_hint and _Path(model_hint).is_dir()
+                        else None
+                    )
+                    dictionary.set_query_encoder(
+                        load_bge_attribute_encoder(model_path)
+                    )
+                except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+                    # Exact Layer 1 matching remains usable when the optional
+                    # local BGE model is not installed.
+                    pass
+            return dictionary
         except (OSError, ValueError, json.JSONDecodeError):
             continue
     return None
@@ -667,23 +690,63 @@ def _residual_phrase(text: str, claimed: list[tuple[int, int]]) -> str:
     return " ".join(token for token in tokens if token not in _RESIDUAL_STOPWORDS)
 
 
-def _semantic_items(
-    matcher: SemanticMatcher,
+def _semantic_ngrams(phrase: str, *, max_ngram: int = 3) -> tuple[str, ...]:
+    """Return deterministic stopword-filtered 1-, 2-, and 3-gram phrases."""
+
+    tokens = [
+        token
+        for token in _normalize_dictionary_text(phrase).split()
+        if token not in _RESIDUAL_STOPWORDS
+    ]
+    phrases: list[str] = []
+    for width in range(1, max_ngram + 1):
+        for start in range(0, len(tokens) - width + 1):
+            phrases.append(" ".join(tokens[start : start + width]))
+    return tuple(dict.fromkeys(phrases))
+
+
+def _semantic_items_from_result(
+    result: object,
     phrase: str,
 ) -> tuple[_SemanticCandidate, ...]:
-    result = matcher(phrase)
     if isinstance(result, (_LookupMatch, _Mapping)):
         result = (result,)
     items: list[_SemanticCandidate] = []
     for item in result or ():
         if isinstance(item, _LookupMatch):
-            items.append(_SemanticCandidate(item.canonical_id, item.similarity))
+            items.append(
+                _SemanticCandidate(
+                    item.canonical_id,
+                    item.similarity,
+                    item.raw_text or phrase,
+                )
+            )
         elif isinstance(item, _Mapping):
             canonical_id = str(item.get("canonical_id", "")).strip()
             if canonical_id:
                 score = item.get("score", item.get("similarity", 0.0))
-                items.append(_SemanticCandidate(canonical_id, float(score)))
-    return tuple(sorted(items, key=lambda item: (-item.score, item.canonical_id)))
+                items.append(_SemanticCandidate(canonical_id, float(score), phrase))
+    return tuple(items)
+
+
+def _semantic_items(
+    matcher: SemanticMatcher,
+    phrase: str,
+) -> tuple[_SemanticCandidate, ...]:
+    return _semantic_items_from_result(matcher(phrase), phrase)
+
+
+def _dedupe_semantic_items(
+    items: Iterable[_SemanticCandidate],
+) -> tuple[_SemanticCandidate, ...]:
+    best_by_id: dict[str, _SemanticCandidate] = {}
+    for item in items:
+        previous = best_by_id.get(item.canonical_id)
+        if previous is None or item.score > previous.score:
+            best_by_id[item.canonical_id] = item
+    return tuple(
+        sorted(best_by_id.values(), key=lambda item: (-item.score, item.canonical_id))
+    )
 
 
 def _extract_dictionary_constraints(
@@ -691,7 +754,7 @@ def _extract_dictionary_constraints(
     dictionary: _AttributeDictionary,
     *,
     semantic_matcher: SemanticMatcher | None = None,
-    semantic_threshold: float = 0.70,
+    semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
 ) -> CanonicalShoppingConstraints:
     text = _normalise_known_phrases(message or "")
     values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
@@ -740,29 +803,48 @@ def _extract_dictionary_constraints(
             )
 
     residual = _residual_phrase(text, claimed)
-    if residual and semantic_matcher is not None:
-        semantic_matches = _semantic_items(semantic_matcher, residual)
-        if semantic_matches and semantic_matches[0].score >= semantic_threshold:
-            best = semantic_matches[0]
-            entry = dictionary.get(best.canonical_id)
-            if entry is not None and entry.attribute in CATEGORICAL_FIELDS:
-                if entry.value not in values[entry.attribute]:
-                    values[entry.attribute].append(entry.value)
-                    evidence.append(
-                        ConstraintEvidence(
-                            entry.canonical_id,
-                            entry.attribute,
-                            residual,
-                            "semantic",
-                            best.score,
-                        )
-                    )
-            else:
-                unmapped.add(residual)
-        else:
+    if residual:
+        semantic_matches: tuple[_SemanticCandidate, ...] = ()
+        if semantic_matcher is None and dictionary.semantic_available:
+            semantic_matches = _semantic_items_from_result(
+                dictionary.semantic_match_ngrams(
+                    residual,
+                    stopwords=_RESIDUAL_STOPWORDS,
+                    max_ngram=3,
+                    min_similarity=semantic_threshold,
+                ),
+                residual,
+            )
+        elif semantic_matcher is not None:
+            semantic_items: list[_SemanticCandidate] = []
+            for phrase in _semantic_ngrams(residual, max_ngram=3):
+                semantic_items.extend(_semantic_items(semantic_matcher, phrase))
+            semantic_matches = _dedupe_semantic_items(semantic_items)
+
+        accepted = [
+            item for item in semantic_matches if item.score >= semantic_threshold
+        ]
+        accepted_count = 0
+        for item in accepted:
+            entry = dictionary.get(item.canonical_id)
+            if entry is None or entry.attribute not in _SEMANTIC_ATTRIBUTES:
+                continue
+            if entry.value in values[entry.attribute]:
+                continue
+            values[entry.attribute].append(entry.value)
+            evidence.append(
+                ConstraintEvidence(
+                    entry.canonical_id,
+                    entry.attribute,
+                    item.phrase,
+                    f"semantic_{len(item.phrase.split())}gram",
+                    item.score,
+                    "layer2",
+                )
+            )
+            accepted_count += 1
+        if accepted_count == 0:
             unmapped.add(residual)
-    elif residual:
-        unmapped.add(residual)
 
     for word in ATTRIBUTE_TOPIC.findall(text):
         field_name = _TOPIC_FIELD.get(word.lower(), "")
@@ -783,13 +865,14 @@ def extract_constraints(
     *,
     dictionary: _AttributeDictionary | None = None,
     semantic_matcher: SemanticMatcher | None = None,
-    semantic_threshold: float = 0.70,
+    semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
     Structured price/size parsing runs first. Exact dictionary values are then
-    matched longest-first, and only the unmatched meaningful phrase reaches the
-    injected semantic matcher. Results below the threshold remain unresolved.
+    matched longest-first. Remaining text is stopword-filtered into deterministic
+    1/2/3-gram phrases for the Layer 2 semantic matcher; results below the
+    threshold remain unresolved.
     The generated dictionary is required for categorical extraction.
     """
     text = _normalise_known_phrases(message or "")
