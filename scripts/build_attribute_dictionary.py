@@ -33,6 +33,7 @@ class _ReadResult:
     skipped_by_reason: dict[str, int]
     source_product_count: int | None
     prompt_versions: tuple[str, ...]
+    input_format: str
 
 
 def _source_sha256(path: Path) -> str:
@@ -94,8 +95,11 @@ def _source_product_count(path: Path, records_read: int) -> int | None:
     return records_read
 
 
-def _read_facts(path: Path) -> _ReadResult:
-    """Read successful V4 annotation wrappers without requiring full coverage."""
+def _read_facts(path: Path, *, input_format: str = "auto") -> _ReadResult:
+    """Read V4 wrappers or the aggregated V5 nested-facts records."""
+
+    if input_format not in {"auto", "v4", "v5"}:
+        raise ValueError("input_format must be one of: auto, v4, v5")
 
     product_membership: dict[tuple[str, str], set[str]] = defaultdict(set)
     representatives: dict[tuple[str, str], str] = {}
@@ -103,6 +107,7 @@ def _read_facts(path: Path) -> _ReadResult:
     seen_products: set[str] = set()
     skipped_by_reason: dict[str, int] = defaultdict(int)
     prompt_versions: set[str] = set()
+    observed_formats: set[str] = set()
     records_read = 0
     records_used = 0
 
@@ -120,10 +125,16 @@ def _read_facts(path: Path) -> _ReadResult:
                 skipped_by_reason["record_not_object"] += 1
                 continue
 
+            record_format = input_format
+            if record_format == "auto":
+                record_format = "v4" if "annotation" in record else "v5"
+            observed_formats.add(record_format)
+
             annotation = record.get("annotation")
-            if not isinstance(annotation, Mapping) or annotation.get("status") != "success":
-                skipped_by_reason["not_successful"] += 1
-                continue
+            if record_format == "v4":
+                if not isinstance(annotation, Mapping) or annotation.get("status") != "success":
+                    skipped_by_reason["not_successful"] += 1
+                    continue
             parent_asin = record.get("parent_asin")
             facts = record.get("facts")
             if not isinstance(parent_asin, str) or not parent_asin.strip():
@@ -135,14 +146,22 @@ def _read_facts(path: Path) -> _ReadResult:
             if not isinstance(facts, Mapping):
                 skipped_by_reason["facts_not_object"] += 1
                 continue
-            if any(field not in facts for field in ATTRIBUTE_FIELDS):
+            required_fields = ATTRIBUTE_FIELDS
+            if record_format == "v5":
+                required_fields = tuple(field for field in ATTRIBUTE_FIELDS if field != "style")
+            if any(field not in facts for field in required_fields):
                 skipped_by_reason["missing_dictionary_field"] += 1
                 continue
 
             normalized_record: dict[str, list[tuple[str, str]]] = {}
             malformed = False
             for attribute in ATTRIBUTE_FIELDS:
-                raw_values = facts.get(attribute)
+                # V5 aggregation intentionally omits style. It remains part of
+                # the seven-field dictionary contract, but contributes no values.
+                if record_format == "v5":
+                    raw_values = [] if attribute == "style" else facts.get(attribute, [])
+                else:
+                    raw_values = facts.get(attribute)
                 if not isinstance(raw_values, list):
                     malformed = True
                     break
@@ -165,9 +184,10 @@ def _read_facts(path: Path) -> _ReadResult:
 
             seen_products.add(parent_asin)
             records_used += 1
-            prompt_version = annotation.get("prompt_version")
-            if isinstance(prompt_version, str) and prompt_version.strip():
-                prompt_versions.add(prompt_version.strip())
+            if record_format == "v4":
+                prompt_version = annotation.get("prompt_version")
+                if isinstance(prompt_version, str) and prompt_version.strip():
+                    prompt_versions.add(prompt_version.strip())
 
             # A product contributes at most once per attribute/surface, even if
             # the model repeats a value or returns separator variants.
@@ -185,6 +205,14 @@ def _read_facts(path: Path) -> _ReadResult:
                     )
 
     counts = {key: len(products) for key, products in product_membership.items()}
+    detected_formats = sorted(observed_formats)
+    detected_format = (
+        detected_formats[0]
+        if len(detected_formats) == 1
+        else "mixed"
+        if detected_formats
+        else input_format
+    )
     return _ReadResult(
         counts=counts,
         representatives=representatives,
@@ -195,6 +223,7 @@ def _read_facts(path: Path) -> _ReadResult:
         skipped_by_reason=dict(sorted(skipped_by_reason.items())),
         source_product_count=_source_product_count(path, records_read),
         prompt_versions=tuple(sorted(prompt_versions)),
+        input_format=detected_format,
     )
 
 
@@ -317,8 +346,9 @@ def build_attribute_dictionary(
     precomputed_embeddings: str | Path | None = None,
     semantic_attributes: Iterable[str] = SEMANTIC_ATTRIBUTES,
     query_encoder_factory: Callable[[str], Any] | None = None,
+    input_format: str = "auto",
 ) -> dict[str, Any]:
-    """Build deterministic exact V4 registry artifacts and optional embeddings."""
+    """Build deterministic exact registry artifacts and optional embeddings."""
 
     source_path = Path(facts_path if facts_path is not None else input_path)
     output = Path(output_dir)
@@ -329,7 +359,7 @@ def build_attribute_dictionary(
     if embedding_model and precomputed_embeddings:
         raise ValueError("choose embedding_model or precomputed_embeddings, not both")
 
-    result = _read_facts(source_path)
+    result = _read_facts(source_path, input_format=input_format)
     records = _registry_records(result)
     lookup = _normalized_lookup(records)
     output.mkdir(parents=True, exist_ok=True)
@@ -422,6 +452,7 @@ def build_attribute_dictionary(
             "schema_version": SCHEMA_VERSION,
             "dictionary_version": SCHEMA_VERSION,
             "source_path": str(source_path),
+            "input_format": result.input_format,
             "source_sha256": _source_sha256(source_path),
             "source_product_count": result.source_product_count,
             "records_read": result.records_read,
@@ -454,6 +485,7 @@ def build_attribute_dictionary(
     )
     return {
         "source_product_count": result.source_product_count,
+        "input_format": result.input_format,
         "records_read": result.records_read,
         "successful_annotation_records": result.records_used,
         "records_used": result.records_used,
@@ -470,14 +502,20 @@ def build_attribute_dictionary(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build the V4 canonical attribute dictionary."
+        description="Build canonical attribute dictionary artifacts."
     )
     parser.add_argument(
         "--input",
         "--facts",
         dest="input_path",
         default=DEFAULT_INPUT,
-        help="V4 annotation JSONL containing nested facts",
+        help="V4 annotation or V5 aggregate JSONL containing nested facts",
+    )
+    parser.add_argument(
+        "--input-format",
+        choices=("auto", "v4", "v5"),
+        default="auto",
+        help="Input record shape; auto detects V4 wrappers or V5 aggregate records",
     )
     parser.add_argument(
         "--output-dir",
@@ -509,6 +547,7 @@ def main() -> None:
         embedding_model=args.embedding_model,
         precomputed_embeddings=args.precomputed_embeddings,
         semantic_attributes=args.semantic_attributes,
+        input_format=args.input_format,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

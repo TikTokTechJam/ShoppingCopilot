@@ -93,6 +93,39 @@ class AttributeDictionaryTests(unittest.TestCase):
         self.assertIn("brand:new_balance", payload["values"])
         self.assertIn("brand:air_max_270", payload["values"])
 
+    def test_v5_aggregate_input_does_not_require_annotation_or_style(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        source = root / "v5_annotations.jsonl"
+        source.write_text(
+            json.dumps({
+                "parent_asin": "V5-A",
+                "price": 49.99,
+                "facts": {
+                    "category": ["running shoes"],
+                    "brand": ["New_Balance", "Air Max 270"],
+                    "color": ["black"],
+                    "material": ["mesh"],
+                    "feature": ["quick drying"],
+                    "use_case": ["running"],
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+        output = root / "dictionary"
+        summary = build_attribute_dictionary(source, output, input_format="v5")
+        self.assertEqual(summary["input_format"], "v5")
+        self.assertEqual(summary["records_read"], 1)
+        self.assertEqual(summary["records_used"], 1)
+        payload = json.loads((output / "canonical_values.json").read_text(encoding="utf-8"))
+        self.assertIn("brand:new_balance", payload["values"])
+        self.assertIn("brand:air_max_270", payload["values"])
+        self.assertEqual(payload["values"]["brand:new_balance"]["count"], 1)
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["input_format"], "v5")
+        self.assertEqual(summary["canonical_value_count_by_attribute"]["style"], 0)
+
     def test_natural_values_ids_and_apostrophes(self) -> None:
         _, output, _ = self._build()
         payload = json.loads((output / "canonical_values.json").read_text(encoding="utf-8"))
