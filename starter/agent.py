@@ -17,6 +17,7 @@ from starter.session import (
     SessionManager,
     correction_fields,
     detect_override_kind,
+    is_generic_clarification_reply,
     is_no_preference_reply,
 )
 
@@ -129,11 +130,16 @@ class Agent:
         message = user_message or ""
         pending_attribute = state.last_asked
         no_preference_reply = is_no_preference_reply(message, pending_attribute)
-        # A no-preference answer is clarification metadata, not a product
-        # constraint. Skip the extractor so its words cannot become facts.
+        generic_clarification_reply = is_generic_clarification_reply(message)
+        skip_constraint_extraction = (
+            no_preference_reply or generic_clarification_reply
+        )
+        # No-preference answers and evaluator clarification filler are
+        # conversation metadata, not product constraints. Skip the extractor
+        # so words such as "you" and "one" cannot become accidental facts.
         delta = (
             ShoppingConstraints()
-            if no_preference_reply
+            if skip_constraint_extraction
             else self._extract(message)
         )
         had_messages = bool(state.messages)
@@ -143,7 +149,7 @@ class Agent:
             override_kind = detect_override_kind(message, state.constraints, delta)
 
         if (
-            not no_preference_reply
+            not skip_constraint_extraction
             and override_kind is OverrideKind.NONE
             and pending_attribute
             and _scoping_could_change(delta, pending_attribute)
@@ -200,7 +206,7 @@ class Agent:
         self.sessions.record_message(
             session_id,
             message,
-            include_in_query=not no_preference_reply,
+            include_in_query=not skip_constraint_extraction,
         )
         state.turn = int(turn)
 

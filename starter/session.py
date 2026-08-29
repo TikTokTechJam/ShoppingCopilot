@@ -252,6 +252,16 @@ def is_no_preference_reply(message: str, asked_attribute: str | None) -> bool:
     )
 
 
+def is_generic_clarification_reply(message: str) -> bool:
+    """Return whether a reply is evaluator-generated clarification filler.
+
+    This is deliberately an exact sentence-level check. Generic words such as
+    ``you`` and ``one`` remain valid dictionary/product tokens elsewhere.
+    """
+
+    return bool(lexicon.GENERIC_CLARIFICATION_REPLY.fullmatch(message or ""))
+
+
 def detect_override_kind(
     message: str,
     current: ShoppingConstraints,
@@ -525,6 +535,7 @@ __all__ = [
     "OverrideKind",
     "correction_fields",
     "detect_override_kind",
+    "is_generic_clarification_reply",
     "is_no_preference_reply",
     "is_intent_override",
     "merge_constraints",
