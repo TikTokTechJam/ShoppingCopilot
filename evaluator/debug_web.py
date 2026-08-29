@@ -22,6 +22,7 @@ from evaluator.hard_evaluator import (
     DEBUG_FACT_FIELDS,
     MAX_TURNS,
     Manual400SessionRunner,
+    add_score_fields,
     _debug_rank,
     _debug_ranking_snapshot,
     _debug_state_snapshot,
@@ -29,7 +30,9 @@ from evaluator.hard_evaluator import (
     _debug_values,
     load_catalog_ids,
     load_jsonl,
+    metric_summary,
     TOP_K,
+    validate_sessions,
 )
 from starter.retrieval import MODE_SCORE_WEIGHTS
 from starter.routing import constraints as constraint_module
@@ -76,6 +79,19 @@ def _constraint_payload(constraints: Any) -> dict[str, Any]:
     if budget:
         payload["budget"] = budget
     return payload
+
+
+def _changed_constraint_payload(
+    before: Mapping[str, Any], after: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Show only state changes produced by the real Agent turn."""
+
+    field_order = (*DEBUG_FACT_FIELDS, "size", "budget")
+    return {
+        field_name: after.get(field_name, [])
+        for field_name in field_order
+        if before.get(field_name) != after.get(field_name)
+    }
 
 
 def _first_text(value: Any) -> str:
@@ -344,6 +360,7 @@ class DebugWebController:
                 "done": True,
                 "layer2": _layer2_status(self.agent),
                 "score_weights": MODE_SCORE_WEIGHTS,
+                "benchmark": None,
             }
         session = self.runner.session
         state = _state_payload(self.agent, self.runner.session_id)
@@ -362,8 +379,19 @@ class DebugWebController:
             "done": bool(self.runner.done),
             "state": state,
             "layer2": _layer2_status(self.agent),
+            "benchmark": self._benchmark_payload(),
             "score_weights": MODE_SCORE_WEIGHTS,
             "turns": self.turn_records,
+        }
+
+    def _benchmark_payload(self) -> dict[str, Any] | None:
+        if self.runner is None:
+            return None
+        result = self.runner.result()
+        return {
+            "complete": bool(self.runner.done),
+            "result": result,
+            "metrics": add_score_fields(metric_summary([result])),
         }
 
     def _run_one(self) -> dict[str, Any]:
@@ -379,16 +407,15 @@ class DebugWebController:
         self.before_exclusions = sorted(
             str(value) for value in state.excluded_recommendations
         )
-        user_message = self.runner.user_message
 
-        try:
-            delta = self.agent._extract(user_message)
-        except Exception:
-            delta = None
         event = self.runner.next_turn()
         if event is None:
             raise RuntimeError("the active session is complete")
         after_state = _state_payload(self.agent, session_id)
+        extracted_this_turn = _changed_constraint_payload(
+            self.before_constraints,
+            after_state.get("constraints", {}),
+        )
         ranking = _ranking_payload(
             self.agent,
             session_id,
@@ -406,7 +433,7 @@ class DebugWebController:
             "state": {
                 "mode": after_state.get("mode"),
                 "constraints": after_state.get("constraints", {}),
-                "extracted_this_turn": _constraint_payload(delta),
+                "extracted_this_turn": extracted_this_turn,
                 "query_text": after_state.get("query_text", ""),
                 "asked_attributes": after_state.get("asked_attributes", []),
                 "last_asked": after_state.get("last_asked"),
@@ -435,6 +462,7 @@ class DebugWebController:
             "pre_override_hit": bool(event["pre_override_hit"]),
             "scoreable": bool(event["override_applied"]),
             "done": bool(event["session_complete"]),
+            "benchmark": self._benchmark_payload(),
         }
         self.turn_records.append(record)
         return record
@@ -556,6 +584,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def create_application(args: argparse.Namespace) -> DebugWebController:
     sessions = load_jsonl(args.sessions)
     catalog_ids = load_catalog_ids(args.catalog)
+    sessions = validate_sessions(sessions, catalog_ids)
     agent = build_evaluator_agent(args.catalog)
     return DebugWebController(agent, sessions, catalog_ids, seed=args.seed)
 

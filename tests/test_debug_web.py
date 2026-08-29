@@ -40,6 +40,7 @@ class FakeAgent:
     def __init__(self, *, return_target: bool = False) -> None:
         self.calls: list[tuple[str, str, int, int]] = []
         self.reset_calls: list[str] = []
+        self.extract_calls = 0
         self.return_target = return_target
         self.sessions = FakeSessionManager()
         self.retriever = SimpleNamespace(
@@ -67,6 +68,7 @@ class FakeAgent:
         )
 
     def _extract(self, _message: str) -> ShoppingConstraints:
+        self.extract_calls += 1
         return ShoppingConstraints()
 
     def respond(
@@ -176,9 +178,13 @@ class DebugWebTests(unittest.TestCase):
             controller.next_turn()
             self.assertEqual(controller.turn_records[-1]["turn"], 1)
             self.assertEqual(len(agent.calls), 1)
+            self.assertEqual(agent.extract_calls, 0)
             end = controller.run_to_end()
             self.assertTrue(end["done"])
             self.assertEqual(len(controller.turn_records), 10)
+            self.assertTrue(end["benchmark"]["complete"])
+            self.assertEqual(end["benchmark"]["result"]["sample_id"], "manual400_0001")
+            self.assertEqual(end["benchmark"]["metrics"]["sample_count"], 1)
             controller.load("manual400_0001")
             self.assertEqual(len(agent.reset_calls), 2)
             self.assertEqual(controller.state_payload()["turn"], 0)
