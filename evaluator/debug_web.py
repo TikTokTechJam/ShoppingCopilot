@@ -149,6 +149,29 @@ def _layer2_status(agent: Any) -> dict[str, Any]:
     }
 
 
+def _bm25_status(agent: Any) -> dict[str, Any]:
+    retriever = getattr(agent, "retriever", None)
+    available = bool(getattr(retriever, "bm25_available", False))
+    reason = getattr(retriever, "bm25_error", None) or (
+        "The local BM25 product-text index is unavailable."
+    )
+    index = getattr(retriever, "bm25_index", None)
+    return {
+        "available": available,
+        "state": getattr(
+            retriever,
+            "bm25_state",
+            "ready" if available else "unavailable",
+        ),
+        "reason": None if available else reason,
+        "indexed_products": (
+            int(getattr(index, "indexed_rows", 0)) if index is not None else 0
+        ),
+        "catalog_products": len(getattr(retriever, "_catalog_order", ()) or ()),
+        "build_seconds": getattr(retriever, "bm25_build_seconds", None),
+    }
+
+
 def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
     state = agent.sessions.get(session_id)
     snapshot = _debug_state_snapshot(agent, session_id)
@@ -171,6 +194,7 @@ def _candidate_payload(
     rank: int,
     target: str,
     dense_available: bool,
+    bm25_available: bool,
 ) -> dict[str, Any]:
     asin = str(candidate.parent_asin)
     product = _product_payload(agent, asin)
@@ -186,6 +210,11 @@ def _candidate_payload(
         "semantic_score": (
             float(getattr(candidate, "semantic_score", candidate.dense_score))
             if dense_available
+            else None
+        ),
+        "bm25_score": (
+            float(getattr(candidate, "bm25_score", 0.0))
+            if bm25_available
             else None
         ),
         "final_score": float(candidate.score),
@@ -206,6 +235,8 @@ def _ranking_payload(
     snapshot = _debug_ranking_snapshot(agent, session_id, target)
     layer2_status = _layer2_status(agent)
     dense_available = bool(layer2_status.get("available", False))
+    bm25_status = _bm25_status(agent)
+    bm25_available = bool(bm25_status.get("available", False))
     eligible = list(snapshot["eligible"])
     global_ranking = list(snapshot["global"])
     target_eligible = snapshot["target_eligible"]
@@ -217,7 +248,12 @@ def _ranking_payload(
         if candidate is not None:
             top10.append(
                 _candidate_payload(
-                    agent, candidate, rank, target, dense_available
+                    agent,
+                    candidate,
+                    rank,
+                    target,
+                    dense_available,
+                    bm25_available,
                 )
             )
         else:
@@ -230,6 +266,7 @@ def _ranking_payload(
                     "structured_score": None,
                     "dense_score": None,
                     "semantic_score": None,
+                    "bm25_score": None,
                     "final_score": None,
                     "matched_constraints": [],
                     "matched_semantic_constraints": [],
@@ -244,6 +281,9 @@ def _ranking_payload(
         "structured_rank": _debug_rank(snapshot["structured"], target),
         "dense_rank": (
             _debug_rank(snapshot["dense"], target) if dense_available else None
+        ),
+        "bm25_rank": (
+            _debug_rank(snapshot["bm25"], target) if bm25_available else None
         ),
         "hybrid_rank": _debug_rank(snapshot["hybrid"], target),
         "eligible": target_in_eligible,
@@ -264,6 +304,11 @@ def _ranking_payload(
         "semantic_score": (
             float(getattr(score_candidate, "semantic_score", score_candidate.dense_score))
             if score_candidate is not None and dense_available
+            else None
+        ),
+        "bm25_score": (
+            float(getattr(score_candidate, "bm25_score", 0.0))
+            if score_candidate is not None and bm25_available
             else None
         ),
         "final_score": (
@@ -377,6 +422,7 @@ class DebugWebController:
                 "total_turns": MAX_TURNS,
                 "done": True,
                 "layer2": _layer2_status(self.agent),
+                "bm25": _bm25_status(self.agent),
                 "score_weights": MODE_SCORE_WEIGHTS,
                 "benchmark": None,
             }
@@ -397,6 +443,7 @@ class DebugWebController:
             "done": bool(self.runner.done),
             "state": state,
             "layer2": _layer2_status(self.agent),
+            "bm25": _bm25_status(self.agent),
             "benchmark": self._benchmark_payload(),
             "score_weights": MODE_SCORE_WEIGHTS,
             "turns": self.turn_records,

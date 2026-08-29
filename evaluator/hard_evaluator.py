@@ -948,18 +948,22 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
 
     structured = sort_by(eligible, "constraint_score")
     dense = sort_by(eligible, "dense_score")
+    bm25 = sort_by(eligible, "bm25_score")
     hybrid = sort_by(eligible, "score")
     global_structured = sort_by(global_ranking, "constraint_score")
     global_dense = sort_by(global_ranking, "dense_score")
+    global_bm25 = sort_by(global_ranking, "bm25_score")
     global_hybrid = sort_by(global_ranking, "score")
     return {
         "eligible": eligible,
         "global": global_ranking,
         "structured": structured,
         "dense": dense,
+        "bm25": bm25,
         "hybrid": hybrid,
         "global_structured": global_structured,
         "global_dense": global_dense,
+        "global_bm25": global_bm25,
         "global_hybrid": global_hybrid,
         "target_eligible": next(
             (candidate for candidate in eligible if candidate.parent_asin == target),
@@ -1157,7 +1161,12 @@ class InteractiveDebugPrinter:
         print(
             "Score weights: "
             f"structured={score_weights['structured']:.2f}, "
-            f"dense={score_weights['dense']:.2f}"
+            f"dense={score_weights['dense']:.2f}, "
+            f"bm25={score_weights.get('bm25', 0.0):.2f}"
+        )
+        print(
+            "BM25: "
+            f"{'AVAILABLE' if bool(getattr(retriever, 'bm25_available', False)) else 'UNAVAILABLE'}"
         )
         print()
         snapshot = _debug_state_snapshot(agent, session_id)
@@ -1187,6 +1196,7 @@ class InteractiveDebugPrinter:
         global_ranking = ranking["global"]
         structured_ranking = ranking["structured"]
         dense_ranking = ranking["dense"]
+        bm25_ranking = ranking["bm25"]
         hybrid_ranking = ranking["hybrid"]
         target_eligible = ranking["target_eligible"]
         target_global = ranking["target_global"]
@@ -1215,12 +1225,14 @@ class InteractiveDebugPrinter:
         if target_candidate is not None:
             print(f"Structured score: {target_candidate.constraint_score:.4f}")
             print(f"Dense score: {target_candidate.dense_score:.4f}")
+            print(f"BM25 score: {target_candidate.bm25_score:.4f}")
             print(f"Final score: {target_candidate.score:.4f}")
         else:
             print("Target score: N/A")
         print("Target ranks (eligible products):")
         print(f"  Structured rank: {_debug_rank(structured_ranking, target) or 'MISS'}")
         print(f"  Dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
+        print(f"  BM25 rank: {_debug_rank(bm25_ranking, target) or 'MISS'}")
         print(f"  Hybrid rank: {_debug_rank(hybrid_ranking, target) or 'MISS'}")
         top10_rank = ranked.index(target) + 1 if target in ranked else None
         print(f"Top10 rank: {top10_rank if top10_rank is not None else 'MISS'}")
@@ -1236,7 +1248,8 @@ class InteractiveDebugPrinter:
             print(
                 f"{index}. {asin} score={candidate.score:.4f} "
                 f"structured={candidate.constraint_score:.4f} "
-                f"dense={candidate.dense_score:.4f}"
+                f"dense={candidate.dense_score:.4f} "
+                f"bm25={candidate.bm25_score:.4f}"
             )
             print(f"   matched={list(candidate.matched_constraints)}")
 
