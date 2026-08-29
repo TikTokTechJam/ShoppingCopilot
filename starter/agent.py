@@ -10,7 +10,7 @@ from starter.followup import fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
 from starter.retrieval import ProductRetriever
 from starter.routing import constraints as constraint_module
-from starter.routing.constraints import ShoppingConstraints
+from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
 from starter.routing.intent_router import LexicalIntentRouter, TwoPhaseIntentRouter
 from starter.session import (
     OverrideKind,
@@ -18,6 +18,30 @@ from starter.session import (
     correction_fields,
     detect_override_kind,
 )
+
+
+
+def _scoping_could_change(
+    delta: ShoppingConstraints,
+    asked_attribute: str,
+) -> bool:
+    """Whether re-reading a message scoped to ``asked_attribute`` can differ.
+
+    The unscoped read already resolved every surface it could. Narrowing only
+    changes the outcome when it has something to remove or to re-resolve: a
+    value that landed on another attribute, or a surface left unmapped because
+    the ambiguity between attributes could not be broken. When the reading is
+    already entirely within the asked attribute and nothing was left over, the
+    scoped pass would return the same constraints, so it is skipped.
+    """
+
+    if getattr(delta, "unmapped", ()):
+        return True
+    return any(
+        getattr(delta, field_name, ())
+        for field_name in CATEGORICAL_FIELDS
+        if field_name != asked_attribute
+    )
 
 
 class Agent:
@@ -63,10 +87,16 @@ class Agent:
         self._profile_affinity: dict[str, ProfileAffinity] = {}
 
     @staticmethod
-    def _extract(message: str) -> ShoppingConstraints:
+    def _extract(
+        message: str,
+        asked_attribute: str | None = None,
+    ) -> ShoppingConstraints:
         """Extract constraints from the required generated dictionary."""
 
-        return constraint_module.extract_constraints(message)
+        return constraint_module.extract_constraints(
+            message,
+            asked_attribute=asked_attribute,
+        )
 
     def _route(self, message: str) -> str:
         try:
@@ -96,18 +126,33 @@ class Agent:
     ) -> dict[str, object]:
         state = self.sessions.get(session_id)
         message = user_message or ""
+        # Read the attribute we asked last turn before any goal reset clears it.
+        asked_attribute = state.last_asked
+        # The unscoped reading comes first: deciding whether this message is an
+        # override rather than an answer requires seeing every attribute in it.
         delta = self._extract(message)
+        had_messages = bool(state.messages)
+        override_kind = OverrideKind.NONE
+
+        if state.mode is not None:
+            override_kind = detect_override_kind(message, state.constraints, delta)
+
+        if (
+            override_kind is OverrideKind.NONE
+            and asked_attribute
+            and _scoping_could_change(delta, asked_attribute)
+        ):
+            # This message is an answer to our own question, so it is read as
+            # being about that attribute alone. An override is a change of goal
+            # rather than an answer and keeps the full reading above.
+            delta = self._extract(message, asked_attribute=asked_attribute)
+
         semantic_delta = getattr(delta, "semantic_constraints", None)
         structured_delta = (
             delta.structured_only()
             if hasattr(delta, "structured_only")
             else delta
         )
-        had_messages = bool(state.messages)
-        override_kind = OverrideKind.NONE
-
-        if state.mode is not None:
-            override_kind = detect_override_kind(message, state.constraints, delta)
 
         if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)

@@ -484,18 +484,26 @@ class AttributeDictionary:
         self,
         raw_text: str,
         *,
+        allowed_attribute: str | None = None,
         stopwords: Iterable[str] = (),
         max_ngram: int = 3,
         top_k_per_attribute: int = 1,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
     ) -> tuple[LookupMatch, ...]:
-        """Search stopword-filtered 1/2/3-grams across every semantic view.
+        """Search stopword-filtered 1/2/3-grams across the semantic views.
 
         Each phrase is encoded once and scored independently against the
         category, color, material, style, feature, and use-case matrices.
         Brand intentionally has no semantic view and remains exact-only.
+
+        ``allowed_attribute`` restricts scoring to a single matrix, which is
+        how an answer to a clarification question is read as being about the
+        attribute that was asked. Brand, size and price have no semantic view,
+        so scoping to one of those correctly yields no semantic matches.
         """
 
+        if allowed_attribute is not None and allowed_attribute not in ATTRIBUTE_FIELDS:
+            raise ValueError(f"unknown canonical attribute: {allowed_attribute}")
         if max_ngram < 1 or max_ngram > 3:
             raise ValueError("max_ngram must be between one and three")
         if top_k_per_attribute < 1:
@@ -530,7 +538,7 @@ class AttributeDictionary:
         matches: list[LookupMatch] = []
         for phrase in phrases:
             query = self._prepare_query(self._encode_query(phrase), np)
-            for attribute, rows, matrix in self._embedding_views(None):
+            for attribute, rows, matrix in self._embedding_views(allowed_attribute):
                 matches.extend(
                     self._score_embedding_view(
                         query,
