@@ -169,16 +169,13 @@ def main() -> None:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")
     parser.add_argument("--output", default="followup_probe.json")
-    parser.add_argument("--disable-layer2", action="store_true")
     parser.add_argument(
         "--retain-shown",
         action="store_true",
         help="Clear already-shown exclusions each turn to measure the true "
              "withholding counterfactual.",
     )
-    parser.add_argument("--layer2-artifact-dir")
-    parser.add_argument("--embedding-model")
-    parser.add_argument("--device")
+    parser.add_argument("--disable-user-profile", action="store_true")
     args = parser.parse_args()
 
     from evaluator.agent_factory import build_evaluator_agent
@@ -187,10 +184,7 @@ def main() -> None:
     catalog_ids, categories, products = le.catalog_index(args.catalog)
     agent = build_evaluator_agent(
         args.catalog,
-        layer2_artifact_dir=args.layer2_artifact_dir,
-        embedding_model=args.embedding_model,
-        disable_layer2=args.disable_layer2,
-        device=args.device,
+        disable_user_profile=args.disable_user_profile,
     )
     result = run(
         agent, samples, catalog_ids, categories, products,

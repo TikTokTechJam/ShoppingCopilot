@@ -14,7 +14,11 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
-from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
+from starter.routing.constraints import (
+    CATEGORICAL_FIELDS,
+    SemanticShoppingConstraints,
+    ShoppingConstraints,
+)
 from starter.routing import lexicon
 
 
@@ -34,6 +38,9 @@ class SessionState:
     profile: dict[str, Any]
     mode: str | None = None
     constraints: ShoppingConstraints = field(default_factory=ShoppingConstraints)
+    semantic_constraints: SemanticShoppingConstraints = field(
+        default_factory=SemanticShoppingConstraints
+    )
     asked_attributes: set[str] = field(default_factory=set)
     last_recommendations: tuple[str, ...] = ()
     excluded_recommendations: set[str] = field(default_factory=set)
@@ -46,6 +53,9 @@ class SessionState:
     # This is enough to remove an obsolete initial preference without creating
     # a second session-state system.
     constraint_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
+    semantic_constraint_provenance: dict[str, dict[str, str]] = field(
+        default_factory=dict
+    )
     last_override_kind: str | None = None
     last_override_delta: ShoppingConstraints | None = None
 
@@ -72,7 +82,7 @@ def _field_values(constraints: ShoppingConstraints, field_name: str) -> tuple[st
     return ()
 
 
-def _evidence(constraints: ShoppingConstraints) -> tuple[object, ...]:
+def _evidence(constraints: object) -> tuple[object, ...]:
     value = getattr(constraints, "evidence", ())
     return tuple(value) if isinstance(value, (list, tuple)) else ()
 
@@ -147,6 +157,45 @@ def merge_constraints(
     return ShoppingConstraints(**values)
 
 
+def merge_semantic_constraints(
+    current: SemanticShoppingConstraints,
+    delta: SemanticShoppingConstraints,
+    *,
+    replace_fields: Iterable[str] = (),
+) -> SemanticShoppingConstraints:
+    """Accumulate Layer 2 values without merging them into Layer 1 state."""
+
+    replacements = set(replace_fields)
+    values: dict[str, tuple[str, ...]] = {}
+    for field_name in (
+        "category",
+        "color",
+        "material",
+        "style",
+        "feature",
+        "use_case",
+    ):
+        incoming = _field_values(delta, field_name)
+        previous = _field_values(current, field_name)
+        values[field_name] = (
+            _unique(incoming)
+            if field_name in replacements
+            else _unique((*previous, *incoming))
+        )
+
+    evidence = list(_evidence(current))
+    if replacements:
+        evidence = [
+            item
+            for item in evidence
+            if str(getattr(item, "attribute", "")) not in replacements
+        ]
+    for item in _evidence(delta):
+        if item not in evidence:
+            evidence.append(item)
+    return SemanticShoppingConstraints(evidence=tuple(evidence), **values)
+
+
 _CORRECTION_MARKER = re.compile(
     r"\b(?:actually|instead|rather|change|changed|switch(?:ing)?|not)\b",
     re.IGNORECASE,
@@ -161,15 +210,27 @@ def correction_fields(
     message: str,
     current: ShoppingConstraints,
     delta: ShoppingConstraints,
+    *,
+    current_semantic: SemanticShoppingConstraints | None = None,
+    delta_semantic: SemanticShoppingConstraints | None = None,
 ) -> tuple[str, ...]:
     """Return populated fields that the user explicitly corrected."""
 
     if not _CORRECTION_MARKER.search(message or ""):
         return ()
+    current_semantic = current_semantic or SemanticShoppingConstraints()
+    delta_semantic = delta_semantic or SemanticShoppingConstraints()
     fields = [
         field_name
         for field_name in CATEGORICAL_FIELDS
-        if _field_values(current, field_name) and _field_values(delta, field_name)
+        if (
+            _field_values(current, field_name)
+            or _field_values(current_semantic, field_name)
+        )
+        and (
+            _field_values(delta, field_name)
+            or _field_values(delta_semantic, field_name)
+        )
     ]
     if (
         getattr(current, "price_min", None) is not None
@@ -254,6 +315,8 @@ class SessionManager:
         state.messages.clear()
         state.last_asked = None
         state.constraint_provenance.clear()
+        state.semantic_constraints = SemanticShoppingConstraints()
+        state.semantic_constraint_provenance.clear()
         state.last_override_kind = None
         state.last_override_delta = None
         return state
@@ -306,6 +369,48 @@ class SessionManager:
             state.constraints = replace(state.constraints, **payload)
 
         state.constraint_provenance = kept_provenance
+
+        semantic_values: dict[str, tuple[str, ...]] = {}
+        semantic_provenance: dict[str, dict[str, str]] = {}
+        for field_name in (
+            "category",
+            "color",
+            "material",
+            "style",
+            "feature",
+            "use_case",
+        ):
+            values = _field_values(state.semantic_constraints, field_name)
+            origins = state.semantic_constraint_provenance.get(field_name, {})
+            kept = tuple(
+                value for value in values if origins.get(value) != "initial"
+            )
+            semantic_values[field_name] = kept
+            if kept:
+                semantic_provenance[field_name] = {
+                    value: origins[value]
+                    for value in kept
+                    if value in origins
+                }
+        state.semantic_constraints = SemanticShoppingConstraints(
+            **semantic_values,
+            evidence=tuple(
+                item
+                for item in _evidence(state.semantic_constraints)
+                if getattr(item, "attribute", "") in semantic_values
+                and getattr(
+                    item,
+                    "canonical_id",
+                    "",
+                )
+                in {
+                    f"{field_name}:{value.replace(' ', '_')}"
+                    for field_name, values in semantic_values.items()
+                    for value in values
+                }
+            ),
+        )
+        state.semantic_constraint_provenance = semantic_provenance
         state.asked_attributes.clear()
         state.last_recommendations = ()
         state.excluded_recommendations.clear()
@@ -326,22 +431,56 @@ class SessionManager:
         session_id: str,
         delta: ShoppingConstraints,
         *,
+        semantic_delta: SemanticShoppingConstraints | None = None,
         replace_fields: Iterable[str] = (),
         source: str | None = None,
     ) -> ShoppingConstraints:
         state = self.get(session_id)
         replacements = set(replace_fields)
         update_source = source or ("initial" if not state.messages else "clarification")
+        semantic_delta = semantic_delta or getattr(
+            delta, "semantic_constraints", None
+        )
+        if not isinstance(semantic_delta, SemanticShoppingConstraints):
+            semantic_delta = SemanticShoppingConstraints()
+
+        structured_delta = (
+            delta.structured_only()
+            if hasattr(delta, "structured_only")
+            else delta
+        )
         for field_name in replacements:
             state.constraint_provenance.pop(field_name, None)
+            state.semantic_constraint_provenance.pop(field_name, None)
         state.constraints = merge_constraints(
-            state.constraints, delta, replace_fields=replacements
+            state.constraints, structured_delta, replace_fields=replacements
+        )
+        state.semantic_constraints = merge_semantic_constraints(
+            state.semantic_constraints,
+            semantic_delta,
+            replace_fields=replacements,
         )
         for field_name in CATEGORICAL_FIELDS:
-            incoming = _field_values(delta, field_name)
+            incoming = _field_values(structured_delta, field_name)
             if not incoming:
                 continue
             provenance = state.constraint_provenance.setdefault(field_name, {})
+            for value in incoming:
+                provenance[value] = update_source
+        for field_name in (
+            "category",
+            "color",
+            "material",
+            "style",
+            "feature",
+            "use_case",
+        ):
+            incoming = _field_values(semantic_delta, field_name)
+            if not incoming:
+                continue
+            provenance = state.semantic_constraint_provenance.setdefault(
+                field_name, {}
+            )
             for value in incoming:
                 provenance[value] = update_source
         return state.constraints
@@ -371,4 +510,5 @@ __all__ = [
     "detect_override_kind",
     "is_intent_override",
     "merge_constraints",
+    "merge_semantic_constraints",
 ]

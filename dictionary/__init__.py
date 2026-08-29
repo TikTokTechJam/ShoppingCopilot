@@ -9,6 +9,12 @@ from .registry import (
     AttributeDictionary,
     normalize_text,
 )
+from .semantic import (
+    ATTRIBUTE_EMBEDDING_DIMENSION,
+    ATTRIBUTE_EMBEDDING_MODEL,
+    ATTRIBUTE_MODEL_ENV,
+    load_bge_attribute_encoder,
+)
 
 __all__ = [
     "ATTRIBUTE_FIELDS",
@@ -18,4 +24,8 @@ __all__ = [
     "CanonicalValue",
     "LookupMatch",
     "normalize_text",
+    "ATTRIBUTE_EMBEDDING_DIMENSION",
+    "ATTRIBUTE_EMBEDDING_MODEL",
+    "ATTRIBUTE_MODEL_ENV",
+    "load_bge_attribute_encoder",
 ]

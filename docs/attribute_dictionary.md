@@ -67,8 +67,16 @@ Levi's       → levis
 O'Neill      → oneill
 ```
 
-The readable canonical value may still be `levi's` or `o'neill`. The system
-does not add stemming, synonym aliases, plural conversion, or semantic lookup.
+The readable canonical value may still be `levi's` or `o'neill`. The exact
+path does not add stemming, synonym aliases, or plural conversion.
+
+Optional semantic attribute matching uses a separate local-only
+`BAAI/bge-small-en-v1.5` encoder for short canonical phrases. It generates
+384-dimensional L2-normalized vectors for the six descriptive attributes
+(`category`, `color`, `material`, `style`, `feature`, and `use_case`). Phrases are
+encoded directly without a retrieval instruction or prefix. This BGE artifact
+is the active semantic layer. Brand remains exact-only; whole-product vector
+retrieval is retired from the Agent path.
 
 ## Artifacts
 
@@ -85,11 +93,16 @@ data/derived/dictionary/
 attribute, natural value, normalized surface, and distinct-product count.
 `normalized_lookup.json` stores attribute-scoped lookup lists and preserves
 one-to-many ambiguity. `manifest.json` records source provenance, V4 coverage,
-normalization version, counts, and whether embeddings were generated.
+normalization version, counts, and whether BGE attribute embeddings were
+generated. When embeddings are enabled, the manifest records the exact BGE
+model, dimension, L2 normalization, and the absence of a query prefix. The
+runtime rejects other attribute model families or dimensions rather than
+mixing them with the BGE matrix.
 
-No embedding files are required for the exact-only flow. Optional embedding
-support remains available for a later stage, but is not part of the first
-baseline.
+No embedding files are required for the exact-only flow. The optional semantic
+artifact consists of `attribute_embeddings.npy` and
+`embedding_metadata.json`; it contains canonical values only and never product
+embeddings.
 
 ## Build and validate
 
@@ -106,11 +119,26 @@ python -m scripts.validate_attribute_dictionary `
 ```
 
 The build command defaults to `data/derived/annotations/v5/annotations.jsonl`,
-the current V4 annotation output in this repository. Use `--input` to point it at another V4
-annotation JSONL location, such as a generated release under
+the current annotation output in this repository. Use `--input` to point it
+at another annotation JSONL location, such as a generated release under
 `data/derived/annotations/v5/annotations.jsonl`. The optional embedding command
 requires the dependencies in `requirements-embeddings.txt`; it is intentionally
 not run as part of normal repository checks.
+
+For the BGE semantic attribute artifact, download the model once and build only
+the canonical attribute vectors:
+
+```powershell
+python -m scripts.setup_bge_attribute_model
+
+python -m scripts.build_attribute_dictionary `
+  --input data/derived/annotations/v5/annotations.jsonl `
+  --output-dir data/derived/dictionary `
+  --embedding-model models/bge-small-en-v1.5
+
+python -m scripts.validate_attribute_dictionary `
+  --directory data/derived/dictionary
+```
 
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed

@@ -96,6 +96,17 @@ For future larger runs, increase concurrency gradually (1, then 4, 8, and 16) on
 ```powershell
 python -m scripts.build_catalog_facts --annotations data/derived/annotations/v5/annotations.jsonl
 python -m scripts.validate_catalog_facts
+
+The six V5 single-attribute files can be joined without rerunning any model.
+Run:
+
+    python -m scripts.aggregate_v5_annotations --catalog data/catalog.jsonl --input-dir data/derived/annotations/v5 --output data/derived/annotations/v5/annotations.jsonl
+
+This emits one record for every catalog product in catalog order. The catalog
+supplies parent_asin and normalized price; missing V5 rows or empty attribute
+results become []. Duplicate or catalog-external ASINs fail explicitly. The
+aggregate contains category, brand, color, material, feature, and use_case;
+style and size are not included.
 ```
 
 Reasoning is disabled by default for extraction; use `--thinking` only for an explicit comparison. The runner retries transient 429/network/5xx failures, gives at most one corrective retry for schema errors, and does not repeat a request that ended with `finish_reason=length` or a context-length error. Use `--no-json-mode` if the endpoint does not support the OpenAI `response_format` option. The runner sends the API key only as an in-memory `Authorization` header and never writes it to output or the manifest.
@@ -111,6 +122,10 @@ Run the hard evaluator with:
 ```bash
 python -m evaluator.hard_evaluator
 ```
+
+For a local turn-by-turn view of the same Manual400 Agent flow, run
+`python -m evaluator.debug_web` and open <http://127.0.0.1:8765>. See
+[`docs/debug_web.md`](docs/debug_web.md) for model setup and controls.
 
 The evaluator uses the frozen 50,000-product catalog as the Agent's retrieval universe and for exact `parent_asin` target validation. It does not rebuild facts or alter the benchmark. At each turn, the Agent may ask for one attribute and return up to 10 recommendations; the simulator supplies the corresponding fixed customer reply. The evaluator reports Hit Rate@10, MRR, MTTC, scenario metrics, and TechnicalScore under the ten-turn limit.
 
@@ -169,6 +184,7 @@ annotation/                       annotation prompt, schema, client, and runner
 scripts/annotate_catalog.py      resumable hosted-model annotation CLI
 scripts/build_catalog_facts.py   deterministic canonical-facts builder
 scripts/validate_catalog_facts.py read-only canonical-facts validator
+scripts/aggregate_v5_annotations.py catalog-ordered V5 attribute joiner
 evaluator/hard_evaluator.py       fixed GPTAnnotation hard benchmark evaluator
 data/derived/gptannotation/       400-session hard benchmark input
 IMPROVEMENT_LOG.md                chronological change and evaluation record

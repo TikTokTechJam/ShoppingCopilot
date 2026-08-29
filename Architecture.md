@@ -17,7 +17,12 @@ The design optimizes for the competition objective:
 - treat Buying as precision-first and Browsing as recall-first;
 - keep hidden evaluator information completely outside Agent logic.
 
-The first MVP deliberately favors deterministic preprocessing, in-memory indexes, exact dense search, and benchmark-driven iteration over infrastructure complexity.
+The current MVP deliberately favors deterministic preprocessing, in-memory indexes, exact canonical matching, BGE semantic attribute search, and benchmark-driven iteration over infrastructure complexity.
+
+The active runtime does not use whole-product embedding retrieval. The previous
+direct catalog-field/Jina path is retired. Layer 2 now means semantic matching
+against the generated V5 canonical attribute matrices using the local
+`BAAI/bge-small-en-v1.5` model; brand remains exact-only.
 
 ## 2. System-level architecture
 
@@ -27,13 +32,13 @@ The first MVP deliberately favors deterministic preprocessing, in-memory indexes
                     +--------------+--------------+
                     |                             |
                     v                             v
-        LAYER 1 — EXISTING FLOW          LAYER 2 — EMBEDDING FLOW
-              (UNCHANGED)                 (DIRECT FROM CATALOG)
+        LAYER 1 — EXISTING FLOW       LAYER 2 — BGE ATTRIBUTE FLOW
+              (UNCHANGED)             (V5 CANONICAL DICTIONARY)
                     |                             |
       +-------------+-------------+       +------+-------+-------+-------+---------+
       |             |             |       |              |       |       |         |
       v             v             v       v              v       v       v         v
- Tier 1         Tier 2        Tier 3   categories       title  features description details (optional/later)
+  Tier 1         Tier 2        Tier 3   category   color material style feature use_case
  structured     trusted       descriptive                |       |       |         |
  extraction     annotation    annotation                 |       |       |         |
       |             |             |       |              |       |       |         |
@@ -46,10 +51,10 @@ The first MVP deliberately favors deterministic preprocessing, in-memory indexes
       | item weight |             |                      |       |       |         |
       +-------------+-------------+                      |       |       |         |
                     |                                    |       |       |         |
-                    v                                    v       v       v         v
-        validation + normalization                 category   title   features description selected
-                    |                              embedding embedding embedding embedding details
-                    v                                                       |                   embedding
+                    v                                    v       v       v
+        validation + normalization                 BGE attribute matrices
+                    |                              category/color/material/style
+                    v                              feature/use_case
           canonical product facts                                           |
                     |                                                       |
           +---------+---------+                                             |
@@ -68,12 +73,9 @@ The first MVP deliberately favors deterministic preprocessing, in-memory indexes
                               +------------+------------+
                               |                         |
                               v                         v
-                    Layer 1 evidence             Layer 2 scores
-                    exact / structured           category similarity
-                    canonical matches            title similarity
-                                                 features similarity
-                                                 description similarity
-                                                 details similarity
+                    Layer 1 evidence             Layer 2 evidence
+                    exact / structured           canonical value similarity
+                    canonical matches
                               |                         |
                               +------------+------------+
                                            |
@@ -83,19 +85,24 @@ The first MVP deliberately favors deterministic preprocessing, in-memory indexes
 
 The central principle remains unchanged for Layer 1: not all facts have the same reliability or retrieval role.
 
-Layer 2 is an independent semantic retrieval path built directly from `catalog.jsonl`. It does not consume Tier 1, Tier 2, or Tier 3 outputs. Layer 1 and Layer 2 meet only at retrieval/ranking.
+Layer 2 is an independent semantic attribute path built from the generated V5
+canonical dictionary. It does not load whole-product vectors. Layer 1 exact
+constraints and Layer 2 semantic attribute evidence meet in the existing
+structured scorer.
 
-Layer 2 creates four core product views plus one optional view for later implementation:
+Layer 2 creates one canonical-value matrix per semantic attribute:
 
 ```text
-categories
-title
-features
-description
-selected details  # optional / later implementation
+category
+color
+material
+style
+feature
+use_case
 ```
 
-Each view is embedded independently so noisy text in one catalog field does not contaminate the semantic representation of another field.
+Brand remains exact-only and has no semantic matrix. Each attribute matrix is
+embedded with local BGE-small vectors and searched independently.
 
 ### Runtime flow
 
@@ -109,27 +116,27 @@ Each view is embedded independently so noisy text in one catalog field does not 
                     |                             |
                     v                             v
           Layer 1 parsed state            Layer 2 semantic query
-          structured / canonical          current + active session intent
+          structured / canonical          residual user phrases
                     |                             |
                     |                             v
-                    |                      embed query once
+                    |                      remove stopwords
                     |                             |
                     |                             v
-                    |              normalized query_embedding
+                    |              1/2/3-gram phrases
                     |                             |
                     |              +--------------+--------------+--------------+--------------+
                     |              |              |              |              |              |
                     |              v              v              v              v              v
-                    |         categories      title          features      description      details (optional)
-                    |          matrix          matrix          matrix          matrix          matrix (optional)
+                    |         category       color       material       style       feature       use_case
+                    |          matrix         matrix       matrix        matrix       matrix        matrix
                     |              |              |              |              |              |
                     |              v              v              v              v              v
-                    |        category score   title score   features score description score details score (optional)
+                    |        semantic attribute matches with cosine similarity
                     |              |              |              |              |              |
                     |              +--------------+--------------+--------------+--------------+
                     |                                             |
                     |                                             v
-                    |                                presence-aware weighted score
+                    |                                thresholded BGE evidence
                     |                                             |
                     +----------------------+----------------------+
                                            |
@@ -143,7 +150,10 @@ Each view is embedded independently so noisy text in one catalog field does not 
                                          Top-K
 ```
 
-At runtime, catalog embeddings are never regenerated. The Agent loads the four core matrices once at startup and may additionally load the optional details matrix when that view is implemented. It creates only one new query embedding per turn.
+At runtime, whole-product catalog embeddings are not loaded. The Agent loads
+the V5 canonical dictionary and available attribute matrices once at startup.
+It encodes the residual one-, two-, and three-token phrases locally with the
+same BGE model used to build those matrices.
 
 ## 3. Product knowledge model
 
@@ -291,7 +301,8 @@ details
 
 The original catalog remains immutable. Raw text is preserved even when a fact was not successfully structured or annotated.
 
-Tier 4 feeds the whole-product embedding representation and can recover unusual language, rare attributes, model names, product-specific phrases, and facts not covered by the structured ontology.
+Tier 4 remains available as source text for future retrieval work, but it is
+not embedded or searched by the active runtime.
 
 The architecture must not require the annotation schema to represent every possible user request.
 
@@ -446,13 +457,41 @@ Semantic fallback is attribute-scoped:
 - `size`: structured/exact only by default;
 - `price` and measurements: numeric only.
 
-Attribute-value embeddings are separate from whole-product embeddings. They resolve user phrases to canonical values; they are not a product retrieval index.
+Attribute-value embeddings are the active semantic retrieval index. They
+resolve residual user phrases to canonical values; no whole-product embedding
+index is used by the runtime.
 
-## 7. Layer 2 direct field embeddings
+## 7. Active canonical attribute semantic embeddings
+
+Layer 1 remains unchanged. The active Layer 2 path consumes the generated V5
+canonical dictionary rather than the raw catalog.
+
+For each semantic attribute, the offline builder stores one matrix containing
+L2-normalized BGE-small embeddings for canonical values. Runtime removes the
+configured stopwords from the residual utterance, creates deterministic
+one-, two-, and three-token phrases, and searches the matching attribute
+matrix. A score at or above the configured threshold becomes Layer 2 evidence
+in session state; its cosine similarity is retained by the scorer.
+
+The active matrices are:
+
+```text
+category, color, material, style, feature, use_case
+```
+
+Brand remains exact-only. Price, size, and measurements remain structured and
+are never resolved by semantic similarity.
+
+The old direct catalog-field design is retained below only as historical
+context. It is not loaded, searched, or required by the Agent or evaluator.
+
+## Appendix A. Retired direct field embedding design
+
+The following subsections describe the retired whole-product embedding path.
 
 Layer 1 remains unchanged.
 
-Layer 2 is an independent embedding path that reads directly from `catalog.jsonl`.
+The former Layer 2 path read directly from `catalog.jsonl`.
 
 For every product, Layer 2 creates four core semantic views and reserves selected details as an optional later view:
 
@@ -690,7 +729,7 @@ catalog.jsonl
     |
     +--> Layer 1 existing structured / annotation / canonical path
     |
-    `--> Layer 2 direct field embedding path
+    `--> Layer 2 canonical attribute embedding path
 ```
 
 They meet only during retrieval/ranking.
@@ -773,7 +812,7 @@ user utterance
     |   primarily style, feature, use_case
     |
     v
-5. retain unresolved/full semantic context for dense retrieval
+5. retain unresolved/full semantic context for future raw-text retrieval
 ```
 
 Priority is:
@@ -860,7 +899,7 @@ category exact / numeric budget / explicit size or measurement    VERY HIGH
 brand exact                                                       VERY HIGH
 color/material exact                                              HIGH
 style/feature/use_case                                            MEDIUM
-Layer 2 multi-view similarity                                      MEDIUM
+Layer 2 canonical attribute similarity                              MEDIUM
 ```
 
 Actual weights are benchmark-tuned and should not be hard-coded into this document.
@@ -884,8 +923,8 @@ apply strong trusted-semantic evidence
 score descriptive semantic matches
     |
     v
-use Layer 2 multi-view similarity among viable candidates
-    |   categories / title / features / description / selected details (optional)
+use Layer 2 canonical attribute evidence among viable candidates
+    |   category / color / material / style / feature / use_case
     v
 rank candidate pool
 ```
@@ -906,7 +945,9 @@ Tier 3 fields are soft by default.
 
 If the strict pool becomes too small or empty, controlled relaxation should remove the weakest soft semantic evidence first while preserving explicit numeric and exact structured requirements as long as possible.
 
-If controlled relaxation still cannot produce a useful pool, dense retrieval over the broader catalog can recover candidates while recording the fallback in provenance.
+If controlled relaxation still cannot produce a useful pool, deterministic
+catalog-order fallback can recover candidates while recording the fallback in
+provenance.
 
 ### 10.3 Browsing mode
 
@@ -916,7 +957,7 @@ Browsing is recall-first.
 full current/session semantic context
         |
         v
-Layer 2 multi-view dense retrieval over 50k
+Layer 2 canonical attribute matching over the available dictionary values
         |
         v
 broad candidate pool
@@ -961,7 +1002,7 @@ structured numeric arrays/lookups
 Tier 2 canonical inverted indexes
 Tier 3 canonical inverted indexes where useful
 canonical registries
-Layer 2 category/title/features/description embedding matrices + optional details matrix + shared row metadata when valid
+Layer 2 category/color/material/style/feature/use_case matrices + shared canonical metadata
 ```
 
 Typical exact indexes:
@@ -1316,13 +1357,13 @@ After repeated optimization on Manual400, treat it as a dev set and validate cha
 ## 16. Design principles for future changes
 
 1. **Precision and recall come from different layers.**
-   Structured and trusted facts provide precision; descriptive semantics and dense retrieval recover recall.
+   Structured and trusted facts provide precision; BGE canonical-attribute semantics recover wording variation.
 
 2. **Do not make embeddings enforce discrete constraints.**
    Semantic similarity can help understand wording, but final size, numeric, and measurement constraints are structured.
 
 3. **Do not require perfect annotation coverage.**
-   Raw text and product embeddings exist specifically to recover facts the canonical layer misses.
+   Raw catalog text remains available for future retrieval work; it is not part of the active embedding path.
 
 4. **Weight evidence according to trust.**
    A `size=10` exact match is not the same type of evidence as `use_case=hiking`.
