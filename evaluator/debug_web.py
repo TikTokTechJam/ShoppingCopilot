@@ -152,13 +152,23 @@ def _layer2_status(agent: Any) -> dict[str, Any]:
 def _bm25_status(agent: Any) -> dict[str, Any]:
     retriever = getattr(agent, "retriever", None)
     available = bool(getattr(retriever, "bm25_available", False))
+    reason = getattr(retriever, "bm25_error", None) or (
+        "The local BM25 product-text index is unavailable."
+    )
+    index = getattr(retriever, "bm25_index", None)
     return {
         "available": available,
-        "reason": None if available else getattr(
+        "state": getattr(
             retriever,
-            "bm25_error",
-            "The local BM25 product-text index is unavailable.",
+            "bm25_state",
+            "ready" if available else "unavailable",
         ),
+        "reason": None if available else reason,
+        "indexed_products": (
+            int(getattr(index, "indexed_rows", 0)) if index is not None else 0
+        ),
+        "catalog_products": len(getattr(retriever, "_catalog_order", ()) or ()),
+        "build_seconds": getattr(retriever, "bm25_build_seconds", None),
     }
 
 

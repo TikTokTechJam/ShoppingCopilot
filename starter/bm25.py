@@ -8,6 +8,7 @@ the three paths see the same conversational query terms.
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
@@ -55,9 +56,32 @@ class BM25Index:
         products: Mapping[str, Any],
         catalog_order: Iterable[str],
     ) -> None:
+        started = time.perf_counter()
         self.connection = sqlite3.connect(":memory:")
         self._asins = tuple(str(asin) for asin in catalog_order)
-        self._build(products)
+        self.indexed_rows = 0
+        self.build_seconds: float | None = None
+        print(
+            f"[bm25] preprocessing catalog: {len(self._asins):,} products",
+            flush=True,
+        )
+        try:
+            self._build(products)
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            print(
+                f"[bm25] preprocessing failed after {elapsed:.1f}s "
+                f"at {self.indexed_rows:,}/{len(self._asins):,} products: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            raise
+        self.build_seconds = time.perf_counter() - started
+        print(
+            f"[bm25] ready: {self.indexed_rows:,} products indexed "
+            f"in {self.build_seconds:.1f}s",
+            flush=True,
+        )
 
     def _build(self, products: Mapping[str, Any]) -> None:
         cursor = self.connection.cursor()
@@ -67,6 +91,7 @@ class BM25Index:
             "tokenize='unicode61 remove_diacritics 2')"
         )
         batch: list[tuple[str, str, str, str, str, str, str]] = []
+        next_log = 5000
         for asin in self._asins:
             product = products.get(asin)
             raw = getattr(product, "raw", product)
@@ -85,9 +110,22 @@ class BM25Index:
             )
             if len(batch) >= 1000:
                 cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
+                self.indexed_rows += len(batch)
                 batch.clear()
+                if self.indexed_rows >= next_log:
+                    print(
+                        f"[bm25] indexed {self.indexed_rows:,}/{len(self._asins):,}",
+                        flush=True,
+                    )
+                    next_log += 5000
         if batch:
             cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
+            self.indexed_rows += len(batch)
+        print(
+            f"[bm25] catalog text preprocessing complete: "
+            f"{self.indexed_rows:,}/{len(self._asins):,} rows",
+            flush=True,
+        )
         self.connection.commit()
 
     def search(

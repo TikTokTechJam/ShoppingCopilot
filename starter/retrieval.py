@@ -290,11 +290,17 @@ class ProductRetriever:
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
         self.bm25_index: BM25Index | None = None
+        self.bm25_state = "loading"
         self.bm25_error: str | None = None
+        self.bm25_build_seconds: float | None = None
         try:
             self.bm25_index = BM25Index(self.product_by_asin, self._catalog_order)
+            self.bm25_state = "ready"
+            self.bm25_build_seconds = self.bm25_index.build_seconds
         except (OSError, RuntimeError, sqlite3.Error) as exc:
+            self.bm25_state = "unavailable"
             self.bm25_error = f"BM25 index unavailable: {exc}"
+            print(f"[retrieval] {self.bm25_error}", flush=True)
         self.embedding_matrix: Any = None
         self.embedding_asins: tuple[str, ...] = ()
         self._embedding_norms: Any = None

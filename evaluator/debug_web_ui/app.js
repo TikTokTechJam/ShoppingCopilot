@@ -112,7 +112,7 @@ function renderState(data) {
     <h3>Layer 2</h3>
     <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
     <h3>BM25 lexical search</h3>
-    <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? "Available" : `Unavailable: ${esc(data.bm25?.reason || "Unknown")}`}</div>
+    <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
     <h3>Hard evaluator score</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
