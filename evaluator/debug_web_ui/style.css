@@ -24,3 +24,34 @@ h1, h2, h3, h4, p { margin-top: 0; } h1 { margin-bottom: 4px; font-size: 28px; }
 .similarity-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: start; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: #202938; }
 .similarity-id { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .similarity-method { color: var(--muted); font-size: 12px; }
+
+html, body { max-width: 100%; overflow-x: hidden; }
+.shell { width: 100%; max-width: 1500px; }
+.grid, .grid > *, .side-column, .panel, .conversation, .turn-card { min-width: 0; max-width: 100%; }
+.panel { overflow: hidden; }
+.session-banner > div, .banner-target { min-width: 0; max-width: 100%; }
+.banner-target-title { display: inline-block; max-width: min(60vw, 760px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.constraint-row { grid-template-columns: minmax(82px, 112px) minmax(0, 1fr); }
+.constraint-values { min-width: 0; max-width: 100%; overflow: hidden; }
+.chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.chip-score { color: #ffffff; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.similarity-list { max-width: 100%; max-height: 260px; overflow-x: hidden; overflow-y: auto; }
+.similarity-row { grid-template-columns: minmax(0, 1fr) auto; min-width: 0; }
+.similarity-id { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.score-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 10px; }
+.score-grid > div { min-width: 0; padding: 8px; border-radius: 6px; background: #202938; }
+.score-grid span, .score-grid strong { display: block; }
+.score-grid span { color: var(--muted); font-size: 11px; }
+.score-grid strong { margin-top: 2px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.table-wrap { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.ranking-table { width: 100%; min-width: 0; table-layout: fixed; }
+.ranking-table th:nth-child(1), .ranking-table td:nth-child(1) { width: 7%; }
+.ranking-table th:nth-child(2), .ranking-table td:nth-child(2) { width: 18%; }
+.ranking-table th:nth-child(3), .ranking-table td:nth-child(3) { width: 43%; }
+.ranking-table th:nth-child(4), .ranking-table td:nth-child(4), .ranking-table th:nth-child(5), .ranking-table td:nth-child(5), .ranking-table th:nth-child(6), .ranking-table td:nth-child(6) { width: 10.67%; }
+.ranking-table td { min-width: 0; overflow: hidden; }
+.table-title { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target-facts { max-width: 100%; }
+pre { max-width: 100%; overflow: auto; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .score-grid { grid-template-columns: 1fr; } .banner-target-title { max-width: 52vw; } }
