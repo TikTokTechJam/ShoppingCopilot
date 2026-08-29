@@ -420,6 +420,30 @@ def add_score_fields(summary: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _print_evaluation_progress(
+    completed_results: list[dict[str, Any]],
+    total_sessions: int,
+    current_result: Mapping[str, Any],
+) -> None:
+    """Print one flushed cumulative score line after each completed session."""
+
+    metrics = add_score_fields(metric_summary(completed_results))
+    first_hit = current_result.get("first_hit_turn")
+    print(
+        f"[hard_evaluator] completed={len(completed_results)}/{total_sessions} "
+        f"sample={current_result.get('sample_id', '')} "
+        f"scenario={current_result.get('scenario_type', '')} "
+        f"hit={'YES' if current_result.get('hit') else 'NO'} "
+        f"first_hit_turn={first_hit if first_hit is not None else '-'} "
+        f"cumulative_hit_rate_at_10={float(metrics['hit_rate_at_10']):.6f} "
+        f"cumulative_mrr={float(metrics['mrr']):.6f} "
+        f"cumulative_mttc={float(metrics['mttc']):.6f} "
+        f"cumulative_efficiency={float(metrics['efficiency']):.6f} "
+        f"cumulative_technical_score={float(metrics['technical_score']):.6f}",
+        flush=True,
+    )
+
+
 def evaluate(
     agent: Any,
     sessions: Iterable[Mapping[str, Any]],
@@ -428,6 +452,7 @@ def evaluate(
     before_turn_callback: Any | None = None,
     after_turn_callback: Any | None = None,
     session_callback: Any | None = None,
+    progress_callback: Any | None = None,
     validate: bool = True,
 ) -> dict[str, Any]:
     rows = (
@@ -579,6 +604,13 @@ def evaluate(
                 ),
             }
         )
+
+        if progress_callback is not None:
+            progress_callback(
+                completed_results=results,
+                total_sessions=len(rows),
+                current_result=results[-1],
+            )
 
         if session_callback is not None:
             session_callback(
@@ -1230,6 +1262,7 @@ def main() -> None:
         sessions=sessions,
         catalog_ids=catalog_ids,
         strict=not args.non_strict,
+        progress_callback=_print_evaluation_progress,
     )
 
     Path(args.output).write_text(

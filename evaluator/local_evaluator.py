@@ -202,6 +202,39 @@ def metric_summary(sessions: list[dict]) -> dict:
     }
 
 
+def _print_evaluation_progress(
+    completed_sessions: list[dict],
+    total_samples: int,
+    current_session: dict,
+) -> None:
+    """Print one flushed cumulative score line after each public sample."""
+
+    metrics = metric_summary(completed_sessions)
+    efficiency = max(
+        0.0,
+        min(1.0, (11.0 - float(metrics["mttc"])) / 10.0),
+    )
+    technical_score = (
+        0.50 * float(metrics["hit_rate_at_10"])
+        + 0.30 * float(metrics["mrr"])
+        + 0.20 * efficiency
+    )
+    first_hit = current_session.get("first_hit_turn")
+    print(
+        f"[local_evaluator] completed={len(completed_sessions)}/{total_samples} "
+        f"sample={current_session.get('sample_id', '')} "
+        f"scenario={current_session.get('scenario_type', '')} "
+        f"hit={'YES' if current_session.get('hit') else 'NO'} "
+        f"first_hit_turn={first_hit if first_hit is not None else '-'} "
+        f"cumulative_hit_rate_at_10={float(metrics['hit_rate_at_10']):.6f} "
+        f"cumulative_mrr={float(metrics['mrr']):.6f} "
+        f"cumulative_mttc={float(metrics['mttc']):.6f} "
+        f"cumulative_efficiency={efficiency:.6f} "
+        f"cumulative_recommended_technical_score={technical_score:.6f}",
+        flush=True,
+    )
+
+
 def materialize_hidden_fields(sample: dict, products: dict[str, dict]) -> tuple[dict, dict]:
     if "intent_card" in sample and "behavior" in sample:
         return sample["intent_card"], sample["behavior"]
@@ -275,6 +308,11 @@ def evaluate(
             "best_rank": best_rank,
             "reciprocal_rank": 0.0 if best_rank is None else 1.0 / best_rank,
         })
+        _print_evaluation_progress(
+            sessions,
+            len(samples),
+            sessions[-1],
+        )
 
     overall = metric_summary(sessions)
     efficiency = max(0.0, min(1.0, (11.0 - float(overall["mttc"])) / 10.0))
