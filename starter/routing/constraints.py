@@ -688,9 +688,19 @@ def _context_attributes(
 
     found: list[str] = []
     candidate_attributes = {candidate.attribute for candidate in candidates}
+    material_from_context = directly_before(("made", "from"))
     for attribute in _DICTIONARY_ATTRIBUTES:
         before_patterns = _EXPLICIT_CONTEXT_BEFORE.get(attribute, ())
         after_patterns = _EXPLICIT_CONTEXT_AFTER.get(attribute, ())
+
+        # ``from`` can introduce a brand (``from Nike``), but in the longer
+        # phrase ``made from polyester`` it is part of the material cue. The
+        # specific two-token cue must win so the same value is not rejected as
+        # having both brand and material context.
+        if attribute == "brand" and material_from_context:
+            before_patterns = tuple(
+                pattern for pattern in before_patterns if pattern != ("from",)
+            )
 
         if any(directly_before(pattern) for pattern in before_patterns):
             if (
