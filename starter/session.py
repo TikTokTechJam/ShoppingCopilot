@@ -42,6 +42,7 @@ class SessionState:
         default_factory=SemanticShoppingConstraints
     )
     asked_attributes: set[str] = field(default_factory=set)
+    no_preference_attributes: set[str] = field(default_factory=set)
     last_recommendations: tuple[str, ...] = ()
     excluded_recommendations: set[str] = field(default_factory=set)
     last_user_message: str | None = None
@@ -327,6 +328,7 @@ class SessionManager:
         state.mode = None
         state.constraints = ShoppingConstraints()
         state.asked_attributes.clear()
+        state.no_preference_attributes.clear()
         state.last_recommendations = ()
         state.excluded_recommendations.clear()
         state.last_user_message = None
@@ -431,6 +433,7 @@ class SessionManager:
         )
         state.semantic_constraint_provenance = semantic_provenance
         state.asked_attributes.clear()
+        state.no_preference_attributes.clear()
         state.last_recommendations = ()
         state.excluded_recommendations.clear()
         state.last_user_message = None

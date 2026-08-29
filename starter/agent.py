@@ -22,6 +22,30 @@ from starter.session import (
 )
 
 
+_NO_PREFERENCE_FALLBACKS = {
+    "other": ("feature", "use_case"),
+    "feature": ("use_case",),
+}
+_REPEAT_UNTIL_DECLINED = frozenset({"feature", "use_case"})
+
+
+def _next_no_preference_attribute(
+    previous_attribute: str | None,
+    declined_attributes: object,
+) -> str | None:
+    """Return the next catch-all clarification after a declined answer."""
+
+    candidates = _NO_PREFERENCE_FALLBACKS.get(previous_attribute or "", ())
+    try:
+        declined = set(declined_attributes)
+    except TypeError:
+        declined = set()
+    for candidate in candidates:
+        if candidate not in declined:
+            return candidate
+    return None
+
+
 
 def _scoping_could_change(
     delta: ShoppingConstraints,
@@ -148,6 +172,9 @@ class Agent:
         if state.mode is not None:
             override_kind = detect_override_kind(message, state.constraints, delta)
 
+        if no_preference_reply and pending_attribute:
+            state.no_preference_attributes.add(pending_attribute)
+
         if (
             not skip_constraint_extraction
             and override_kind is OverrideKind.NONE
@@ -245,18 +272,54 @@ class Agent:
         recommendations = [{"parent_asin": asin} for asin in ranked]
 
         affinity = self._profile_affinity.get(session_id)
+        declined_attributes = state.no_preference_attributes
+        clarification_asked = (
+            set(state.asked_attributes) | set(declined_attributes)
+        )
         # No turn cutoff is needed here any more: a question asked on the final
         # turn has zero horizon in the Section 12b utility, so the policy
         # abstains on its own arithmetic rather than on a literal.
-        if state.last_asked == "other":
-            # The evaluator's generic fallback is deliberately repeatable: it
-            # can disclose another hidden preference on each subsequent turn.
-            ask_attribute = "other"
+        if no_preference_reply:
+            # ``other`` is a catch-all question, not an attribute that can be
+            # declined forever. Move through useful remaining dimensions in a
+            # deterministic order when the user has no preference there.
+            ask_attribute = _next_no_preference_attribute(
+                pending_attribute,
+                declined_attributes,
+            )
+            if ask_attribute is None:
+                ask_attribute = self.clarification.choose(
+                    candidates,
+                    state.constraints,
+                    clarification_asked,
+                    mode=state.mode or "BROWSING",
+                    profile_factor=affinity.factor if affinity is not None else None,
+                    turn=state.turn,
+                )
+                if ask_attribute is None and "other" not in clarification_asked:
+                    ask_attribute = "other"
+        elif (
+            pending_attribute in _REPEAT_UNTIL_DECLINED
+            and pending_attribute not in declined_attributes
+        ):
+            # The evaluator can disclose more than one fact for a phrase
+            # attribute. Keep asking the same attribute while the current
+            # reply contains a usable value; its no-preference reply above is
+            # the explicit signal to advance to the next attribute.
+            ask_attribute = pending_attribute
+        elif (
+            pending_attribute == "other"
+            and pending_attribute not in declined_attributes
+        ):
+            # ``other`` can disclose different hidden facts. Keep using it
+            # while it produces a value; a no-preference reply is handled by
+            # the deterministic fallback branch above.
+            ask_attribute = pending_attribute
         else:
             ask_attribute = self.clarification.choose(
                 candidates,
                 state.constraints,
-                state.asked_attributes,
+                clarification_asked,
                 mode=state.mode or "BROWSING",
                 profile_factor=affinity.factor if affinity is not None else None,
                 turn=state.turn,
@@ -264,9 +327,12 @@ class Agent:
             if ask_attribute is None:
                 # Once no standard attribute has enough evidence to be useful,
                 # keep the evaluator conversation moving through its generic
-                # catch-all question. Budget is evaluated by ClarificationPolicy
-                # from the candidates' actual prices before reaching this branch.
-                ask_attribute = "other"
+                # catch-all question, unless it has already been asked and
+                # declined. Budget is evaluated by ClarificationPolicy from
+                # the candidates' actual prices before reaching this branch.
+                ask_attribute = (
+                    "other" if "other" not in clarification_asked else None
+                )
         self.sessions.mark_asked(session_id, ask_attribute)
         self.sessions.set_recommendations(
             session_id,
