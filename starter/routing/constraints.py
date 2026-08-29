@@ -25,6 +25,7 @@ outside the semantic dictionary contract.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -366,12 +367,20 @@ _RESIDUAL_STOPWORDS = frozenset(
 
 @lru_cache(maxsize=1)
 def _load_default_dictionary() -> _AttributeDictionary | None:
-    directory = _Path("data/derived/dictionary")
-    if not (directory / "canonical_values.json").exists():
-        return None
-    if not (directory / "normalized_lookup.json").exists():
-        return None
-    return _AttributeDictionary.load(directory)
+    directories = (
+        _Path("data/derived/annotations/v5/dictionary"),
+        _Path("data/derived/dictionary"),
+    )
+    for directory in directories:
+        if not (directory / "canonical_values.json").exists():
+            continue
+        if not (directory / "normalized_lookup.json").exists():
+            continue
+        try:
+            return _AttributeDictionary.load(directory)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return None
 
 
 def _dictionary_pattern_surface(value: str) -> str:
@@ -399,7 +408,7 @@ def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
     if dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
         )
 
     alternatives = tuple(
@@ -788,7 +797,7 @@ def extract_constraints(
     if active_dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
         )
     return _extract_dictionary_constraints(
         text,
