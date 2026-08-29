@@ -1,4 +1,4 @@
-"""Local-only BGE query encoding for canonical attribute search."""
+"""Local semantic encoder support for canonical attribute values."""
 
 from __future__ import annotations
 
@@ -12,21 +12,35 @@ from product_embeddings.pipeline import load_local_sentence_transformer
 ATTRIBUTE_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 ATTRIBUTE_EMBEDDING_DIMENSION = 384
 ATTRIBUTE_EMBEDDING_NORMALIZATION = "l2"
-ATTRIBUTE_MODEL_ENV = "SHOPPING_ATTRIBUTE_EMBEDDING_MODEL"
 DEFAULT_ATTRIBUTE_MODEL_DIRS = (
     Path("models/bge-small-en-v1.5"),
     Path("model/bge-small-en-v1.5"),
 )
+ATTRIBUTE_MODEL_ENV = "SHOPPING_ATTRIBUTE_EMBEDDING_MODEL"
 
 
 def is_bge_small_en_v1_5(model_identifier: object) -> bool:
+    """Return whether an ID or local path names the required BGE model."""
+
     normalized = str(model_identifier).strip().casefold()
     normalized = normalized.replace("\\", "/").replace("_", "-")
     return "bge-small-en-v1.5" in normalized
 
 
+def embedding_models_compatible(expected: object, actual: object) -> bool:
+    """Allow the Hub ID and a local path for the same BGE model only."""
+
+    expected_id = str(expected).strip().casefold()
+    actual_id = str(actual).strip().casefold()
+    if not expected_id or not actual_id:
+        return False
+    if expected_id == actual_id:
+        return True
+    return is_bge_small_en_v1_5(expected_id) and is_bge_small_en_v1_5(actual_id)
+
+
 def resolve_attribute_model_path(model_path: str | Path | None = None) -> str:
-    """Resolve a local BGE model without permitting a download fallback."""
+    """Resolve a local BGE snapshot without introducing a download fallback."""
 
     configured = str(model_path or os.environ.get(ATTRIBUTE_MODEL_ENV, "")).strip()
     if configured:
@@ -35,30 +49,32 @@ def resolve_attribute_model_path(model_path: str | Path | None = None) -> str:
                 f"{ATTRIBUTE_MODEL_ENV} must point to {ATTRIBUTE_EMBEDDING_MODEL}"
             )
         return configured
+
     for candidate in DEFAULT_ATTRIBUTE_MODEL_DIRS:
         if candidate.is_dir():
             return candidate.as_posix()
     raise RuntimeError(
-        "local BGE attribute model is unavailable; set "
-        f"{ATTRIBUTE_MODEL_ENV} or place it in models/bge-small-en-v1.5"
+        "local BGE attribute model is unavailable; run "
+        "python -m scripts.setup_bge_attribute_model or set "
+        f"{ATTRIBUTE_MODEL_ENV}"
     )
 
 
 def load_bge_attribute_encoder(model_path: str | Path | None = None) -> Any:
-    """Load the exact BGE family used by the canonical-value matrices."""
+    """Load the BGE attribute encoder with local-only, no-prefix settings."""
 
-    resolved = resolve_attribute_model_path(model_path)
+    resolved_path = resolve_attribute_model_path(model_path)
     encoder = load_local_sentence_transformer(
-        resolved,
+        resolved_path,
         task=None,
         document_prompt_name=None,
         query_prompt_name=None,
         trust_remote_code=False,
     )
-    actual_model = getattr(encoder, "model_id", resolved)
-    if not is_bge_small_en_v1_5(actual_model):
+    actual_model = getattr(encoder, "model_id", resolved_path)
+    if not embedding_models_compatible(ATTRIBUTE_EMBEDDING_MODEL, actual_model):
         raise RuntimeError(
-            "attribute query encoder does not match the BGE artifact: "
+            "attribute query encoder does not match the required BGE model: "
             f"{actual_model} != {ATTRIBUTE_EMBEDDING_MODEL}"
         )
     dimension = getattr(encoder, "embedding_dimension", None)
@@ -69,6 +85,10 @@ def load_bge_attribute_encoder(model_path: str | Path | None = None) -> Any:
         )
     if not callable(getattr(encoder, "embed_query", None)):
         raise RuntimeError("BGE attribute query encoder does not expose embed_query()")
+    if not callable(getattr(encoder, "embed_documents", None)):
+        raise RuntimeError(
+            "BGE attribute encoder does not expose embed_documents()"
+        )
     return encoder
 
 
@@ -78,6 +98,7 @@ __all__ = [
     "ATTRIBUTE_EMBEDDING_NORMALIZATION",
     "ATTRIBUTE_MODEL_ENV",
     "DEFAULT_ATTRIBUTE_MODEL_DIRS",
+    "embedding_models_compatible",
     "is_bge_small_en_v1_5",
     "load_bge_attribute_encoder",
     "resolve_attribute_model_path",

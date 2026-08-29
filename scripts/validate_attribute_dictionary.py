@@ -13,6 +13,11 @@ from dictionary.registry import (
     canonical_id,
     normalize_text,
 )
+from dictionary.semantic import (
+    ATTRIBUTE_EMBEDDING_DIMENSION,
+    ATTRIBUTE_EMBEDDING_MODEL,
+    ATTRIBUTE_EMBEDDING_NORMALIZATION,
+)
 
 
 SCHEMA_VERSION = "canonical-attribute-dictionary/v2"
@@ -211,6 +216,23 @@ def validate_attribute_dictionary(directory: str | Path) -> dict[str, Any]:
     if embeddings_enabled:
         if embedding.get("status") != "generated":
             raise ValueError("generated embeddings must have generated status")
+        if embedding.get("model") != ATTRIBUTE_EMBEDDING_MODEL:
+            raise ValueError(
+                "attribute embeddings must use "
+                f"{ATTRIBUTE_EMBEDDING_MODEL}"
+            )
+        if embedding.get("dimension") != ATTRIBUTE_EMBEDDING_DIMENSION:
+            raise ValueError(
+                "attribute embedding dimension must be "
+                f"{ATTRIBUTE_EMBEDDING_DIMENSION}"
+            )
+        if embedding.get("normalization") != ATTRIBUTE_EMBEDDING_NORMALIZATION:
+            raise ValueError(
+                "attribute embeddings must use "
+                f"{ATTRIBUTE_EMBEDDING_NORMALIZATION} normalization"
+            )
+        if embedding.get("query_prefix") is not None:
+            raise ValueError("attribute embeddings must not use a query prefix")
         if not (root / "attribute_embeddings.npy").exists():
             raise ValueError("embedding matrix is missing")
         if not (root / "embedding_metadata.json").exists():

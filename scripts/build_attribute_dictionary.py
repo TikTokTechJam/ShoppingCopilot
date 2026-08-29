@@ -16,6 +16,12 @@ from dictionary.registry import (
     canonical_id,
     normalize_text,
 )
+from dictionary.semantic import (
+    ATTRIBUTE_EMBEDDING_DIMENSION,
+    ATTRIBUTE_EMBEDDING_MODEL,
+    ATTRIBUTE_EMBEDDING_NORMALIZATION,
+    load_bge_attribute_encoder,
+)
 
 
 SCHEMA_VERSION = "canonical-attribute-dictionary/v2"
@@ -285,24 +291,12 @@ def _load_numpy() -> Any:
 
 
 def _encode_with_sentence_transformers(
-    model_name: str,
+    model_path: str,
     texts: list[str],
 ) -> tuple[Any, str]:
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:  # pragma: no cover - environment dependent
-        raise RuntimeError(
-            "--embedding-model requires sentence-transformers; "
-            "install requirements-embeddings.txt"
-        ) from exc
-    model = SentenceTransformer(model_name)
-    matrix = model.encode(
-        texts,
-        convert_to_numpy=True,
-        normalize_embeddings=False,
-        show_progress_bar=False,
-    )
-    return matrix, model_name
+    encoder = load_bge_attribute_encoder(model_path)
+    matrix = encoder.embed_documents(texts)
+    return matrix, ATTRIBUTE_EMBEDDING_MODEL
 
 
 def _normalize_matrix(matrix: Any) -> Any:
@@ -404,6 +398,11 @@ def build_attribute_dictionary(
         normalized_matrix = _normalize_matrix(matrix)
         if int(normalized_matrix.shape[0]) != len(embedding_rows):
             raise ValueError("embedding count does not match canonical values")
+        if int(normalized_matrix.shape[1]) != ATTRIBUTE_EMBEDDING_DIMENSION:
+            raise ValueError(
+                "BGE attribute embeddings must have dimension "
+                f"{ATTRIBUTE_EMBEDDING_DIMENSION}, got {normalized_matrix.shape[1]}"
+            )
         _write_npy(output / "attribute_embeddings.npy", normalized_matrix)
         embedding_dimension = int(normalized_matrix.shape[1])
         embedding_status = "generated"
@@ -473,6 +472,12 @@ def build_attribute_dictionary(
                 "status": embedding_status,
                 "model": embedding_model_name,
                 "dimension": embedding_dimension,
+                "normalization": (
+                    ATTRIBUTE_EMBEDDING_NORMALIZATION
+                    if embedding_status == "generated"
+                    else None
+                ),
+                "query_prefix": None,
             },
             "source": {
                 "path": str(source_path),

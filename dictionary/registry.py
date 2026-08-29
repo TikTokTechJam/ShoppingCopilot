@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .semantic import embedding_models_compatible
+
 
 ATTRIBUTE_FIELDS = (
     "category",
@@ -208,11 +210,17 @@ class AttributeDictionary:
                 manifest = json.load(handle)
             if not isinstance(manifest, Mapping):
                 raise ValueError("dictionary manifest must contain an object")
-            raw_model = manifest.get("embedding_model", manifest.get("model"))
-            raw_dimension = manifest.get(
-                "embedding_dimension", manifest.get("dimension")
-            )
-            raw_normalization = manifest.get("normalization")
+            embedding_info = manifest.get("embedding")
+            if isinstance(embedding_info, Mapping):
+                raw_model = embedding_info.get("model")
+                raw_dimension = embedding_info.get("dimension")
+                raw_normalization = embedding_info.get("normalization")
+            else:
+                raw_model = manifest.get("embedding_model", manifest.get("model"))
+                raw_dimension = manifest.get(
+                    "embedding_dimension", manifest.get("dimension")
+                )
+                raw_normalization = manifest.get("normalization")
             if isinstance(raw_model, str) and raw_model.strip():
                 embedding_model = raw_model.strip()
             if isinstance(raw_dimension, int) and not isinstance(raw_dimension, bool):
@@ -705,16 +713,23 @@ class AttributeDictionary:
 
         if not callable(encoder) and not callable(getattr(encoder, "embed_query", None)):
             raise TypeError("encoder must be callable or expose embed_query()")
-        actual_dimension = getattr(encoder, "embedding_dimension", None)
-        if (
-            actual_dimension is not None
-            and self._embedding_dimension is not None
-            and int(actual_dimension) != self._embedding_dimension
-        ):
-            raise ValueError(
-                "semantic query encoder dimension does not match the attribute "
-                f"artifact: {actual_dimension} != {self._embedding_dimension}"
-            )
+        if self.has_semantic_embeddings:
+            actual_model = getattr(encoder, "model_id", None)
+            if not isinstance(actual_model, str) or not actual_model.strip():
+                raise ValueError(
+                    "semantic query encoder must declare a compatible model_id"
+                )
+            if not embedding_models_compatible(self._embedding_model, actual_model):
+                raise ValueError(
+                    "semantic query encoder model does not match the attribute "
+                    f"artifact: {actual_model} != {self._embedding_model}"
+                )
+            actual_dimension = getattr(encoder, "embedding_dimension", None)
+            if actual_dimension is None or int(actual_dimension) != self._embedding_dimension:
+                raise ValueError(
+                    "semantic query encoder dimension does not match the attribute "
+                    f"artifact: {actual_dimension} != {self._embedding_dimension}"
+                )
         self._query_encoder = encoder
 
     def _validate(self) -> None:
