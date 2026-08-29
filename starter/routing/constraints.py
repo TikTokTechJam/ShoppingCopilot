@@ -359,14 +359,29 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
         semantic_ids = {
             item.canonical_id for item in self.semantic_constraints.evidence
         }
+        structured_ids = {
+            item.canonical_id
+            for item in self.evidence
+            if item.layer != "layer2"
+        }
         values: dict[str, tuple[str, ...]] = {}
         for field_name in CATEGORICAL_FIELDS:
-            values[field_name] = tuple(
-                value
-                for value in getattr(self, field_name)
-                if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
-                not in semantic_ids
-            )
+            if self.evidence:
+                values[field_name] = tuple(
+                    value
+                    for value in getattr(self, field_name)
+                    if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
+                    in structured_ids
+                )
+            else:
+                # Preserve compatibility for manually constructed constraint
+                # objects that have no provenance attached.
+                values[field_name] = tuple(
+                    value
+                    for value in getattr(self, field_name)
+                    if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
+                    not in semantic_ids
+                )
         return CanonicalShoppingConstraints(
             price_min=self.price_min,
             price_max=self.price_max,
@@ -751,13 +766,15 @@ def _resolve_dictionary_match(
     return None
 
 
-def _residual_phrase(text: str, claimed: list[tuple[int, int]]) -> str:
-    remaining = list(text)
-    for start, end in claimed:
-        for index in range(max(0, start), min(len(remaining), end)):
-            remaining[index] = " "
-    tokens = re.findall(r"[A-Za-z][A-Za-z0-9']*", "".join(remaining).lower())
-    return " ".join(token for token in tokens if token not in _RESIDUAL_STOPWORDS)
+def _semantic_text(text: str) -> str:
+    """Build the independent Layer 2 input without Layer 1 span claims."""
+
+    tokens = [
+        token
+        for token in _normalize_dictionary_text(text).split()
+        if token not in _RESIDUAL_STOPWORDS
+    ]
+    return " ".join(tokens)
 
 
 def _semantic_ngrams(phrase: str, *, max_ngram: int = 3) -> tuple[str, ...]:
@@ -834,11 +851,11 @@ def _extract_dictionary_constraints(
     evidence: list[ConstraintEvidence] = []
     semantic_evidence: list[ConstraintEvidence] = []
     unmapped: set[str] = set()
-    claimed: list[tuple[int, int]] = []
+    structured_claimed: list[tuple[int, int]] = []
 
     price_min, price_max = _extract_prices(text)
     if price_min is not None or price_max is not None:
-        claimed.extend(
+        structured_claimed.extend(
             (match.start(), match.end())
             for match in PRICE_EXPRESSION.finditer(text)
         )
@@ -848,9 +865,12 @@ def _extract_dictionary_constraints(
             evidence.append(ConstraintEvidence("price_max", "price", "", "structured", 1.0))
 
     for match in SIZE_NUMERIC.finditer(text):
-        if any(match.start() < end and match.end() > start for start, end in claimed):
+        if any(
+            match.start() < end and match.end() > start
+            for start, end in structured_claimed
+        ):
             continue
-        claimed.append((match.start(), match.end()))
+        structured_claimed.append((match.start(), match.end()))
         value = match.group(1)
         if value not in values["size"]:
             values["size"].append(value)
@@ -861,9 +881,12 @@ def _extract_dictionary_constraints(
             )
 
     for match in _dictionary_surface_matches(dictionary, text):
-        if any(match.start < end and match.end > start for start, end in claimed):
+        if any(
+            match.start < end and match.end > start
+            for start, end in structured_claimed
+        ):
             continue
-        claimed.append((match.start, match.end))
+        structured_claimed.append((match.start, match.end))
         entry = _resolve_dictionary_match(text, match, dictionary)
         if entry is None:
             unmapped.add(match.raw_text.strip().lower())
@@ -876,22 +899,22 @@ def _extract_dictionary_constraints(
                 )
             )
 
-    residual = _residual_phrase(text, claimed)
-    if residual:
+    semantic_text = _semantic_text(text)
+    if semantic_text:
         semantic_matches: tuple[_SemanticCandidate, ...] = ()
         if semantic_matcher is None and dictionary.semantic_available:
             semantic_matches = _semantic_items_from_result(
                 dictionary.semantic_match_ngrams(
-                    residual,
+                    semantic_text,
                     stopwords=_RESIDUAL_STOPWORDS,
                     max_ngram=3,
                     min_similarity=semantic_threshold,
                 ),
-                residual,
+                semantic_text,
             )
         elif semantic_matcher is not None:
             semantic_items: list[_SemanticCandidate] = []
-            for phrase in _semantic_ngrams(residual, max_ngram=3):
+            for phrase in _semantic_ngrams(semantic_text, max_ngram=3):
                 semantic_items.extend(_semantic_items(semantic_matcher, phrase))
             semantic_matches = _dedupe_semantic_items(semantic_items)
 
@@ -903,9 +926,10 @@ def _extract_dictionary_constraints(
             entry = dictionary.get(item.canonical_id)
             if entry is None or entry.attribute not in _SEMANTIC_ATTRIBUTES:
                 continue
-            if entry.value in values[entry.attribute]:
+            if entry.value not in values[entry.attribute]:
+                values[entry.attribute].append(entry.value)
+            if entry.value in semantic_values[entry.attribute]:
                 continue
-            values[entry.attribute].append(entry.value)
             semantic_values[entry.attribute].append(entry.value)
             item_evidence = ConstraintEvidence(
                 entry.canonical_id,
@@ -919,7 +943,7 @@ def _extract_dictionary_constraints(
             semantic_evidence.append(item_evidence)
             accepted_count += 1
         if accepted_count == 0:
-            unmapped.add(residual)
+            unmapped.add(semantic_text)
 
     for word in ATTRIBUTE_TOPIC.findall(text):
         field_name = _TOPIC_FIELD.get(word.lower(), "")
@@ -951,10 +975,10 @@ def extract_constraints(
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
-    Structured price/size parsing runs first. Exact dictionary values are then
-    matched longest-first. Remaining text is stopword-filtered into deterministic
-    1/2/3-gram phrases for the Layer 2 semantic matcher; results below the
-    threshold remain unresolved.
+    Structured price/size parsing and exact dictionary matching run in their
+    own path. Independently, the same utterance is stopword-filtered into
+    deterministic 1/2/3-gram phrases for the Layer 2 semantic matcher; Layer 1
+    exact-match claims do not remove text from that path.
     The generated dictionary is required for categorical extraction.
     """
     text = _normalise_known_phrases(message or "")
