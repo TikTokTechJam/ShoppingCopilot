@@ -83,7 +83,7 @@ retrieval is retired from the Agent path.
 An exact-only build writes:
 
 ```text
-data/derived/dictionary/
+data/derived/annotations/v5/dictionary/
 ├── canonical_values.json
 ├── normalized_lookup.json
 └── manifest.json
@@ -111,11 +111,11 @@ Use the actual V4 annotation output directly:
 ```powershell
 python -m scripts.build_attribute_dictionary `
   --input data/derived/annotations/v5/annotations.jsonl `
-  --output-dir data/derived/dictionary `
+  --output-dir data/derived/annotations/v5/dictionary `
   --no-embeddings
 
 python -m scripts.validate_attribute_dictionary `
-  --directory data/derived/dictionary
+  --directory data/derived/annotations/v5/dictionary
 ```
 
 The build command defaults to `data/derived/annotations/v5/annotations.jsonl`,
@@ -133,11 +133,11 @@ python -m scripts.setup_bge_attribute_model
 
 python -m scripts.build_attribute_dictionary `
   --input data/derived/annotations/v5/annotations.jsonl `
-  --output-dir data/derived/dictionary `
+  --output-dir data/derived/annotations/v5/dictionary `
   --embedding-model models/bge-small-en-v1.5
 
 python -m scripts.validate_attribute_dictionary `
-  --directory data/derived/dictionary
+  --directory data/derived/annotations/v5/dictionary
 ```
 
 The runtime requires the generated registry. Missing or incomplete dictionary

@@ -459,7 +459,6 @@ _RESIDUAL_STOPWORDS = _SEMANTIC_QUERY_STOPWORDS
 def _load_default_dictionary() -> _AttributeDictionary | None:
     directories = (
         _Path("data/derived/annotations/v5/dictionary"),
-        _Path("data/derived/dictionary"),
     )
     for directory in directories:
         if not (directory / "canonical_values.json").exists():
@@ -516,7 +515,7 @@ def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
     if dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
 
     alternatives = tuple(
@@ -978,7 +977,7 @@ def extract_constraints(
     if active_dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
     return _extract_dictionary_constraints(
         text,

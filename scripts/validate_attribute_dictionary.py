@@ -21,6 +21,7 @@ from dictionary.semantic import (
 
 
 SCHEMA_VERSION = "canonical-attribute-dictionary/v2"
+DEFAULT_DICTIONARY = "data/derived/annotations/v5/dictionary"
 
 
 def _sha256(path: Path) -> str:
@@ -80,6 +81,22 @@ def _load_lookup(root: Path) -> dict[str, dict[str, list[str]]]:
     }
 
 
+def _manifest_source_path(value: str) -> Path:
+    """Resolve a manifest path written on either Windows or POSIX."""
+
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    if path.exists():
+        return path
+
+    # Artifacts may be generated on Windows and validated on macOS/Linux.
+    # Treat backslashes as separators when the manifest stores a relative
+    # Windows path, without changing the path recorded in the manifest.
+    portable = Path(value.replace("\\", "/"))
+    return portable
+
+
 def _validate_manifest_source(manifest: Mapping[str, Any], root: Path) -> None:
     source = manifest.get("source")
     if not isinstance(source, Mapping):
@@ -90,7 +107,7 @@ def _validate_manifest_source(manifest: Mapping[str, Any], root: Path) -> None:
         raise ValueError("manifest source path is missing")
     if not isinstance(source_hash, str) or len(source_hash) != 64:
         raise ValueError("manifest source SHA-256 is missing")
-    source_path = Path(source_path_value)
+    source_path = _manifest_source_path(source_path_value)
     if not source_path.is_absolute():
         source_path = Path.cwd() / source_path
     if not source_path.exists():
@@ -264,7 +281,7 @@ def validate_attribute_dictionary(directory: str | Path) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate V4 dictionary artifacts.")
-    parser.add_argument("--directory", default="data/derived/dictionary")
+    parser.add_argument("--directory", default=DEFAULT_DICTIONARY)
     args = parser.parse_args()
     print(json.dumps(validate_attribute_dictionary(args.directory), ensure_ascii=False, indent=2))
 

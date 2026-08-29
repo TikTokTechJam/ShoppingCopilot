@@ -75,17 +75,23 @@ def normalize_text(value: str) -> str:
 
 # This is deliberately narrower than a general NLP stopword list.  It is used
 # only while creating semantic attribute-query phrases, where conversational
-# scaffolding should not become a BGE candidate.  Product concepts such as
-# ``wear``, ``work``, ``fit``, ``dry``, and ``id`` therefore remain meaningful.
+# scaffolding should not become a BGE candidate.  The safe additions from the
+# Snowball English list are limited to unambiguous conversational, pronoun,
+# auxiliary, and interrogative forms. Product concepts such as ``wear``,
+# ``work``, ``fit``, ``dry``, and ``id`` therefore remain meaningful.
 SEMANTIC_QUERY_STOPWORDS = frozenset(
     {
         "i", "i'd", "i'm", "i've", "i'll",
-        "me", "my", "mine",
-        "we", "we're", "we'd", "we'll", "we've", "our", "ours",
+        "me", "my", "mine", "myself",
+        "we", "we're", "we'd", "we'll", "we've", "our", "ours", "ourselves",
         "you", "you're", "you'd", "you'll", "you've", "your", "yours",
-        "he", "he's", "she", "she's", "they", "they're", "they'd",
-        "they'll", "they've", "them", "their", "it", "it's", "that's",
+        "yourself", "yourselves",
+        "he", "he's", "him", "his", "himself",
+        "she", "she's", "her", "hers", "herself",
+        "they", "they're", "they'd", "they'll", "they've", "them", "their",
+        "themselves", "it", "it's", "that's",
         "a", "an", "the", "this", "that", "these", "those",
+        "what", "which", "who", "whom",
         "some", "something", "anything", "please",
         "want", "wants", "wanted", "need", "needs", "needed",
         "like", "likes", "liked", "prefer", "prefers", "preferred",
@@ -94,19 +100,29 @@ SEMANTIC_QUERY_STOPWORDS = frozenset(
         "use", "uses", "used", "using",
         "mainly", "primarily", "mostly",
         "would", "could", "should", "can", "will", "may", "might", "must",
+        "shall", "ought",
         "am", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did",
+        "have", "has", "had", "having", "do", "does", "did", "doing",
         "for", "from", "of", "to", "with", "by", "at", "as", "and", "or", "but",
         "actually", "rather",
         "under", "below", "less", "than", "more", "over", "between",
         "around", "about", "within",
+        "let's", "who's", "what's", "here's", "there's", "when's", "where's",
+        "why's", "how's",
+        "if", "because", "until", "while", "against", "into", "through",
+        "during", "before", "after",
+        "again", "further", "then", "once",
+        "here", "there", "when", "where", "why", "how",
+        "all", "any", "both", "each", "few", "most", "other", "such",
+        "so", "too", "very", "ever", "also", "just", "whether", "however",
     }
 )
 
 _SEMANTIC_NEGATIVE_CONTRACTIONS = {
     "don't", "doesn't", "didn't", "can't", "won't", "isn't", "aren't",
     "wasn't", "weren't", "haven't", "hasn't", "hadn't", "wouldn't",
-    "couldn't", "shouldn't",
+    "couldn't", "shouldn't", "cannot", "shan't", "mustn't", "daren't",
+    "needn't", "oughtn't", "mightn't",
 }
 _SEMANTIC_APOSTROPHES = frozenset({"'", "’", "ʼ", "＇"})
 

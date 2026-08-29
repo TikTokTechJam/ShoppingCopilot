@@ -33,6 +33,25 @@ def test_conversational_words_and_make_forms_are_removed() -> None:
         assert form not in _semantic_tokens(f"Please {form} it waterproof")
 
 
+def test_safe_snowball_conversational_words_are_removed() -> None:
+    assert _semantic_text(
+        "Could you show me something that is very comfortable for walking?"
+    ) == "comfortable walking"
+    assert _semantic_text("What would be ideal for hiking?") == "ideal hiking"
+    assert _semantic_text("I'm looking at it again, please") == ""
+
+
+def test_shopping_sensitive_words_are_not_added_as_stopwords() -> None:
+    for word in (
+        "wear", "work", "workout", "run", "running", "fit", "dry", "wash",
+        "clean", "easy", "gift", "gym", "hiking", "travel", "outdoor",
+        "water", "protection", "machine", "polarized", "lightweight", "id",
+        "in", "out", "on", "off", "back", "long", "new", "old",
+        "not", "no", "without", "avoid", "except",
+    ):
+        assert word not in SEMANTIC_QUERY_STOPWORDS
+
+
 def test_meaningful_short_and_product_tokens_are_preserved() -> None:
     assert _semantic_text("Something with UV protection") == "uv protection"
     assert _semantic_text("id holder") == "id holder"
@@ -50,6 +69,8 @@ def test_negative_contractions_preserve_polarity() -> None:
     assert _semantic_text("without laces") == "without laces"
     assert _semantic_text("avoid polyester") == "avoid polyester"
     assert _semantic_text("anything except cotton") == "except cotton"
+    assert _semantic_text("I cannot use cotton") == "not cotton"
+    assert _semantic_text("I mustn't use leather") == "not leather"
 
 
 def test_semantic_ngrams_use_clean_tokens_and_keep_existing_hyphen_behavior() -> None:
