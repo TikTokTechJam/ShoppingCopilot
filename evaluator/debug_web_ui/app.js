@@ -7,7 +7,7 @@ const esc = (value) => String(value ?? "")
   .replaceAll('"', "&quot;");
 
 const json = (value) => esc(JSON.stringify(value ?? {}, null, 2));
-const score = (value) => value == null ? "N/A" : Number(value).toFixed(4);
+const score = (value) => value == null ? "N/A" : Number(value).toFixed(3);
 
 function showError(message) {
   $("error").textContent = message;
@@ -32,10 +32,23 @@ async function api(path, method = "GET", body = undefined) {
 
 function chips(values) {
   if (!values || !Object.keys(values).length) return '<span class="muted">none</span>';
-  return Object.entries(values).map(([key, value]) => {
-    const rendered = typeof value === "object" ? JSON.stringify(value) : value;
-    return `<span class="chip"><b>${esc(key)}</b>: ${esc(rendered)}</span>`;
-  }).join(" ");
+  return `<div class="constraint-list">${Object.entries(values).map(([key, value]) => {
+    const items = Array.isArray(value) ? value : [value];
+    const rendered = items.length
+      ? items.map(item => `<span class="chip">${esc(item)}</span>`).join("")
+      : '<span class="muted">none</span>';
+    return `<div class="constraint-row"><span class="constraint-label">${esc(key)}</span><div class="constraint-values">${rendered}</div></div>`;
+  }).join("")}</div>`;
+}
+
+function similarityRows(evidence) {
+  if (!evidence || !evidence.length) return '<span class="muted">none</span>';
+  return `<div class="similarity-list">${evidence.map(item => `
+    <div class="similarity-row">
+      <code class="similarity-id">${esc(item.canonical_id || "—")}</code>
+      <span class="similarity-method">${esc(item.match_method || item.attribute || "semantic")}</span>
+      <strong>${score(item.confidence ?? item.similarity)}</strong>
+    </div>`).join("")}</div>`;
 }
 
 function renderBanner(data) {
@@ -67,6 +80,8 @@ function renderState(data) {
     <div>${chips(state.constraints)}</div>
     <h3>Dense semantic constraints</h3>
     <div>${chips(state.semantic_constraints)}</div>
+    <h3>Similarities</h3>
+    <div>${similarityRows(state.semantic_evidence || [])}</div>
     <h3>Excluded recommendations (${(state.excluded || []).length})</h3>
     <details><summary>show IDs</summary><pre>${json(state.excluded || [])}</pre></details>
     <h3>Layer 2</h3>
