@@ -2,101 +2,97 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from product_embeddings.layer2 import Layer2EmbeddingMatch
+from dictionary.registry import LookupMatch
 from scripts.console_semantic_attribute_test import (
+    SEMANTIC_ATTRIBUTES,
     SemanticSearchContext,
-    _parse_view_choice,
+    _parse_attribute_choice,
     print_results,
-    search_view,
-    view_weights,
+    search_attribute,
 )
 
 
-class FakeLayer2Index:
-    dimension = 768
+class FakeDictionary:
+    has_semantic_embeddings = True
 
     def __init__(self) -> None:
-        self.query_embedding = None
-        self.top_k = None
-        self.weights = None
+        self.encoder = None
+        self.calls: list[dict[str, object]] = []
 
-    def search(self, query_embedding, *, top_k, weights):
-        self.query_embedding = query_embedding
-        self.top_k = top_k
-        self.weights = weights
-        return []
+    def set_query_encoder(self, encoder: object) -> None:
+        self.encoder = encoder
+
+    def semantic_match(self, query: str, **kwargs: object):
+        self.calls.append({"query": query, **kwargs})
+        return (
+            LookupMatch(
+                canonical_id="feature:non_slip",
+                attribute="feature",
+                value="non slip",
+                raw_text=query,
+                normalized_text=query,
+                match_method="semantic",
+                similarity=0.87,
+            ),
+        )
+
+    def get(self, canonical_id: str):
+        if canonical_id == "feature:non_slip":
+            return SimpleNamespace(normalized="non slip")
+        return None
 
 
 class FakeEncoder:
-    def embed_query(self, query):
-        assert query == "something that won't slip in the rain"
-        return [1.0] * 768
+    model_id = "models/bge-small-en-v1.5"
+    embedding_dimension = 384
 
 
 class ConsoleSemanticAttributeTests(unittest.TestCase):
-    def test_view_choices_use_only_current_layer2_views(self) -> None:
-        self.assertEqual(_parse_view_choice("1"), "categories")
-        self.assertEqual(_parse_view_choice("category"), "categories")
-        self.assertEqual(_parse_view_choice("feature"), "features")
-        self.assertEqual(_parse_view_choice("features"), "features")
-        self.assertEqual(_parse_view_choice("description"), "description")
-        self.assertIsNone(_parse_view_choice("brand"))
+    def test_attribute_choices_use_only_embedded_attributes(self) -> None:
+        self.assertEqual(_parse_attribute_choice("1"), SEMANTIC_ATTRIBUTES[0])
+        self.assertEqual(_parse_attribute_choice("feature"), "feature")
+        self.assertIsNone(_parse_attribute_choice("brand"))
+        self.assertIsNone(_parse_attribute_choice("description"))
 
-    def test_view_weights_activate_only_selected_matrix(self) -> None:
-        self.assertEqual(
-            view_weights("features"),
-            {
-                "categories": 0.0,
-                "title": 0.0,
-                "features": 1.0,
-                "description": 0.0,
-            },
-        )
+    def test_search_uses_selected_bge_attribute_matrix(self) -> None:
+        dictionary = FakeDictionary()
+        context = SemanticSearchContext(dictionary, {}, FakeEncoder.model_id, 384)
 
-    def test_search_uses_query_encoder_and_selected_view_only(self) -> None:
-        index = FakeLayer2Index()
-        context = SemanticSearchContext(
-            index=index,
-            query_encoder=FakeEncoder(),
-            products={},
-            model_id="jinaai/jina-embeddings-v5-text-nano",
-            dimension=768,
-        )
-
-        search_view(
+        matches = search_attribute(
             context,
-            "features",
-            "something that won't slip in the rain",
+            "feature",
+            "something that won't slip",
             top_k=10,
         )
 
-        self.assertEqual(index.top_k, 10)
-        self.assertEqual(index.query_embedding, [1.0] * 768)
-        self.assertEqual(index.weights, view_weights("features"))
+        self.assertEqual(matches[0].canonical_id, "feature:non_slip")
+        self.assertEqual(dictionary.calls, [{
+            "query": "something that won't slip",
+            "allowed_attribute": "feature",
+            "top_k": 10,
+            "min_similarity": -1.0,
+        }])
 
-    def test_results_show_asin_score_and_selected_view_text(self) -> None:
-        product = {"features": ["non slip", "waterproof"]}
+    def test_results_show_canonical_id_similarity_and_examples(self) -> None:
+        dictionary = FakeDictionary()
         context = SemanticSearchContext(
-            index=SimpleNamespace(),
-            query_encoder=SimpleNamespace(),
-            products={"A1": product},
-            model_id="model",
-            dimension=768,
-        )
-        match = Layer2EmbeddingMatch(
-            row=0,
-            parent_asin="A1",
-            score=0.87,
-            view_scores={"features": 0.87},
+            dictionary,
+            {("feature", "non slip"): ("A1", "A2")},
+            FakeEncoder.model_id,
+            384,
         )
         output: list[str] = []
+        print_results(
+            context,
+            search_attribute(context, "feature", "won't slip"),
+            output_fn=output.append,
+        )
 
-        print_results(context, "features", [match], output_fn=output.append)
-
-        self.assertIn("A1", output[-1])
+        self.assertIn("feature:non_slip", output[-1])
         self.assertIn("0.8700", output[-1])
-        self.assertIn("non slip waterproof", output[-1])
+        self.assertIn("A1, A2", output[-1])
 
 
 if __name__ == "__main__":

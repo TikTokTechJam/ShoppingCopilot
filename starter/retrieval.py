@@ -50,7 +50,6 @@ DEFAULT_METADATA_PATHS = (
     Path("product_embedding_metadata.json"),
 )
 DEFAULT_LAYER2_ARTIFACT_PATHS = (
-    Path("data/derived/product_embeddings_jina"),
     Path("data/derived/product_embeddings"),
     Path("data/derived/layer2_embeddings"),
     Path("data/layer2_embeddings"),

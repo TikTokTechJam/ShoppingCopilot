@@ -13,7 +13,6 @@ if str(ROOT) not in sys.path:
 
 from product_embeddings import HashEmbeddingModel, build_layer2_embeddings
 from product_embeddings.pipeline import (
-    is_jina_v5_text_nano,
     load_injected_embedder,
     load_local_sentence_transformer,
 )
@@ -68,13 +67,8 @@ def main() -> None:
     if args.model and args.embedder:
         parser.error("choose only one of --model and --embedder")
     if args.model:
-        jina = is_jina_v5_text_nano(args.model)
         model = load_local_sentence_transformer(
             args.model,
-            task="retrieval" if jina else None,
-            document_prompt_name="document" if jina else None,
-            query_prompt_name="query" if jina else None,
-            trust_remote_code=jina,
             batch_size=args.batch_size,
             device=args.device,
             half_precision=args.half_precision,

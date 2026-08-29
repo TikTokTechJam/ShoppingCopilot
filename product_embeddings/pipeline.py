@@ -19,10 +19,8 @@ class EmbeddingModel(Protocol):
 class SentenceTransformerRetrievalEncoder:
     """Adapt a local SentenceTransformer to the document/query boundary.
 
-    Jina's retrieval models use different prompt names for catalog documents
-    and user queries.  Keeping that distinction here makes the offline
-    artifact builder and the runtime Agent share exactly the same encoding
-    contract.
+    Optional task and prompt arguments are kept at this generic boundary so
+    local SentenceTransformer artifacts can share one encoding contract.
     """
 
     def __init__(
@@ -121,17 +119,8 @@ class HashEmbeddingModel:
         return vectors
 
 
-def is_jina_v5_text_nano(model_path: str) -> bool:
-    """Return whether a model path identifies the requested Jina model."""
-    normalized = re.sub(r"[^a-z0-9]+", "-", model_path.casefold())
-    return (
-        "jina-embeddings-v5-text-nano" in normalized
-        or "jina-v5-text-nano" in normalized
-    )
-
-
 def embedding_models_compatible(expected: object, actual: object) -> bool:
-    """Return whether two model identifiers refer to the same model family."""
+    """Return whether two model identifiers refer to the same local model."""
 
     expected_id = str(expected).strip().casefold()
     actual_id = str(actual).strip().casefold()
@@ -139,9 +128,9 @@ def embedding_models_compatible(expected: object, actual: object) -> bool:
         return False
     if expected_id == actual_id:
         return True
-    # A cached local directory and the Hugging Face identifier can be different
-    # strings while still referring to the same Jina model.
-    return is_jina_v5_text_nano(expected_id) and is_jina_v5_text_nano(actual_id)
+    expected_name = expected_id.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    actual_name = actual_id.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return expected_name == actual_name
 
 
 def load_local_sentence_transformer(
@@ -164,10 +153,9 @@ def load_local_sentence_transformer(
             "--model requires the optional sentence-transformers dependency; "
             "inject a local embedder or use the hashing fallback instead"
         ) from exc
-    # Some SentenceTransformer snapshots (including Jina v5) declare a
-    # custom module such as ``custom_st.Transformer`` in ``modules.json``.
-    # SentenceTransformers imports that name as a top-level module, so make
-    # the local snapshot directory importable while it is being constructed.
+    # Some local SentenceTransformer snapshots declare custom modules in
+    # ``modules.json``. SentenceTransformers imports those names as top-level
+    # modules, so make the local snapshot directory importable temporarily.
     model_directory = Path(model_path).expanduser()
     added_model_path = False
     resolved_model_directory: str | None = None

@@ -1174,34 +1174,6 @@ def main() -> None:
         help="Where to write detailed results.",
     )
     parser.add_argument(
-        "--layer2-artifact-dir",
-        help="Enable Layer 2 with artifacts from this directory.",
-    )
-    embedding_group = parser.add_mutually_exclusive_group()
-    embedding_group.add_argument(
-        "--embedding-model",
-        help="Local or cached SentenceTransformer path for Layer 2 queries.",
-    )
-    embedding_group.add_argument(
-        "--hash-dimension",
-        type=int,
-        help="Use the deterministic hash query encoder at this dimension.",
-    )
-    parser.add_argument(
-        "--disable-layer2",
-        action="store_true",
-        help="Explicitly run the Layer 1-only baseline.",
-    )
-    parser.add_argument(
-        "--half-precision",
-        action="store_true",
-        help="Load a SentenceTransformer Layer 2 query model in float16.",
-    )
-    parser.add_argument(
-        "--device",
-        help="SentenceTransformer device for Layer 2 queries, for example cpu or mps.",
-    )
-    parser.add_argument(
         "--non-strict",
         action="store_true",
         help="Treat malformed Agent responses as empty instead of failing.",
@@ -1232,15 +1204,7 @@ def main() -> None:
         parser.error("--debug-sessions must be positive")
 
     try:
-        agent = build_evaluator_agent(
-            args.catalog,
-            layer2_artifact_dir=args.layer2_artifact_dir,
-            embedding_model=args.embedding_model,
-            hash_dimension=args.hash_dimension,
-            disable_layer2=args.disable_layer2,
-            half_precision=args.half_precision,
-            device=args.device,
-        )
+        agent = build_evaluator_agent(args.catalog)
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     if args.debug:
