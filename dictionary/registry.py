@@ -33,7 +33,7 @@ SEMANTIC_ATTRIBUTES = (
 )
 
 NORMALIZATION_VERSION = "nfkc-casefold-apostrophe-removal-v2"
-DEFAULT_MIN_SIMILARITY = 0.80
+DEFAULT_MIN_SIMILARITY = 0.9
 
 
 def normalize_text(value: str) -> str:
@@ -104,7 +104,7 @@ SEMANTIC_QUERY_STOPWORDS = frozenset(
         "am", "is", "are", "was", "were", "be", "been", "being",
         "have", "has", "had", "having", "do", "does", "did", "doing",
         "for", "from", "of", "to", "with", "by", "at", "as", "and", "or", "but",
-        "actually", "rather",
+        "actually", "rather", "on", "see", "sense", "options"
         "under", "below", "less", "than", "more", "over", "between",
         "around", "about", "within",
         "let's", "who's", "what's", "here's", "there's", "when's", "where's",
