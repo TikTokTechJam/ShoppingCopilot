@@ -24,6 +24,25 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
+
+def sequenced_extract(deltas):
+    """One delta per distinct user message, whatever the Agent's call count.
+
+    The Agent reads a message unscoped to decide whether it is an override,
+    then may re-read it scoped to the attribute it asked about. Keying on the
+    message keeps the fixture aligned with turns rather than with calls.
+    """
+
+    cache: dict[str, object] = {}
+
+    def _extract(message, **_kwargs):
+        if message not in cache:
+            cache[message] = next(deltas)
+        return cache[message]
+
+    return _extract
+
+
 class FixedRouter:
     def classify(self, _message: str) -> SimpleNamespace:
         return SimpleNamespace(intent="BUYING")
@@ -98,7 +117,7 @@ class OverrideHandlingTests(unittest.TestCase):
 
             with patch(
                 "starter.agent.constraint_module.extract_constraints",
-                side_effect=lambda _message: next(deltas),
+                side_effect=sequenced_extract(deltas),
             ):
                 agent.respond("session", "shoes in red, casual", 1, 3)
                 agent.respond("session", "nylon", 2, 3)
@@ -170,7 +189,7 @@ class OverrideHandlingTests(unittest.TestCase):
             )
             with patch(
                 "starter.agent.constraint_module.extract_constraints",
-                side_effect=lambda _message: next(deltas),
+                side_effect=sequenced_extract(deltas),
             ):
                 agent.respond("session", "shoes", 1, 2)
                 agent.respond("session", "show more", 2, 2)
@@ -244,7 +263,7 @@ class OverrideHandlingTests(unittest.TestCase):
             )
             with patch(
                 "starter.agent.constraint_module.extract_constraints",
-                side_effect=lambda _message: next(deltas),
+                side_effect=sequenced_extract(deltas),
             ):
                 first = agent.respond("session", "shoes", 1, 2)
                 agent.respond("session", "show me more", 2, 2)

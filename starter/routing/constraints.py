@@ -734,8 +734,21 @@ def _resolve_dictionary_match(
     text: str,
     match: _SpanMatch,
     dictionary: _AttributeDictionary,
+    allowed_attribute: str | None = None,
 ) -> _CanonicalValue | None:
     candidates = dictionary.get_candidates(match.raw_text)
+    if allowed_attribute is not None:
+        # A surface such as "amber" is a valid category, brand, colour and
+        # material at once. When the shopper is answering a question about one
+        # attribute, the other readings are not candidates at all, so the
+        # ambiguity never has to be broken by frequency.
+        candidates = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.attribute == allowed_attribute
+        )
+        if not candidates:
+            return None
     context_attributes = _context_attributes(text, match, candidates)
     if context_attributes:
         contextual_candidates = tuple(
@@ -843,8 +856,15 @@ def _extract_dictionary_constraints(
     *,
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
+    asked_attribute: str | None = None,
 ) -> CanonicalShoppingConstraints:
     text = _normalise_known_phrases(message or "")
+    # Only dictionary attributes can be narrowed. "budget", "size" and "other"
+    # are structured or non-dictionary asks, and price/size parsing below stays
+    # unscoped either way so a budget answer is still read.
+    scoped_attribute = (
+        asked_attribute if asked_attribute in _DICTIONARY_ATTRIBUTES else None
+    )
     values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
     semantic_values: dict[str, list[str]] = {
         name: [] for name in _SEMANTIC_ATTRIBUTES
@@ -888,9 +908,13 @@ def _extract_dictionary_constraints(
         ):
             continue
         structured_claimed.append((match.start, match.end))
-        entry = _resolve_dictionary_match(text, match, dictionary)
+        entry = _resolve_dictionary_match(
+            text, match, dictionary, allowed_attribute=scoped_attribute
+        )
         if entry is None:
             unmapped.add(match.raw_text.strip().lower())
+            continue
+        if scoped_attribute is not None and entry.attribute != scoped_attribute:
             continue
         if entry.value not in values[entry.attribute]:
             values[entry.attribute].append(entry.value)
@@ -907,6 +931,7 @@ def _extract_dictionary_constraints(
             semantic_matches = _semantic_items_from_result(
                 dictionary.semantic_match_ngrams(
                     semantic_text,
+                    allowed_attribute=scoped_attribute,
                     stopwords=_RESIDUAL_STOPWORDS,
                     max_ngram=3,
                     min_similarity=semantic_threshold,
@@ -926,6 +951,8 @@ def _extract_dictionary_constraints(
         for item in accepted:
             entry = dictionary.get(item.canonical_id)
             if entry is None or entry.attribute not in _SEMANTIC_ATTRIBUTES:
+                continue
+            if scoped_attribute is not None and entry.attribute != scoped_attribute:
                 continue
             if entry.value not in values[entry.attribute]:
                 values[entry.attribute].append(entry.value)
@@ -973,6 +1000,7 @@ def extract_constraints(
     dictionary: _AttributeDictionary | None = None,
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
+    asked_attribute: str | None = None,
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
@@ -981,6 +1009,10 @@ def extract_constraints(
     deterministic 1/2/3-gram phrases for the Layer 2 semantic matcher; Layer 1
     exact-match claims do not remove text from that path.
     The generated dictionary is required for categorical extraction.
+
+    ``asked_attribute`` narrows both the exact and the semantic pass to the
+    attribute the shopper was asked about, so an answer is read as an answer
+    to that question rather than as free text over all seven attributes.
     """
     text = _normalise_known_phrases(message or "")
     active_dictionary = dictionary if dictionary is not None else _load_default_dictionary()
@@ -994,4 +1026,5 @@ def extract_constraints(
         active_dictionary,
         semantic_matcher=semantic_matcher,
         semantic_threshold=semantic_threshold,
+        asked_attribute=asked_attribute,
     )
