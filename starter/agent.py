@@ -242,14 +242,25 @@ class Agent:
         # No turn cutoff is needed here any more: a question asked on the final
         # turn has zero horizon in the Section 12b utility, so the policy
         # abstains on its own arithmetic rather than on a literal.
-        ask_attribute = self.clarification.choose(
-            candidates,
-            state.constraints,
-            state.asked_attributes,
-            mode=state.mode or "BROWSING",
-            profile_factor=affinity.factor if affinity is not None else None,
-            turn=state.turn,
-        )
+        if state.last_asked == "other":
+            # The evaluator's generic fallback is deliberately repeatable: it
+            # can disclose another hidden preference on each subsequent turn.
+            ask_attribute = "other"
+        else:
+            ask_attribute = self.clarification.choose(
+                candidates,
+                state.constraints,
+                state.asked_attributes,
+                mode=state.mode or "BROWSING",
+                profile_factor=affinity.factor if affinity is not None else None,
+                turn=state.turn,
+            )
+            if ask_attribute is None:
+                # Once no standard attribute has enough evidence to be useful,
+                # keep the evaluator conversation moving through its generic
+                # catch-all question. Budget is evaluated by ClarificationPolicy
+                # from the candidates' actual prices before reaching this branch.
+                ask_attribute = "other"
         self.sessions.mark_asked(session_id, ask_attribute)
         self.sessions.set_recommendations(
             session_id,

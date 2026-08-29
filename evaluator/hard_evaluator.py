@@ -331,8 +331,7 @@ def simulate_customer_reply(
     if not isinstance(ask_attribute, str) or ask_attribute not in ALLOWED_ATTRIBUTES:
         return "I don't have an additional preference there."
 
-    # `other` is intentionally NOT a wildcard in this benchmark.
-    if ask_attribute in {"other", "category"}:
+    if ask_attribute == "category":
         return "I don't have a specific additional preference there."
 
     # Boundary behavior: only sessions explicitly marked boundary_first reject
@@ -353,7 +352,7 @@ def simulate_customer_reply(
     for fact in session["hidden_facts"]:
         fid = fact_id(fact)
         if (
-            str(fact["attribute"]) == ask_attribute
+            (ask_attribute == "other" or str(fact["attribute"]) == ask_attribute)
             and fid is not None
             and fid not in disclosed
             and fid not in stale

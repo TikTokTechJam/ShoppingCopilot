@@ -250,6 +250,41 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertTrue(is_no_preference_reply("I don't have.", "material"))
         self.assertFalse(is_no_preference_reply("I don't know.", None))
 
+    def test_agent_uses_other_repeatedly_when_no_budget_or_fact_split_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog_path = root / "catalog.jsonl"
+            write_jsonl(
+                catalog_path,
+                [
+                    {
+                        "parent_asin": f"S{index}",
+                        "categories": ["shoes"],
+                        "price": 20.0,
+                    }
+                    for index in range(4)
+                ],
+            )
+            agent = Agent(
+                catalog_path,
+                facts_path=root / "missing-facts.jsonl",
+                embeddings_path=root / "missing-embeddings.npy",
+                metadata_path=root / "missing-metadata.json",
+                router=FixedRouter(),
+            )
+            agent.reset("session", {})
+
+            first = agent.respond("session", "shoes", 1, 3)
+            second = agent.respond(
+                "session",
+                "I don't have a specific preference.",
+                2,
+                3,
+            )
+
+            self.assertEqual(first["ask_attribute"], "other")
+            self.assertEqual(second["ask_attribute"], "other")
+
     def test_normal_clarification_keeps_transcript_and_promotes_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
