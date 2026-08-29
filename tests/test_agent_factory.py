@@ -46,6 +46,7 @@ class AgentFactoryTests(unittest.TestCase):
                 Path(directory) / "catalog.jsonl",
                 query_encoder=encoder,
                 layer2_artifact_dir=artifact_dir,
+                use_user_profile=True,
             )
 
     def test_hash_manifest_is_not_auto_selected_for_benchmark(self) -> None:
@@ -76,6 +77,7 @@ class AgentFactoryTests(unittest.TestCase):
             agent_class.assert_called_once_with(
                 catalog_path,
                 layer2_artifact_dir=artifact_dir,
+                use_user_profile=True,
             )
 
 

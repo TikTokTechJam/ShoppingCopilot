@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import warnings
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,35 @@ def _manifest_embedding_model(artifact_dir: Path) -> str | None:
 DEFAULT_JINA_MODEL_PATH = Path("model/jina-embeddings-v5-text-nano")
 
 
+def _status(message: str) -> None:
+    """Report Layer 2 status on stderr so result JSON on stdout stays clean."""
+    print(f"[layer2] {message}", file=sys.stderr, flush=True)
+
+
+def _verify(agent: Agent, expected_model: str | None) -> Agent:
+    """State plainly whether the dense path is live before evaluation starts.
+
+    Loading the encoder is not sufficient: the retriever also checks the
+    artifact manifest and dimension, and silently falls back to Layer 1 when
+    either disagrees. Read the retriever's own flags rather than assuming.
+    """
+    retriever = getattr(agent, "retriever", None)
+    if retriever is None:
+        _status("DISABLED - no retriever")
+        return agent
+    error = getattr(retriever, "layer2_compatibility_error", None)
+    if getattr(retriever, "dense_available", False):
+        index = getattr(retriever, "layer2_index", None)
+        dimension = getattr(index, "dimension", None)
+        rows = len(getattr(index, "asins", ()) or ())
+        _status(
+            f"ENABLED - model={expected_model!r} dimension={dimension} products={rows}"
+        )
+    else:
+        _status(f"DISABLED - Layer 1 only ({error or 'no query encoder configured'})")
+    return agent
+
+
 def build_evaluator_agent(
     catalog_path: str | Path,
     *,
@@ -64,6 +94,7 @@ def build_evaluator_agent(
     embedding_model: str | None = None,
     hash_dimension: int | None = None,
     disable_layer2: bool = False,
+    disable_user_profile: bool = False,
     half_precision: bool = False,
     device: str | None = None,
 ) -> Agent:
@@ -82,7 +113,8 @@ def build_evaluator_agent(
             or hash_dimension is not None
         ):
             raise ValueError("--disable-layer2 cannot be combined with Layer 2 options")
-        return Agent(catalog_path)
+        _status("DISABLED - requested with --disable-layer2")
+        return Agent(catalog_path, use_user_profile=not disable_user_profile)
 
     configured_model = embedding_model
     if configured_model is None:
@@ -97,7 +129,8 @@ def build_evaluator_agent(
     if selected_artifact_dir is None:
         if configured_model is not None or hash_dimension is not None:
             raise ValueError("Layer 2 options require --layer2-artifact-dir")
-        return Agent(catalog_path)
+        _status("DISABLED - no Layer 2 artifact directory found")
+        return Agent(catalog_path, use_user_profile=not disable_user_profile)
 
     auto_model = configured_model is None and hash_dimension is None
     if auto_model:
@@ -132,21 +165,38 @@ def build_evaluator_agent(
                 device=device,
                 half_precision=half_precision,
             )
-        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             if not auto_model:
+                _status(f"FAILED to load model {configured_model!r}: {exc}")
                 raise
+            _status(
+                f"DISABLED - could not load model {configured_model!r}: {exc}"
+            )
             warnings.warn(
                 "Layer 2 disabled because its manifest model could not be loaded "
                 f"locally: {configured_model}",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            return Agent(catalog_path, layer2_artifact_dir=selected_artifact_dir)
+            return _verify(
+                Agent(
+                    catalog_path,
+                    layer2_artifact_dir=selected_artifact_dir,
+                    use_user_profile=not disable_user_profile,
+                ),
+                configured_model,
+            )
 
-    return Agent(
-        catalog_path,
-        query_encoder=query_encoder,
-        layer2_artifact_dir=selected_artifact_dir,
+    loaded = configured_model if hash_dimension is None else f"hash-{hash_dimension}"
+    _status(f"query encoder loaded: {loaded!r}")
+    return _verify(
+        Agent(
+            catalog_path,
+            query_encoder=query_encoder,
+            layer2_artifact_dir=selected_artifact_dir,
+            use_user_profile=not disable_user_profile,
+        ),
+        loaded,
     )
 
 

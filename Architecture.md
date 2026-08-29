@@ -1000,6 +1000,221 @@ The supported public `ask_attribute` values remain those required by the competi
 
 Recursive DP, learned question policies, or posterior planning can replace the utility later without changing the Agent response contract.
 
+Whether a turn returns a newly ranked list or holds the previous one is decided separately, in Section 12b.
+
+### 12.1 Combined question utility
+
+The pool term above answers only one of the three questions that decide whether
+to ask. Asking is a bet with three independent factors, and `_utility` in
+`starter/clarification.py` is their product:
+
+```text
+ExpectedGain(a, t) = Split(a) * P(answer | a, mode, profile) * Horizon(t)
+```
+
+```text
+Split(a)     coverage * gini * (0.75 + 0.25 * diversity)
+             how much an answer would narrow the pool.  Unchanged from
+             Section 12; the -inf vetoes (pool < 2, coverage < 0.20, fewer
+             than 2 distinct values, gini < 0.10) still apply first.
+
+P(answer)    PRIOR_CEILING * MODE_PRIORS[mode][a], updated by the shopper's
+             profile.  How likely this shopper is to answer at all.
+
+Horizon(t)   U(t + 1, 1) from Section 12b.1, or 0 on the final turn.
+             What the answer is still worth if it converts next turn.
+```
+
+The product is in `TechnicalScore` units, which is what makes the three factors
+commensurable: a large pool split late in a session and a small one early can
+be compared directly.
+
+**The profile enters as a likelihood ratio, not a multiplier.** `MODE_PRIORS`
+is the population prior for the mode; `preference_tags` is evidence about this
+shopper. Evidence composes on the odds, not on the probability:
+
+```text
+odds' = odds(prior) * ratio        ratio in [1 - w, 1 + w], w = PROFILE_WEIGHT
+p'    = odds' / (1 + odds')
+```
+
+A multiplier on the probability would leave `[0, 1]` and clip, and clipping
+lands hardest on the highest-priority attribute, which is exactly where the
+evidence should still be able to move something. The odds update has the most
+leverage where the prior is least certain and cannot escape the interval.
+
+`PRIOR_CEILING = 0.90` exists for the same reason. `MODE_PRIORS` tops out at
+`1.00` as a relative weight; read literally as a probability that is infinite
+odds, and no finite evidence could ever displace the top-priority attribute.
+The ceiling scales every attribute equally, so it cannot change an argmax on
+its own, and the floors absorb it.
+
+A ratio of exactly `0` is the one veto and is reserved for direct evidence: the
+shopper has already declined that attribute (`observe_no_preference`).
+
+**Two consequences of putting the decision in score units:**
+
+- The abstain floor is a bet size, not a magic number. `ASK_UTILITY_FLOOR` is
+  the historical `0.035` split threshold re-expressed on the same scale, so a
+  profile-free decision on turn 1 is bit-for-bit what it was before.
+- The `turn < 10` guard is gone from `Agent.respond`. On the final turn no
+  answer can be acted on, `Horizon` is `0`, every question scores `0`, and the
+  policy abstains on its own arithmetic.
+
+Both bounds mean the same thing in practice: the profile reorders near-ties
+(`color 0.92` against `size 0.90`) and cannot overturn a decisive prior
+(`material 1.00` against `budget 0.66`).
+
+
+## 12b. Follow-up strategy
+
+Section 12 decides *what to ask*. This section decides whether the turn should
+return a newly ranked list at all, or hold and wait for more information.
+
+### 12b.1 Per-session score decomposition
+
+The competition metric decomposes exactly into a per-session utility. With
+`MAX_TURNS = 10` and misses assigned turn 11, every per-session efficiency term
+`(11 - t)/10` already lies in `[0, 1]`, so the corpus-level `clip` never binds and
+`TechnicalScore` is a plain mean:
+
+```text
+TechnicalScore = mean_i U_i
+
+U(t, r) = 0.50 + 0.30/r + 0.02 * (11 - t)     # hit at turn t, rank r
+U(miss) = 0
+```
+
+This is an identity, not an approximation. It is the only objective the turn
+policy may optimize.
+
+```text
+U(t, r)   r=1     r=2     r=3     r=5     r=10
+t=1      1.000   0.850   0.800   0.760   0.730
+t=3      0.960   0.810   0.760   0.720   0.690
+t=10     0.820   0.670   0.620   0.580   0.550
+miss     0.000
+```
+
+Three constants follow, and they drive every decision below:
+
+```text
+cost of delaying one turn at fixed rank      0.02
+value of promoting rank 10 -> rank 1         0.27   (13.5 turns of delay)
+value of any hit over a miss               >= 0.55
+```
+
+Timing is the cheapest of the three axes. Never trade hit probability for turn
+count.
+
+### 12b.2 Evaluator dynamics the policy must assume
+
+```text
+a hit ends the session immediately   -> only the FIRST hit is scored
+the Agent is never told whether it hit
+being called at turn t+1 implies turn t did not score
+an intent-override session does not count a hit before its override turn (3 or 4)
+items ranked below the target do not change the target's rank
+invalid and duplicate IDs are dropped, not penalized
+```
+
+A **scoreable turn** is any turn whose returned list can record a hit. Every turn
+is scoreable except the pre-override turns of an intent-override session, which
+the Agent cannot identify. The policy must therefore treat every turn as
+scoreable.
+
+Because a hit is absorbing, recommending is not a free action: it forecloses a
+possibly better rank later. That is the only real cost of recommending now, and
+it is bounded by `0.30 * (1 - 1/r)`.
+
+### 12b.3 Decision rule
+
+The choice is per item, not per list. Let `p_x` be the calibrated posterior that
+candidate `x` is the target and `j` its rank in the list about to be returned.
+Let `gamma_x` be the **promotion probability**: the probability that, having
+withheld `x` now, the Agent both retrieves it next turn and ranks it first.
+
+Include `x` at rank `j` unless:
+
+```text
+gamma_x * U(t + 1, 1)  >  U(t, j)
+```
+
+Required `gamma` thresholds — withholding is justified only above these:
+
+```text
+rank j    t=1     t=5     t=9
+1        1.02    1.02    1.02      # > 1: withholding rank 1 is never optimal
+2        0.87    0.86    0.84
+3        0.82    0.80    0.78
+5        0.78    0.76    0.73
+10       0.74    0.72    0.70
+```
+
+Consequences that are binding, not advisory:
+
+- **Withholding the top-ranked candidate is never optimal.** The threshold
+  exceeds 1 at every turn.
+- Withholding rank 10 requires roughly 74% confidence that this exact item
+  becomes rank 1 on the very next turn.
+- `gamma` is bounded by the information the next turn can deliver, and the
+  simulator's disclosure budget is small: a shopper reveals at most a handful of
+  constraints and then answers further questions with no new information. The
+  realistic budget is two to three informative clarifications per session, so
+  `gamma` is small and recommending now dominates by default.
+- Rank ordering *is* posterior ordering. A state where the Agent "knows the
+  target but must rank it low" is incoherent; a low rank means a low `p_x`.
+  Waiting is therefore justified only by expected *reordering* from new
+  information, never by current belief.
+
+Until `gamma` is measured (12b.6), the policy is: **always recommend.**
+
+### 12b.4 Mandatory invariants
+
+These preserve the Agent contract in Section 14 and terminate the recursion.
+
+1. **Every turn returns a full list.** Waiting never means an empty or short
+   response. The weakest admissible wait action is re-returning the previous
+   recommendations. Section 12 and principle 5 of Section 16 remain in force.
+2. **Pad to `top_k`.** Appending lower-confidence candidates below the good ones
+   cannot change the rank of anything above them, so padding is weakly dominant,
+   and returning fewer than `top_k` while more valid catalog IDs exist is a pure
+   expected-value loss. When the constrained pool holds `n < top_k` items, fill
+   the remaining `top_k - n` slots by relaxing the weakest soft evidence first
+   (Section 10.2), then by Layer 2 similarity over the broader catalog. Only a
+   pool still smaller than `top_k` after full relaxation over the whole catalog
+   may return fewer, and that case should be logged as a defect.
+3. **Turn anchor.** Waiting is unavailable at `turn == MAX_TURNS`; backward
+   induction from there makes the recursion well-founded.
+4. **Progress guard.** Waiting requires that the previous turn produced a
+   measurable state change: a new constraint absorbed, or a candidate-pool size
+   reduction. If the last turn yielded no new information, waiting is disabled
+   for the remainder of the session.
+5. **Consecutive-wait cap.** At most one consecutive wait turn.
+6. **No question, no wait.** Waiting requires a non-null `ask_attribute`. Waiting
+   without asking cannot gather information.
+
+### 12b.5 Open design question: implicit negative feedback
+
+Being called at turn `t+1` proves the turn-`t` list did not score. That is true
+on every session except an intent-override one before its override turn, where
+the target may legitimately have been shown early and not counted. Demoting
+already-shown candidates is therefore positive-expected-value on most sessions
+and actively harmful on that minority. This is a benchmark-driven decision, not
+a design assumption; measure it before enabling. Session state must retain the
+per-turn shown sets, not only the last recommendations, to support the
+experiment.
+
+### 12b.6 Measuring `gamma`
+
+The evaluator stops at the first hit, so the target's rank trajectory afterwards
+is unobserved and `gamma` cannot be read off ordinary runs. Add a diagnostic
+replay mode that continues the session past a hit and records the target's rank
+on every turn. That yields a full per-session rank trajectory, from which
+`gamma`, the optimal stopping rule, and the value of waiting can be computed by
+backward induction rather than estimated. Until that measurement exists, no
+wait-branch implementation should ship.
+
 ## 13. Agent contract
 
 The runtime must preserve the official interface:
@@ -1029,7 +1244,7 @@ Requirements:
 
 - recommendation IDs must be valid catalog `parent_asin` values;
 - recommendations are ordered best-first and unique;
-- return at most the requested `top_k`;
+- return exactly the requested `top_k` whenever that many valid catalog IDs exist, padding per invariant 2 of Section 12b.4;
 - every scoreable turn returns the current best recommendations;
 - asking a clarification does not replace recommendations;
 - `ask_attribute` is one supported enum value or `null`;
@@ -1114,6 +1329,8 @@ After repeated optimization on Manual400, treat it as a dev set and validate cha
 
 5. **Always recommend.**
    Early Top-K hits directly improve the competition objective. Clarification is supplementary.
+   Section 12b derives this from the metric: a hit is worth at least `0.55` and a turn of
+   delay only `0.02`, so hit probability is never traded for turn count.
 
 6. **Keep runtime in memory.**
    The frozen catalog is small enough that external databases and vector services are unnecessary for the MVP.

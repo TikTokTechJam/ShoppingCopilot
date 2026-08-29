@@ -5,6 +5,7 @@ import json
 import math
 import random
 import statistics
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -16,6 +17,9 @@ from starter.retrieval import MODE_SCORE_WEIGHTS, STRUCTURED_FIELD_WEIGHTS
 
 MAX_TURNS = 10
 TOP_K = 10
+
+# How often the no-tqdm fallback reports, in sessions.
+PROGRESS_INTERVAL = 20
 
 SCENARIO_COUNTS = {
     "buying": 160,
@@ -420,6 +424,64 @@ def add_score_fields(summary: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+class _Progress:
+    """Session counter for long runs.
+
+    Writes to stderr only, so the result JSON on stdout stays machine-readable
+    and can still be piped. ``tqdm`` is optional: a missing dependency degrades
+    to periodic lines rather than failing an evaluation that was going to take
+    minutes anyway.
+    """
+
+    def __init__(self, total: int, enabled: bool = False) -> None:
+        self.total = int(total)
+        self.enabled = bool(enabled)
+        self.done = 0
+        self.hits = 0
+        self.bar: Any | None = None
+        if not self.enabled:
+            return
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            print(
+                f"[hard_evaluator] tqdm not installed; reporting every "
+                f"{PROGRESS_INTERVAL} sessions",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            self.bar = tqdm(
+                total=self.total,
+                desc="sessions",
+                unit="session",
+                file=sys.stderr,
+                dynamic_ncols=True,
+            )
+
+    def advance(self, hit: bool) -> None:
+        if not self.enabled:
+            return
+        self.done += 1
+        self.hits += bool(hit)
+        rate = self.hits / self.done
+        if self.bar is not None:
+            self.bar.set_postfix_str(f"hit@10={rate:.3f}", refresh=False)
+            self.bar.update(1)
+        elif self.done % PROGRESS_INTERVAL == 0 or self.done == self.total:
+            print(
+                f"[hard_evaluator] {self.done}/{self.total} sessions  "
+                f"hit@10={rate:.3f}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def close(self) -> None:
+        if self.bar is not None:
+            self.bar.close()
+            self.bar = None
+
+
 def evaluate(
     agent: Any,
     sessions: Iterable[Mapping[str, Any]],
@@ -429,6 +491,7 @@ def evaluate(
     after_turn_callback: Any | None = None,
     session_callback: Any | None = None,
     validate: bool = True,
+    progress: bool = False,
 ) -> dict[str, Any]:
     rows = (
         validate_sessions(sessions, catalog_ids)
@@ -439,6 +502,7 @@ def evaluate(
     results: list[dict[str, Any]] = []
     prompt_tokens = 0
     completion_tokens = 0
+    reporter = _Progress(len(rows), progress)
 
     for session in rows:
         sample_id = str(session["sample_id"])
@@ -580,12 +644,16 @@ def evaluate(
             }
         )
 
+        reporter.advance(first_hit_turn is not None)
+
         if session_callback is not None:
             session_callback(
                 session=session,
                 result=results[-1],
                 completed_results=results,
             )
+
+    reporter.close()
 
     overall = add_score_fields(metric_summary(results))
 
@@ -1161,6 +1229,12 @@ def main() -> None:
         help="Explicitly run the Layer 1-only baseline.",
     )
     parser.add_argument(
+        "--disable-user-profile",
+        action="store_true",
+        help="Ignore user_profile preference_tags when choosing the follow-up "
+             "attribute to ask.",
+    )
+    parser.add_argument(
         "--half-precision",
         action="store_true",
         help="Load a SentenceTransformer Layer 2 query model in float16.",
@@ -1168,6 +1242,11 @@ def main() -> None:
     parser.add_argument(
         "--device",
         help="SentenceTransformer device for Layer 2 queries, for example cpu or mps.",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Suppress the per-session progress bar on stderr.",
     )
     parser.add_argument(
         "--non-strict",
@@ -1206,6 +1285,7 @@ def main() -> None:
             embedding_model=args.embedding_model,
             hash_dimension=args.hash_dimension,
             disable_layer2=args.disable_layer2,
+            disable_user_profile=args.disable_user_profile,
             half_precision=args.half_precision,
             device=args.device,
         )
@@ -1230,6 +1310,7 @@ def main() -> None:
         sessions=sessions,
         catalog_ids=catalog_ids,
         strict=not args.non_strict,
+        progress=not args.no_progress,
     )
 
     Path(args.output).write_text(
