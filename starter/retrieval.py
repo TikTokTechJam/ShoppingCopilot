@@ -1,23 +1,22 @@
 """Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
 
-The retriever consumes canonical product facts, optional direct Layer 2 field
-vectors, and a BM25 product-text index. It does not parse user language.
-Structured, semantic, and lexical scores are kept separate until the shared
-final scorer combines them.
+The active product-text path uses BM25 over the current goal. BGE canonical
+attribute matches are used as expansion evidence for per-attribute BM25
+queries; they are not compared directly with product vectors here. Structured
+facts remain available for diagnostics and safe degraded operation.
 """
 
 from __future__ import annotations
 
-import heapq
 import json
 import math
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Collection, Iterable, Mapping
+from typing import Any, Collection, Iterable, Mapping
 
-from dictionary.registry import normalize_text
+from dictionary.registry import normalize_text, semantic_query_tokens
 
 from product_embeddings.layer2 import (
     Layer2EmbeddingIndex,
@@ -88,6 +87,21 @@ NEUTRAL_NORMALIZED_RATING = 0.5
 CRITICAL_USER_RATING_THRESHOLD = 3.5
 RATING_BOOST_WEIGHT = 0.15
 RATING_DEFAULT_WEIGHT = 0.02
+
+# BM25 rank fusion deliberately has one contribution per active attribute.
+# BGE matches are grouped inside that attribute so a product cannot gain extra
+# points merely by matching several synonyms of the same user constraint.
+BM25_RRF_K = 60
+BM25_MAX_RANK = 1000
+BM25_CONSTRAINT_ATTRIBUTES = (
+    "category",
+    "brand",
+    "color",
+    "material",
+    "style",
+    "feature",
+    "use_case",
+)
 
 
 def normalized_rating(rating: float | None) -> float:
@@ -291,6 +305,27 @@ class ProductRecord:
 
 
 @dataclass(frozen=True)
+class BM25Constraint:
+    """One per-attribute lexical query and its BGE expansion evidence."""
+
+    attribute: str
+    original_phrases: tuple[str, ...]
+    expansions: tuple[tuple[str, float], ...]
+    terms: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "attribute": self.attribute,
+            "original_phrases": list(self.original_phrases),
+            "expansions": [
+                {"value": value, "similarity": similarity}
+                for value, similarity in self.expansions
+            ],
+            "terms": list(self.terms),
+        }
+
+
+@dataclass(frozen=True)
 class Candidate:
     """Shared candidate contract returned by both retrieval modes."""
 
@@ -307,6 +342,10 @@ class Candidate:
     matched_semantic_constraints: tuple[str, ...] = ()
     price: float | None = None
     bm25_score: float = 0.0
+    bm25_rank: int | None = None
+    constraint_bm25_ranks: Mapping[str, int] = field(
+        default_factory=dict, repr=False, compare=False
+    )
     rating: float | None = None
     ranking_score: float = 0.0
 
@@ -319,6 +358,8 @@ class Candidate:
             "dense_score": self.dense_score,
             "semantic_score": self.semantic_score,
             "bm25_score": self.bm25_score,
+            "bm25_rank": self.bm25_rank,
+            "constraint_bm25_ranks": dict(self.constraint_bm25_ranks),
             "constraint_score": self.constraint_score,
             "matched_constraints": list(self.matched_constraints),
             "matched_semantic_constraints": list(self.matched_semantic_constraints),
@@ -362,6 +403,7 @@ class ProductRetriever:
         self.bm25_state = "loading"
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
+        self.last_retrieval_debug: dict[str, Any] = {}
         try:
             self.bm25_index = BM25Index(self.product_by_asin, self._catalog_order)
             self.bm25_state = "ready"
@@ -744,6 +786,195 @@ class ProductRetriever:
             price_max is None or price <= price_max
         )
 
+    @staticmethod
+    def _unmapped_values(constraints: object) -> tuple[str, ...]:
+        value = getattr(constraints, "unmapped", None)
+        if value is None and isinstance(constraints, Mapping):
+            value = constraints.get("unmapped")
+        return _values(value)
+
+    @staticmethod
+    def _evidence_items(constraints: object | None) -> tuple[object, ...]:
+        if constraints is None:
+            return ()
+        evidence = getattr(constraints, "evidence", None)
+        if evidence is None and isinstance(constraints, Mapping):
+            evidence = constraints.get("evidence")
+        return tuple(evidence) if isinstance(evidence, (list, tuple)) else ()
+
+    def _bm25_constraint_queries(
+        self,
+        constraints: object,
+        semantic_constraints: object | None,
+    ) -> tuple[BM25Constraint, ...]:
+        """Build bounded per-attribute BM25 queries.
+
+        Structured values are the original lexical phrases. Accepted BGE
+        values are expansions attached to their attribute. All expansions for
+        one attribute share one BM25 query, so reciprocal-rank fusion rewards
+        distinct attributes rather than synonym volume.
+        """
+
+        groups: dict[str, dict[str, Any]] = {}
+
+        def ensure(attribute: str) -> dict[str, Any]:
+            return groups.setdefault(
+                attribute,
+                {"originals": [], "expansions": {}},
+            )
+
+        def add_original(attribute: str, value: object) -> None:
+            text = str(value).strip()
+            if text and text not in ensure(attribute)["originals"]:
+                ensure(attribute)["originals"].append(text)
+
+        def add_expansion(attribute: str, value: object, similarity: object) -> None:
+            text = str(value).strip()
+            if not text:
+                return
+            try:
+                score = float(similarity)
+            except (TypeError, ValueError):
+                return
+            if not math.isfinite(score) or score < 0.80:
+                return
+            expansions: dict[str, tuple[str, float]] = ensure(attribute)["expansions"]
+            key = _normalise_value(text)
+            previous = expansions.get(key)
+            if previous is None or score > previous[1]:
+                expansions[key] = (text, min(max(score, 0.0), 1.0))
+
+        for attribute in BM25_CONSTRAINT_ATTRIBUTES:
+            for value in self._constraint_values(constraints, attribute):
+                add_original(attribute, value)
+
+        semantic_values_by_id: dict[str, str] = {}
+        for attribute in BM25_CONSTRAINT_ATTRIBUTES:
+            for value in self._constraint_values(semantic_constraints, attribute):
+                semantic_values_by_id[
+                    f"{attribute}:{normalize_text(value).replace(' ', '_')}"
+                ] = value
+
+        for item in self._evidence_items(semantic_constraints):
+            canonical_id = getattr(item, "canonical_id", None)
+            attribute = getattr(item, "attribute", None)
+            raw_text = getattr(item, "raw_text", None)
+            confidence = getattr(item, "confidence", None)
+            if isinstance(item, Mapping):
+                canonical_id = item.get("canonical_id", canonical_id)
+                attribute = item.get("attribute", attribute)
+                raw_text = item.get("raw_text", raw_text)
+                confidence = item.get("confidence", confidence)
+            if not isinstance(attribute, str) or attribute not in BM25_CONSTRAINT_ATTRIBUTES:
+                continue
+            if not isinstance(canonical_id, str):
+                continue
+            value = semantic_values_by_id.get(canonical_id)
+            if value is None and ":" in canonical_id:
+                value = canonical_id.split(":", 1)[1].replace("_", " ")
+            if value is None:
+                continue
+            add_original(attribute, raw_text or value)
+            add_expansion(attribute, value, confidence)
+
+        # Exact dictionary ambiguity and otherwise unrecognized spans are kept
+        # in ``unmapped``. Reuse the existing BGE n-gram search for these
+        # spans, without introducing another semantic matcher.
+        unmapped = self._unmapped_values(constraints)
+        dictionary = None
+        if unmapped:
+            try:
+                from starter.routing import constraints as constraint_module
+
+                dictionary = constraint_module._load_default_dictionary()
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+                dictionary = None
+        for phrase in unmapped:
+            if not semantic_query_tokens(phrase):
+                continue
+            matches: Iterable[object] = ()
+            if dictionary is not None and getattr(dictionary, "semantic_available", False):
+                try:
+                    matches = dictionary.semantic_match_ngrams(
+                        phrase,
+                        max_ngram=3,
+                        min_similarity=0.80,
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    matches = ()
+            found = False
+            for match in matches:
+                attribute = getattr(match, "attribute", None)
+                value = getattr(match, "value", None)
+                score = getattr(match, "similarity", None)
+                if isinstance(match, Mapping):
+                    attribute = match.get("attribute", attribute)
+                    value = match.get("value", value)
+                    score = match.get("similarity", score)
+                if attribute in BM25_CONSTRAINT_ATTRIBUTES and value:
+                    add_original(str(attribute), phrase)
+                    add_expansion(str(attribute), value, score)
+                    found = True
+            if not found:
+                add_original("unresolved", phrase)
+
+        queries: list[BM25Constraint] = []
+        for attribute in (*BM25_CONSTRAINT_ATTRIBUTES, "unresolved"):
+            group = groups.get(attribute)
+            if not group:
+                continue
+            originals = tuple(group["originals"])
+            expansions = tuple(
+                sorted(
+                    group["expansions"].values(),
+                    key=lambda item: (-item[1], _normalise_value(item[0])),
+                )
+            )
+            terms = tuple(
+                dict.fromkeys(
+                    token
+                    for phrase in (*originals, *(item[0] for item in expansions))
+                    for token in semantic_query_tokens(phrase)
+                )
+            )[:40]
+            if terms:
+                queries.append(
+                    BM25Constraint(
+                        attribute=attribute,
+                        original_phrases=originals,
+                        expansions=expansions,
+                        terms=terms,
+                    )
+                )
+        return tuple(queries)
+
+    @staticmethod
+    def _rrf(rank: int | None) -> float:
+        return 0.0 if rank is None else 1.0 / (BM25_RRF_K * rank)
+
+    @staticmethod
+    def _rank_preview(ranks: Mapping[str, int], limit: int = 20) -> list[dict[str, object]]:
+        return [
+            {"parent_asin": asin, "rank": int(rank)}
+            for asin, rank in sorted(ranks.items(), key=lambda item: item[1])[:limit]
+        ]
+
+    def _bm25_ranked_terms(
+        self,
+        terms: Iterable[str],
+        eligible_asins: Collection[str],
+    ) -> dict[str, int]:
+        if self.bm25_index is None:
+            return {}
+        try:
+            return self.bm25_index.search_terms(
+                terms,
+                allowed_asins=eligible_asins,
+                max_results=BM25_MAX_RANK,
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return {}
+
     def _dense_scores(self, query_text: str) -> dict[str, float]:
         if self.query_encoder is None:
             return {}
@@ -847,13 +1078,20 @@ class ProductRetriever:
         matched_semantic_constraints: tuple[str, ...] = (),
         bm25_score: float = 0.0,
         w_rating: float = 0.0,
+        score_override: float | None = None,
+        bm25_rank: int | None = None,
+        constraint_bm25_ranks: Mapping[str, int] | None = None,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score, bm25_score)
+        score = (
+            _final_score(mode, structured_score, dense_score, bm25_score)
+            if score_override is None
+            else float(score_override)
+        )
         rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
@@ -868,6 +1106,8 @@ class ProductRetriever:
             matched_semantic_constraints=matched_semantic_constraints,
             price=self.product_by_asin[asin].price,
             bm25_score=float(bm25_score),
+            bm25_rank=bm25_rank,
+            constraint_bm25_ranks=dict(constraint_bm25_ranks or {}),
             rating=rating,
             ranking_score=float(score + w_rating * normalized_rating(rating)),
         )
@@ -885,11 +1125,12 @@ class ProductRetriever:
         apply_budget: bool = True,
         user_prior_rating: float | None = None,
     ) -> list[Candidate]:
-        """Return one deterministic candidate ranking for either mode.
+        """Return one deterministic BM25/BGE-expanded candidate ranking.
 
-        The shared ranker accumulates exact structured matches from the
-        inverted indexes. Non-budget fields are scored softly; an active
-        budget is the only eligibility filter.
+        BGE contributes only canonical expansion evidence. Product ranking is
+        reciprocal-rank fusion of the raw current-goal BM25 query and one
+        BM25 list per active attribute. Budget eligibility and recommendation
+        exclusions remain hard filters.
         """
 
         del minimum_candidates
@@ -921,14 +1162,14 @@ class ProductRetriever:
         price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
 
+        # Layer 2 is used here only to expand canonical attribute phrases.
+        # Product ranking is then entirely lexical: raw BM25 plus one BM25
+        # query per attribute, with one reciprocal-rank contribution per list.
         semantic_scores, semantic_labels = self._semantic_scores(
             eligible_asins,
             semantic_constraints,
         )
-        dense_scores = semantic_scores
-        if not dense_scores and self.dense_available:
-            dense_scores = self._dense_scores(query_text)
-        bm25_scores = self._bm25_scores(query_text, eligible_set)
+        del semantic_scores
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
@@ -992,73 +1233,108 @@ class ProductRetriever:
 
         w_rating = rating_weight(user_prior_rating)
 
-        def _rank_key(
-            base: Callable[[str], float]
-        ) -> Callable[[str], tuple[float, int]]:
-            """The spec's S(x), descending, with catalog order as last resort."""
+        constraint_queries = self._bm25_constraint_queries(
+            constraints,
+            semantic_constraints,
+        )
+        raw_terms = tuple(dict.fromkeys(semantic_query_tokens(query_text)))[:40]
+        raw_ranks = self._bm25_ranked_terms(raw_terms, eligible_set)
+        constraint_ranks = {
+            query.attribute: self._bm25_ranked_terms(query.terms, eligible_set)
+            for query in constraint_queries
+        }
 
-            def key(asin: str) -> tuple[float, int]:
-                bonus = w_rating * normalized_rating(self.rating_lookup.get(asin))
-                return (
-                    -(base(asin) + bonus),
-                    self.product_by_asin[asin].catalog_order,
-                )
+        fused_scores: dict[str, float] = {
+            asin: self._rrf(rank) for asin, rank in raw_ranks.items()
+        }
+        candidate_pool: set[str] = set(raw_ranks)
+        for query in constraint_queries:
+            ranks = constraint_ranks[query.attribute]
+            candidate_pool.update(ranks)
+            for asin, rank in ranks.items():
+                fused_scores[asin] = fused_scores.get(asin, 0.0) + self._rrf(rank)
 
-            return key
-
-        def _select(pool: list[str], base: Callable[[str], float]) -> list[str]:
-            """Rank the whole pool *before* slicing to limit (Task 2)."""
-
-            key = _rank_key(base)
-            if limit < len(pool):
-                return heapq.nsmallest(limit, pool, key=key)
-            return sorted(pool, key=key)
-
-        def _zero(_asin: str) -> float:
-            return 0.0
-
-        if not dense_scores and not constraint_fields:
-            # No constraints and no dense signal: every candidate ties at zero,
-            # so the rating is the only thing left to order them by.
-            ranked_asins = _select(eligible_asins, _zero)
-        elif not dense_scores:
-            positive_asins = sorted(matched_weight, key=_rank_key(structured_score))
-            ranked_asins = positive_asins[:limit]
-            if len(ranked_asins) < limit:
-                selected = set(ranked_asins)
-                remainder = [
-                    asin for asin in eligible_asins if asin not in selected
-                ]
-                # Zero-match padding is ordered by rating too, not by catalog
-                # position, so the pad respects the same preference.
-                ranked_asins.extend(
-                    heapq.nsmallest(
-                        limit - len(ranked_asins), remainder, key=_rank_key(_zero)
-                    )
-                )
+        bm25_active = self.bm25_index is not None
+        if bm25_active:
+            # Keep the complete eligible universe in the ranker. Products not
+            # returned by a BM25 list receive zero fused evidence and remain
+            # available for deterministic Top10 padding/debug rank-all.
+            candidate_pool.update(eligible_asins)
+            ranking_base = fused_scores
         else:
-            final_scores = {
-                asin: _final_score(
-                    mode,
-                    structured_score(asin),
-                    dense_scores.get(asin, 0.0),
-                    bm25_scores.get(asin, 0.0),
-                )
-                for asin in eligible_asins
+            # Safe degraded mode when the FTS index could not initialize.
+            # Structured scoring remains available, but no dense or hash
+            # fallback is introduced.
+            candidate_pool.update(eligible_asins)
+            ranking_base = {
+                asin: structured_score(asin) for asin in eligible_asins
             }
-            ranked_asins = _select(eligible_asins, final_scores.__getitem__)
+
+        def rank_key(asin: str) -> tuple[float, int]:
+            bonus = w_rating * normalized_rating(self.rating_lookup.get(asin))
+            return (
+                -(ranking_base.get(asin, 0.0) + bonus),
+                self.product_by_asin[asin].catalog_order,
+            )
+
+        ranked_asins = sorted(candidate_pool, key=rank_key)[:limit]
+        self.last_retrieval_debug = {
+            "raw_bm25_query": " ".join(raw_terms),
+            "raw_bm25_terms": list(raw_terms),
+            "raw_bm25_rank_count": len(raw_ranks),
+            "raw_bm25_top_ranks": self._rank_preview(raw_ranks),
+            "constraints": [
+                {
+                    **query.as_dict(),
+                    "result_count": len(constraint_ranks[query.attribute]),
+                    "top_ranks": self._rank_preview(
+                        constraint_ranks[query.attribute]
+                    ),
+                }
+                for query in constraint_queries
+            ],
+            "fusion": {
+                "method": "reciprocal_rank_fusion",
+                "rank_constant": BM25_RRF_K,
+                "raw_query_weight": 1.0,
+                "constraint_query_weight": 1.0,
+                "candidate_pool_size": len(candidate_pool),
+            },
+            "top_fused": [
+                {
+                    "parent_asin": asin,
+                    "final_score": ranking_base.get(asin, 0.0),
+                    "raw_rank": raw_ranks.get(asin),
+                    "constraint_ranks": {
+                        attribute: ranks[asin]
+                        for attribute, ranks in constraint_ranks.items()
+                        if asin in ranks
+                    },
+                }
+                for asin in ranked_asins[:10]
+            ],
+            "bm25_available": bm25_active,
+        }
+
         return [
             self._candidate(
                 asin,
                 mode,
-                dense_scores.get(asin, 0.0),
+                0.0,
                 structured_score(asin),
                 labels_for(asin),
                 matched_fields.get(asin, set()),
                 constraint_fields,
                 semantic_labels.get(asin, ()),
-                bm25_scores.get(asin, 0.0),
+                self._rrf(raw_ranks.get(asin)),
                 w_rating=w_rating,
+                score_override=ranking_base.get(asin, 0.0),
+                bm25_rank=raw_ranks.get(asin),
+                constraint_bm25_ranks={
+                    attribute: ranks[asin]
+                    for attribute, ranks in constraint_ranks.items()
+                    if asin in ranks
+                },
             )
             for asin in ranked_asins
         ]
@@ -1087,6 +1363,11 @@ class ProductRetriever:
             user_prior_rating=user_prior_rating,
         )
 
+    def retrieval_debug(self) -> dict[str, object]:
+        """Return the latest compact BM25 fusion trace for local debugging."""
+
+        return dict(self.last_retrieval_debug)
+
 
 InMemoryRetriever = ProductRetriever
 
@@ -1095,6 +1376,8 @@ __all__ = [
     "CRITICAL_USER_RATING_THRESHOLD",
     "Candidate",
     "BM25_SCORE_WEIGHT",
+    "BM25_RRF_K",
+    "BM25Constraint",
     "InMemoryRetriever",
     "MODE_SCORE_WEIGHTS",
     "ProductRecord",

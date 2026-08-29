@@ -183,6 +183,7 @@ def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
                 str(value) for value in getattr(state, "asked_attributes", set())
             ),
             "last_asked": getattr(state, "last_asked", None),
+            "retrieval_debug": getattr(state, "retrieval_debug", {}),
         }
     )
     return snapshot
@@ -216,6 +217,10 @@ def _candidate_payload(
             float(getattr(candidate, "bm25_score", 0.0))
             if bm25_available
             else None
+        ),
+        "bm25_rank": getattr(candidate, "bm25_rank", None),
+        "constraint_bm25_ranks": dict(
+            getattr(candidate, "constraint_bm25_ranks", {})
         ),
         "final_score": float(candidate.score),
         "matched_constraints": list(candidate.matched_constraints),
@@ -267,6 +272,8 @@ def _ranking_payload(
                     "dense_score": None,
                     "semantic_score": None,
                     "bm25_score": None,
+                    "bm25_rank": None,
+                    "constraint_bm25_ranks": {},
                     "final_score": None,
                     "matched_constraints": [],
                     "matched_semantic_constraints": [],
@@ -512,6 +519,7 @@ class DebugWebController:
                 ),
                 "extracted_this_turn": extracted_this_turn,
                 "query_text": after_state.get("query_text", ""),
+                "retrieval_debug": after_state.get("retrieval_debug", {}),
                 "asked_attributes": after_state.get("asked_attributes", []),
                 "last_asked": after_state.get("last_asked"),
                 "exclusions": after_state.get("excluded", []),

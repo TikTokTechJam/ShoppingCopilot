@@ -260,13 +260,17 @@ class Agent:
 
         candidates = self.retriever.retrieve(
             state.mode or "BROWSING",
-            state.query_text,
+            state.goal_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
             limit=100,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
             user_prior_rating=user_prior_rating,
+        )
+        debug_getter = getattr(self.retriever, "retrieval_debug", None)
+        state.retrieval_debug = (
+            dict(debug_getter()) if callable(debug_getter) else {}
         )
 
         try:
@@ -351,7 +355,7 @@ class Agent:
         try:
             relaxed = self.retriever.retrieve(
                 state.mode or "BROWSING",
-                state.query_text,
+                state.goal_query_text,
                 state.constraints,
                 limit=max(int(limit) * 4, 50),
                 apply_budget=False,

@@ -1,8 +1,8 @@
 """Small in-memory BM25 index for the product-text retrieval path.
 
-This is a third retrieval signal. It does not replace structured or semantic
-matching, and it intentionally reuses the semantic path's lexical cleanup so
-the three paths see the same conversational query terms.
+The index exposes both native BM25 scores and deterministic one-based ranks.
+The retrieval layer uses the ranks for reciprocal-rank fusion, while keeping
+the native score available for compatibility and diagnostics.
 """
 
 from __future__ import annotations
@@ -134,17 +134,73 @@ class BM25Index:
         *,
         allowed_asins: Collection[str] | None = None,
     ) -> dict[str, float]:
-        terms = _query_terms(query_text)
-        expression = _match_expression(terms)
+        return self._search_scores(_query_terms(query_text), allowed_asins=allowed_asins)
+
+    def search_terms(
+        self,
+        terms: Iterable[str],
+        *,
+        allowed_asins: Collection[str] | None = None,
+        max_results: int | None = None,
+    ) -> dict[str, int]:
+        """Return one-based BM25 ranks for a token query.
+
+        The caller supplies already-cleaned terms so a raw query and a
+        constraint query can share the repository's semantic stopword policy.
+        Ranks are assigned after the eligibility filter; an excluded product
+        therefore cannot consume a useful rank.
+        """
+
+        expression = _match_expression(tuple(dict.fromkeys(terms))[:MAX_QUERY_TERMS])
         if not expression:
             return {}
 
-        rows = self.connection.execute(
+        rows = self._rows(expression)
+        allowed = None if allowed_asins is None else set(allowed_asins)
+        ranks: dict[str, int] = {}
+        for asin, _raw_rank in rows:
+            asin = str(asin)
+            if allowed is not None and asin not in allowed:
+                continue
+            ranks[asin] = len(ranks) + 1
+            if max_results is not None and len(ranks) >= max_results:
+                break
+        return ranks
+
+    def search_ranked(
+        self,
+        query_text: str,
+        *,
+        allowed_asins: Collection[str] | None = None,
+        max_results: int | None = None,
+    ) -> dict[str, int]:
+        """Return one-based ranks for a cleaned conversational query."""
+
+        return self.search_terms(
+            _query_terms(query_text),
+            allowed_asins=allowed_asins,
+            max_results=max_results,
+        )
+
+    def _rows(self, expression: str) -> list[tuple[object, object]]:
+        return self.connection.execute(
             "SELECT parent_asin, bm25(products, ?, ?, ?, ?, ?, ?, ?) AS rank "
             "FROM products WHERE products MATCH ? "
             "ORDER BY rank ASC, rowid ASC",
             (*BM25_FIELD_WEIGHTS, expression),
         ).fetchall()
+
+    def _search_scores(
+        self,
+        terms: Iterable[str],
+        *,
+        allowed_asins: Collection[str] | None = None,
+    ) -> dict[str, float]:
+        expression = _match_expression(terms)
+        if not expression:
+            return {}
+
+        rows = self._rows(expression)
         allowed = None if allowed_asins is None else set(allowed_asins)
         scores: dict[str, float] = {}
         for asin, raw_rank in rows:

@@ -1051,6 +1051,39 @@ def _debug_print_breakdown(constraints: Any, candidate: Any) -> None:
     print(f"Structured normalized: {float(candidate.constraint_score):.4f}")
 
 
+def _debug_print_bm25_fusion(retriever: Any) -> None:
+    """Print the compact raw/constraint BM25 fusion trace for one turn."""
+
+    trace = getattr(retriever, "last_retrieval_debug", {})
+    if not isinstance(trace, Mapping) or not trace:
+        return
+    print("BM25 FUSION")
+    print(f"Raw query: {trace.get('raw_bm25_query', '') or '(empty)'}")
+    print(f"Raw results: {trace.get('raw_bm25_rank_count', 0)}")
+    for item in trace.get("constraints", ()):
+        if not isinstance(item, Mapping):
+            continue
+        expansions = ", ".join(
+            f"{entry.get('value')}@{float(entry.get('similarity', 0.0)):.3f}"
+            for entry in item.get("expansions", ())
+            if isinstance(entry, Mapping)
+        )
+        print(
+            f"  {item.get('attribute')}: "
+            f"{', '.join(str(value) for value in item.get('original_phrases', ())) or '(none)'}"
+        )
+        if expansions:
+            print(f"    BGE expansions: {expansions}")
+    print(f"RRF: 1 / ({trace.get('fusion', {}).get('rank_constant', 60)} * rank)")
+    for item in trace.get("top_fused", ())[:10]:
+        if isinstance(item, Mapping):
+            print(
+                f"  {item.get('parent_asin')}: fused={float(item.get('final_score', 0.0)):.6f} "
+                f"raw_rank={item.get('raw_rank', 'MISS')} "
+                f"constraint_ranks={item.get('constraint_ranks', {})}"
+            )
+
+
 def _debug_print_metrics(results: list[Mapping[str, Any]]) -> None:
     metrics = add_score_fields(metric_summary(results))
     print(f"Completed sessions: {len(results)}")
@@ -1181,6 +1214,7 @@ class InteractiveDebugPrinter:
             "BM25: "
             f"{'AVAILABLE' if bool(getattr(retriever, 'bm25_available', False)) else 'UNAVAILABLE'}"
         )
+        _debug_print_bm25_fusion(retriever)
         print()
         snapshot = _debug_state_snapshot(agent, session_id)
         excluded = snapshot.get("excluded", [])

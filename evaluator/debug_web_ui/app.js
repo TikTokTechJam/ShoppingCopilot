@@ -76,6 +76,41 @@ function similarityRows(similarities) {
     </div>`).join("")}</div>`;
 }
 
+function bm25Fusion(debug) {
+  if (!debug || !debug.bm25_available) {
+    return '<span class="muted">BM25 fusion unavailable for this turn.</span>';
+  }
+  const constraints = Array.isArray(debug.constraints) ? debug.constraints : [];
+  const fused = Array.isArray(debug.top_fused) ? debug.top_fused : [];
+  const rows = constraints.length ? constraints.map(item => {
+    const originals = (item.original_phrases || []).join(", ");
+    const expansions = (item.expansions || []).map(exp =>
+      `<span class="chip" title="${esc(exp.value)} · similarity ${esc(exp.similarity)}">${esc(exp.value)} <span class="chip-score">${score(exp.similarity)}</span></span>`
+    ).join("") || '<span class="muted">none</span>';
+    const topRanks = (item.top_ranks || []).slice(0, 5).map(hit =>
+      `${esc(hit.parent_asin)} #${esc(hit.rank)}`
+    ).join(" · ");
+    return `<div class="bm25-fusion-row">
+      <div class="bm25-fusion-label"><strong>${esc(item.attribute)}</strong><span title="${esc(originals)}">${esc(originals || "—")}</span></div>
+      <div class="constraint-values">${expansions}</div>
+      <small class="muted">ranks: ${topRanks || "none"}</small>
+    </div>`;
+  }).join("") : '<span class="muted">No active attribute queries.</span>';
+  const fusedRows = fused.map((item, index) => {
+    const ranks = Object.entries(item.constraint_ranks || {})
+      .map(([attribute, rank]) => `${esc(attribute)} #${esc(rank)}`).join(" · ");
+    return `<div class="bm25-fused-candidate"><span>#${index + 1} <code>${esc(item.parent_asin)}</code></span><strong>${score(item.final_score)}</strong><small>raw #${esc(item.raw_rank ?? "—")} · ${ranks || "no attribute hit"}</small></div>`;
+  }).join("");
+  return `<div class="bm25-fusion">
+    <div class="kv"><span>Raw query</span><code title="${esc(debug.raw_bm25_query || "")}">${esc(debug.raw_bm25_query || "—")}</code></div>
+    <div class="kv"><span>Raw results</span><b>${esc(debug.raw_bm25_rank_count ?? 0)}</b></div>
+    <div class="kv"><span>Fusion</span><b>1 / (${esc(debug.fusion?.rank_constant ?? 60)} × rank)</b></div>
+    ${rows}
+    <h4>Top fused candidates</h4>
+    <div class="bm25-fused-list">${fusedRows || '<span class="muted">none</span>'}</div>
+  </div>`;
+}
+
 function renderBanner(data) {
   const session = data.session;
   if (!session) {
@@ -117,6 +152,8 @@ function renderState(data) {
     <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
     <h3>BM25 lexical search</h3>
     <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
+    <h3>BM25 fusion details</h3>
+    ${bm25Fusion(state.retrieval_debug)}
     <h3>Hard evaluator score</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
@@ -188,6 +225,7 @@ function renderConversation(data) {
       <h4>Semantic extracted this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
+      <h4>BM25 fusion details</h4><div>${bm25Fusion(state.retrieval_debug)}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
       <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");

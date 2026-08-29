@@ -69,12 +69,21 @@ class SessionState:
     )
     last_override_kind: str | None = None
     last_override_delta: ShoppingConstraints | None = None
+    # Compact retrieval trace for the local debugger. It is not part of the
+    # public Agent response or evaluator scoring contract.
+    retrieval_debug: dict[str, Any] = field(default_factory=dict)
 
     @property
     def query_text(self) -> str:
         """Return the current shopping context in chronological order."""
 
         return " ".join(message for message in self.messages if message).strip()
+
+    @property
+    def goal_query_text(self) -> str:
+        """Alias used by retrieval to make reset-scoped query semantics clear."""
+
+        return self.query_text
 
 
 def _fresh_attribute_call_count() -> dict[str, int]:
@@ -357,6 +366,7 @@ class SessionManager:
         state.semantic_constraint_provenance.clear()
         state.last_override_kind = None
         state.last_override_delta = None
+        state.retrieval_debug = {}
         return state
 
     def reset_preference(self, session_id: str) -> SessionState:
@@ -461,6 +471,7 @@ class SessionManager:
         state.last_user_message = None
         state.messages.clear()
         state.last_asked = None
+        state.retrieval_debug = {}
         return state
 
     def reset_clarification_cycle(self, session_id: str) -> SessionState:
