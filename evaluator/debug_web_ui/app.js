@@ -111,6 +111,8 @@ function renderState(data) {
     <details><summary>show IDs</summary><pre>${json(state.excluded || [])}</pre></details>
     <h3>Layer 2</h3>
     <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
+    <h3>BM25 lexical search</h3>
+    <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? "Available" : `Unavailable: ${esc(data.bm25?.reason || "Unknown")}`}</div>
     <h3>Hard evaluator score</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
@@ -134,22 +136,24 @@ function renderDiagnostics(data) {
     <tr class="${item.target ? "target-row" : ""}">
       <td>${item.rank}</td><td><code>${esc(item.parent_asin)}</code></td>
       <td><span class="table-title" title="${esc(item.title || "")}">${esc(item.title || "")}</span></td><td>${score(item.structured_score)}</td>
-      <td>${score(item.dense_score)}</td><td>${score(item.final_score)}</td>
+      <td>${score(item.dense_score)}</td><td>${score(item.bm25_score)}</td><td>${score(item.final_score)}</td>
     </tr>`).join("");
   $("diagnostics").innerHTML = `
     <div class="status">${status}</div>
     <div class="rank-grid">
       <div><span>Structured</span><b>${r.structured_rank ?? rankFallback}</b></div>
       <div><span>Dense</span><b>${r.dense_rank ?? "N/A"}</b></div>
+      <div><span>BM25</span><b>${r.bm25_rank ?? "N/A"}</b></div>
       <div><span>Hybrid</span><b>${r.hybrid_rank ?? rankFallback}</b></div>
     </div>
     <div class="score-grid">
       <div><span>Structured</span><strong title="${esc(r.structured_score ?? "N/A")}">${score(r.structured_score)}</strong></div>
       <div><span>Dense semantic</span><strong title="${esc(r.dense_score ?? "N/A")}">${score(r.dense_score)}</strong></div>
+      <div><span>BM25 lexical</span><strong title="${esc(r.bm25_score ?? "N/A")}">${score(r.bm25_score)}</strong></div>
       <div><span>Final</span><strong title="${esc(r.final_score ?? "N/A")}">${score(r.final_score)}</strong></div>
     </div>
     <h3>Top 10 (reranker order)</h3>
-    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=6>none</td></tr>"}</tbody></table></div>
+    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>BM25</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=7>none</td></tr>"}</tbody></table></div>
     <h3>Override</h3>
     <div class="${override.detected ? "override" : "muted"}">${override.detected ? `INTENT OVERRIDE: ${esc(override.kind)}` : "No override"}</div>`;
 }

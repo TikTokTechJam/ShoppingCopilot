@@ -1,10 +1,9 @@
-"""Dependency-light in-memory product retrieval for the Layer 1/2 MVP.
+"""Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
 
-The retriever consumes canonical product facts and optional direct Layer 2
-field vectors. It does not parse user language and it does not maintain a
-second lexical/BM25 product-search route. User text is only passed to an
-injected compatible query encoder when dense artifacts are available; canonical
-constraints drive the Buying filters and preference boosts drive Browsing.
+The retriever consumes canonical product facts, optional direct Layer 2 field
+vectors, and a BM25 product-text index. It does not parse user language.
+Structured, semantic, and lexical scores are kept separate until the shared
+final scorer combines them.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import heapq
 import json
 import math
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Mapping
@@ -24,6 +24,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
+from starter.bm25 import BM25Index
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -71,11 +72,12 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 1.00, "dense": 1.00},
-    "BROWSING": {"structured": 1.00, "dense": 1.00},
+    "BUYING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
+    "BROWSING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
 }
 # Backward-compatible name for callers that inspect the Buying contribution.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
+BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
 
 
 def _encoder_model_id(encoder: object | None) -> str | None:
@@ -106,11 +108,17 @@ def _encoder_dimension(encoder: object | None) -> int | None:
     return None
 
 
-def _final_score(mode: str, structured_score: float, dense_score: float) -> float:
+def _final_score(
+    mode: str,
+    structured_score: float,
+    dense_score: float,
+    bm25_score: float = 0.0,
+) -> float:
     weights = MODE_SCORE_WEIGHTS[mode]
     return float(
         weights["structured"] * structured_score
         + weights["dense"] * dense_score
+        + weights.get("bm25", 0.0) * bm25_score
     )
 
 
@@ -234,6 +242,7 @@ class Candidate:
     attributes: Mapping[str, tuple[str, ...]] = field(default_factory=dict, repr=False, compare=False)
     semantic_score: float = 0.0
     matched_semantic_constraints: tuple[str, ...] = ()
+    bm25_score: float = 0.0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -241,6 +250,7 @@ class Candidate:
             "score": self.score,
             "dense_score": self.dense_score,
             "semantic_score": self.semantic_score,
+            "bm25_score": self.bm25_score,
             "constraint_score": self.constraint_score,
             "matched_constraints": list(self.matched_constraints),
             "matched_semantic_constraints": list(self.matched_semantic_constraints),
@@ -279,6 +289,12 @@ class ProductRetriever:
         self.price_lookup: dict[str, float | None] = {}
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
+        self.bm25_index: BM25Index | None = None
+        self.bm25_error: str | None = None
+        try:
+            self.bm25_index = BM25Index(self.product_by_asin, self._catalog_order)
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            self.bm25_error = f"BM25 index unavailable: {exc}"
         self.embedding_matrix: Any = None
         self.embedding_asins: tuple[str, ...] = ()
         self._embedding_norms: Any = None
@@ -367,6 +383,10 @@ class ProductRetriever:
                 for name in ("encode", "embed_documents", "embed")
             )
         )
+
+    @property
+    def bm25_available(self) -> bool:
+        return self.bm25_index is not None
 
     def _load_fact_artifact(
         self, facts_path: str | Path | None
@@ -685,6 +705,21 @@ class ProductRetriever:
         except (ImportError, TypeError, ValueError, RuntimeError):
             return {}
 
+    def _bm25_scores(
+        self,
+        query_text: str,
+        eligible_asins: Collection[str],
+    ) -> dict[str, float]:
+        if self.bm25_index is None:
+            return {}
+        try:
+            return self.bm25_index.search(
+                query_text,
+                allowed_asins=eligible_asins,
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return {}
+
     def _query_embedding(self, query_text: str, dimension: int) -> Any:
         """Encode one query with the shared runtime encoder and validate it."""
         import numpy as np
@@ -733,13 +768,14 @@ class ProductRetriever:
         matched_fields: set[str],
         constraint_fields: tuple[str, ...],
         matched_semantic_constraints: tuple[str, ...] = (),
+        bm25_score: float = 0.0,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score)
+        score = _final_score(mode, structured_score, dense_score, bm25_score)
         return Candidate(
             parent_asin=asin,
             score=float(score),
@@ -751,6 +787,7 @@ class ProductRetriever:
             attributes=self.product_by_asin[asin].facts,
             semantic_score=float(dense_score),
             matched_semantic_constraints=matched_semantic_constraints,
+            bm25_score=float(bm25_score),
         )
 
     def retrieve(
@@ -808,6 +845,7 @@ class ProductRetriever:
         dense_scores = semantic_scores
         if not dense_scores and self.dense_available:
             dense_scores = self._dense_scores(query_text)
+        bm25_scores = self._bm25_scores(query_text, eligible_set)
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
@@ -869,9 +907,9 @@ class ProductRetriever:
                 labels.extend(price_labels)
             return tuple(labels)
 
-        if not dense_scores and not constraint_fields:
+        if not dense_scores and not bm25_scores and not constraint_fields:
             ranked_asins = eligible_asins[:limit]
-        elif not dense_scores:
+        elif not dense_scores and not bm25_scores:
             positive_asins = sorted(
                 matched_weight,
                 key=lambda asin: (
@@ -892,6 +930,7 @@ class ProductRetriever:
                     mode,
                     structured_score(asin),
                     dense_scores.get(asin, 0.0),
+                    bm25_scores.get(asin, 0.0),
                 )
                 for asin in eligible_asins
             }
@@ -913,6 +952,7 @@ class ProductRetriever:
                 matched_fields.get(asin, set()),
                 constraint_fields,
                 semantic_labels.get(asin, ()),
+                bm25_scores.get(asin, 0.0),
             )
             for asin in ranked_asins
         ]
@@ -945,6 +985,7 @@ InMemoryRetriever = ProductRetriever
 
 __all__ = [
     "Candidate",
+    "BM25_SCORE_WEIGHT",
     "InMemoryRetriever",
     "MODE_SCORE_WEIGHTS",
     "ProductRecord",
