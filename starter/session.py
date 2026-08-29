@@ -243,6 +243,15 @@ def correction_fields(
     return tuple(fields)
 
 
+def is_no_preference_reply(message: str, asked_attribute: str | None) -> bool:
+    """Return whether a pending clarification received no usable preference."""
+
+    return bool(
+        asked_attribute
+        and lexicon.NO_PREFERENCE_MARKER.search(message or "")
+    )
+
+
 def detect_override_kind(
     message: str,
     current: ShoppingConstraints,
@@ -419,11 +428,19 @@ class SessionManager:
         state.last_asked = None
         return state
 
-    def record_message(self, session_id: str, message: str) -> None:
+    def record_message(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        include_in_query: bool = True,
+    ) -> None:
+        """Record the latest user message, optionally in semantic context."""
+
         state = self.get(session_id)
         text = (message or "").strip()
         state.last_user_message = text
-        if text:
+        if text and include_in_query:
             state.messages.append(text)
 
     def update_constraints(
@@ -508,6 +525,7 @@ __all__ = [
     "OverrideKind",
     "correction_fields",
     "detect_override_kind",
+    "is_no_preference_reply",
     "is_intent_override",
     "merge_constraints",
     "merge_semantic_constraints",

@@ -15,6 +15,7 @@ from starter.session import (
     SessionManager,
     correction_fields,
     detect_override_kind,
+    is_no_preference_reply,
 )
 
 
@@ -83,7 +84,15 @@ class Agent:
     ) -> dict[str, object]:
         state = self.sessions.get(session_id)
         message = user_message or ""
-        delta = self._extract(message)
+        pending_attribute = state.last_asked
+        no_preference_reply = is_no_preference_reply(message, pending_attribute)
+        # A no-preference answer is clarification metadata, not a product
+        # constraint. Skip the extractor so its words cannot become facts.
+        delta = (
+            ShoppingConstraints()
+            if no_preference_reply
+            else self._extract(message)
+        )
         semantic_delta = getattr(delta, "semantic_constraints", None)
         structured_delta = (
             delta.structured_only()
@@ -131,7 +140,11 @@ class Agent:
             replace_fields=replacements,
             source=source,
         )
-        self.sessions.record_message(session_id, message)
+        self.sessions.record_message(
+            session_id,
+            message,
+            include_in_query=not no_preference_reply,
+        )
         state.turn = int(turn)
 
         candidates = self.retriever.retrieve(

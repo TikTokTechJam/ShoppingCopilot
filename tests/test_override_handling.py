@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from starter.agent import Agent
 from starter.routing.constraints import ShoppingConstraints, extract_constraints
-from starter.session import OverrideKind, SessionManager, detect_override_kind
+from starter.session import (
+    OverrideKind,
+    SessionManager,
+    detect_override_kind,
+    is_no_preference_reply,
+)
 
 
 def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -188,6 +193,43 @@ class OverrideHandlingTests(unittest.TestCase):
             detect_override_kind("actually black", current, delta),
             OverrideKind.PREFERENCE,
         )
+
+    def test_no_preference_reply_skips_extraction_and_excludes_attribute(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = self.make_agent(root)
+            agent.reset("session", {})
+            state = agent.sessions.get("session")
+            state.mode = "BUYING"
+            state.constraints = ShoppingConstraints(category=("shoes",))
+            state.messages.append("I need shoes")
+            state.last_asked = "material"
+            state.asked_attributes.add("material")
+
+            with patch(
+                "starter.agent.Agent._extract",
+                side_effect=AssertionError(
+                    "no-preference replies must not be extracted"
+                ),
+            ):
+                response = agent.respond(
+                    "session",
+                    "I don't know.",
+                    2,
+                    2,
+                )
+
+            self.assertNotEqual(response["ask_attribute"], "material")
+            self.assertIn("material", state.asked_attributes)
+            self.assertEqual(state.constraints.category, ("shoes",))
+            self.assertEqual(state.constraints.material, ())
+            self.assertEqual(state.last_user_message, "I don't know.")
+            self.assertEqual(state.query_text, "I need shoes")
+
+    def test_no_preference_detection_requires_pending_clarification(self) -> None:
+        self.assertTrue(is_no_preference_reply("I don't know.", "material"))
+        self.assertTrue(is_no_preference_reply("I don't have.", "material"))
+        self.assertFalse(is_no_preference_reply("I don't know.", None))
 
     def test_normal_clarification_keeps_transcript_and_promotes_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
