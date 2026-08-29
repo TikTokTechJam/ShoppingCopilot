@@ -79,6 +79,59 @@ MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
 BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
 
+# Share of the lexical weight that survives an intent override.
+#
+# BM25 is the one channel an override cannot correct. ``reset_preference`` and
+# ``reset_goal`` clear ``state.messages``, so the query text is rebuilt from
+# the override utterance alone -- it loses the category word that anchored the
+# lexical match and keeps only the correction wording ("actually", "priority
+# changed"), which matches nothing useful in the catalog. The structured and
+# semantic channels do not degrade that way: they are rebuilt from provenance,
+# so they still describe the live goal. Demoting BM25 after an override is
+# therefore a statement about which signal survived the reset, not a tuning
+# constant.
+OVERRIDE_BM25_RETENTION = 0.25
+
+
+def _redistribute_for_override(
+    weights: Mapping[str, float],
+    retention: float = OVERRIDE_BM25_RETENTION,
+) -> dict[str, float]:
+    """Move the weight BM25 gives up onto the channels that survive a reset.
+
+    The redistribution is mass-preserving and proportional, so the override
+    table stays consistent with whatever ``MODE_SCORE_WEIGHTS`` is tuned to:
+    only the *split* between lexical and non-lexical evidence changes, never
+    the total scale of a candidate's score.
+    """
+
+    bm25 = float(weights.get("bm25", 0.0))
+    structured = float(weights.get("structured", 0.0))
+    dense = float(weights.get("dense", 0.0))
+    freed = bm25 * (1.0 - retention)
+    survivors = structured + dense
+    if survivors <= 0.0:
+        return {"structured": structured, "dense": dense, "bm25": bm25}
+    return {
+        "structured": structured + freed * (structured / survivors),
+        "dense": dense + freed * (dense / survivors),
+        "bm25": bm25 * retention,
+    }
+
+
+OVERRIDE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
+    mode: _redistribute_for_override(weights)
+    for mode, weights in MODE_SCORE_WEIGHTS.items()
+}
+
+
+def score_weights(mode: str, *, override_active: bool = False) -> dict[str, float]:
+    """Channel weights for ``mode``, redistributed once an override is seen."""
+
+    table = OVERRIDE_SCORE_WEIGHTS if override_active else MODE_SCORE_WEIGHTS
+    return table[mode]
+
+
 # Rating tie-breaker (INSTRUCTION.md section 1).  The structured matcher scores
 # most candidates identically -- 9.6 of every 10 returned candidates share one
 # score -- so without a continuous term the top-10 order is catalog position.
@@ -175,8 +228,10 @@ def _final_score(
     structured_score: float,
     dense_score: float,
     bm25_score: float = 0.0,
+    *,
+    override_active: bool = False,
 ) -> float:
-    weights = MODE_SCORE_WEIGHTS[mode]
+    weights = score_weights(mode, override_active=override_active)
     return float(
         weights["structured"] * structured_score
         + weights["dense"] * dense_score
@@ -847,13 +902,20 @@ class ProductRetriever:
         matched_semantic_constraints: tuple[str, ...] = (),
         bm25_score: float = 0.0,
         w_rating: float = 0.0,
+        override_active: bool = False,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score, bm25_score)
+        score = _final_score(
+            mode,
+            structured_score,
+            dense_score,
+            bm25_score,
+            override_active=override_active,
+        )
         rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
@@ -884,6 +946,7 @@ class ProductRetriever:
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
         user_prior_rating: float | None = None,
+        override_active: bool = False,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
@@ -1017,11 +1080,20 @@ class ProductRetriever:
         def _zero(_asin: str) -> float:
             return 0.0
 
-        if not dense_scores and not constraint_fields:
-            # No constraints and no dense signal: every candidate ties at zero,
-            # so the rating is the only thing left to order them by.
+        def combined_score(asin: str) -> float:
+            return _final_score(
+                mode,
+                structured_score(asin),
+                dense_scores.get(asin, 0.0),
+                bm25_scores.get(asin, 0.0),
+                override_active=override_active,
+            )
+
+        if not dense_scores and not bm25_scores and not constraint_fields:
+            # No constraints and no free-text signal: every candidate ties at
+            # zero, so the rating is the only thing left to order them by.
             ranked_asins = _select(eligible_asins, _zero)
-        elif not dense_scores:
+        elif not dense_scores and not bm25_scores:
             positive_asins = sorted(matched_weight, key=_rank_key(structured_score))
             ranked_asins = positive_asins[:limit]
             if len(ranked_asins) < limit:
@@ -1037,15 +1109,7 @@ class ProductRetriever:
                     )
                 )
         else:
-            final_scores = {
-                asin: _final_score(
-                    mode,
-                    structured_score(asin),
-                    dense_scores.get(asin, 0.0),
-                    bm25_scores.get(asin, 0.0),
-                )
-                for asin in eligible_asins
-            }
+            final_scores = {asin: combined_score(asin) for asin in eligible_asins}
             ranked_asins = _select(eligible_asins, final_scores.__getitem__)
         return [
             self._candidate(
@@ -1059,6 +1123,7 @@ class ProductRetriever:
                 semantic_labels.get(asin, ()),
                 bm25_scores.get(asin, 0.0),
                 w_rating=w_rating,
+                override_active=override_active,
             )
             for asin in ranked_asins
         ]
@@ -1073,6 +1138,7 @@ class ProductRetriever:
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
         user_prior_rating: float | None = None,
+        override_active: bool = False,
     ) -> list[Candidate]:
         """Return the complete ranking using the production scorer."""
 
@@ -1085,6 +1151,7 @@ class ProductRetriever:
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,
             user_prior_rating=user_prior_rating,
+            override_active=override_active,
         )
 
 
@@ -1097,6 +1164,8 @@ __all__ = [
     "BM25_SCORE_WEIGHT",
     "InMemoryRetriever",
     "MODE_SCORE_WEIGHTS",
+    "OVERRIDE_BM25_RETENTION",
+    "OVERRIDE_SCORE_WEIGHTS",
     "ProductRecord",
     "ProductRetriever",
     "RATING_BOOST_WEIGHT",
@@ -1105,4 +1174,5 @@ __all__ = [
     "is_critical_user",
     "normalized_rating",
     "rating_weight",
+    "score_weights",
 ]

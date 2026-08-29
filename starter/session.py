@@ -53,6 +53,11 @@ class SessionState:
     )
     clarification_cycle: int = 1
     clarification_stopped: bool = False
+    # Latches on the first detected intent override and stays set for the rest
+    # of the session: the lexical query never recovers the wording the reset
+    # discarded, so the demotion that follows an override is not a one-turn
+    # correction.
+    override_active: bool = False
     last_recommendations: tuple[str, ...] = ()
     excluded_recommendations: set[str] = field(default_factory=set)
     last_user_message: str | None = None

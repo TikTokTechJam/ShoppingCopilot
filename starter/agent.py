@@ -206,6 +206,13 @@ class Agent:
         # information. This is state metadata, not benchmark knowledge.
         state.last_override_kind = override_kind.value if override_kind is not OverrideKind.NONE else None
         state.last_override_delta = delta if override_kind is not OverrideKind.NONE else None
+        if override_kind is not OverrideKind.NONE:
+            # Both resets above clear ``state.messages``, so from here on the
+            # BM25 query is rebuilt from the override utterance alone and no
+            # longer carries the category word that anchored it. Latch the
+            # flag so retrieval keeps scoring the lexical channel down for the
+            # rest of the session rather than only on this turn.
+            state.override_active = True
 
         if state.mode is None:
             state.mode = self._route(message)
@@ -267,6 +274,7 @@ class Agent:
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
             user_prior_rating=user_prior_rating,
+            override_active=state.override_active,
         )
 
         try:
@@ -356,6 +364,7 @@ class Agent:
                 limit=max(int(limit) * 4, 50),
                 apply_budget=False,
                 user_prior_rating=user_prior_rating,
+                override_active=state.override_active,
             )
         except Exception:
             return []
