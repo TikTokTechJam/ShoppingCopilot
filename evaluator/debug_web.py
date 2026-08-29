@@ -219,7 +219,7 @@ def _candidate_payload(
             else None
         ),
         "bm25_rank": getattr(candidate, "bm25_rank", None),
-        "constraint_bm25_ranks": dict(
+        "phrase_bm25_ranks": dict(
             getattr(candidate, "constraint_bm25_ranks", {})
         ),
         "final_score": float(candidate.score),
@@ -273,7 +273,7 @@ def _ranking_payload(
                     "semantic_score": None,
                     "bm25_score": None,
                     "bm25_rank": None,
-                    "constraint_bm25_ranks": {},
+                    "phrase_bm25_ranks": {},
                     "final_score": None,
                     "matched_constraints": [],
                     "matched_semantic_constraints": [],
@@ -323,7 +323,7 @@ def _ranking_payload(
             if score_candidate is not None and bm25_available
             else None
         ),
-        "target_constraint_bm25_ranks": target_constraint_bm25_ranks,
+        "target_phrase_bm25_ranks": target_constraint_bm25_ranks,
         "final_score": (
             float(score_candidate.score) if score_candidate is not None else None
         ),

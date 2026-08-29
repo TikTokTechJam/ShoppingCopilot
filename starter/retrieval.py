@@ -1,9 +1,9 @@
 """Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
 
 The active product-text path uses BM25 over the current goal. BGE canonical
-attribute matches are used as expansion evidence for per-attribute BM25
-queries; they are not compared directly with product vectors here. Structured
-facts remain available for diagnostics and safe degraded operation.
+attribute matches are used as expansion evidence for per-phrase BM25 queries;
+they are not compared directly with product vectors here. Structured facts
+remain available for diagnostics and safe degraded operation.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Iterable, Mapping
 
-from dictionary.registry import normalize_text, semantic_query_tokens
+from dictionary.registry import normalize_text, semantic_query_ngrams, semantic_query_tokens
 
 from product_embeddings.layer2 import (
     Layer2EmbeddingIndex,
@@ -88,9 +88,10 @@ CRITICAL_USER_RATING_THRESHOLD = 3.5
 RATING_BOOST_WEIGHT = 0.15
 RATING_DEFAULT_WEIGHT = 0.02
 
-# BM25 rank fusion deliberately has one contribution per active attribute.
-# BGE matches are grouped inside that attribute so a product cannot gain extra
-# points merely by matching several synonyms of the same user constraint.
+# BM25 rank fusion deliberately has one contribution per cleaned phrase. BGE
+# matches from different attributes are grouped inside that phrase, so a
+# product cannot gain extra points merely because one phrase matched multiple
+# semantic attribute views.
 BM25_RRF_K = 60
 BM25_MAX_RANK = 1000
 BM25_CONSTRAINT_ATTRIBUTES = (
@@ -306,20 +307,24 @@ class ProductRecord:
 
 @dataclass(frozen=True)
 class BM25Constraint:
-    """One per-attribute lexical query and its BGE expansion evidence."""
+    """One phrase-level BM25 query and its cross-attribute BGE evidence."""
 
-    attribute: str
-    original_phrases: tuple[str, ...]
-    expansions: tuple[tuple[str, float], ...]
+    phrase: str
+    source_attributes: tuple[str, ...]
+    expansions: tuple[tuple[str, str, float], ...]
     terms: tuple[str, ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "attribute": self.attribute,
-            "original_phrases": list(self.original_phrases),
+            "phrase": self.phrase,
+            "source_attributes": list(self.source_attributes),
             "expansions": [
-                {"value": value, "similarity": similarity}
-                for value, similarity in self.expansions
+                {
+                    "attribute": attribute,
+                    "value": value,
+                    "similarity": similarity,
+                }
+                for attribute, value, similarity in self.expansions
             ],
             "terms": list(self.terms),
         }
@@ -807,30 +812,60 @@ class ProductRetriever:
         constraints: object,
         semantic_constraints: object | None,
     ) -> tuple[BM25Constraint, ...]:
-        """Build bounded per-attribute BM25 queries.
+        """Build one bounded BM25 query per cleaned phrase.
 
-        Structured values are the original lexical phrases. Accepted BGE
-        values are expansions attached to their attribute. All expansions for
-        one attribute share one BM25 query, so reciprocal-rank fusion rewards
-        distinct attributes rather than synonym volume.
+        Structured values and unresolved 1/2/3-grams each become a phrase
+        query. BGE searches every semantic attribute view only to attach
+        expansion evidence to that phrase. If one phrase matches multiple
+        attributes, all of those expansions share the same BM25 list and the
+        phrase receives only one reciprocal-rank contribution.
         """
 
         groups: dict[str, dict[str, Any]] = {}
+        attribute_order = {
+            attribute: index
+            for index, attribute in enumerate((*BM25_CONSTRAINT_ATTRIBUTES, "unresolved"))
+        }
 
-        def ensure(attribute: str) -> dict[str, Any]:
-            return groups.setdefault(
-                attribute,
-                {"originals": [], "expansions": {}},
+        def ensure(phrase: object) -> dict[str, Any] | None:
+            text = str(phrase).strip()
+            key = _normalise_value(text)
+            if not key:
+                return None
+            group = groups.setdefault(
+                key,
+                {
+                    "phrase": text,
+                    "source_attributes": set(),
+                    "expansions": {},
+                },
             )
+            current = str(group["phrase"])
+            if (len(text.split()), text.casefold()) < (
+                len(current.split()),
+                current.casefold(),
+            ):
+                group["phrase"] = text
+            return group
 
-        def add_original(attribute: str, value: object) -> None:
-            text = str(value).strip()
-            if text and text not in ensure(attribute)["originals"]:
-                ensure(attribute)["originals"].append(text)
+        def add_phrase(phrase: object, attribute: str | None = None) -> None:
+            group = ensure(phrase)
+            if group is None:
+                return
+            if attribute in attribute_order:
+                group["source_attributes"].add(attribute)
 
-        def add_expansion(attribute: str, value: object, similarity: object) -> None:
+        def add_expansion(
+            phrase: object,
+            attribute: object,
+            value: object,
+            similarity: object,
+        ) -> None:
+            if not isinstance(attribute, str) or attribute not in BM25_CONSTRAINT_ATTRIBUTES:
+                return
             text = str(value).strip()
-            if not text:
+            group = ensure(phrase)
+            if group is None or not text:
                 return
             try:
                 score = float(similarity)
@@ -838,15 +873,16 @@ class ProductRetriever:
                 return
             if not math.isfinite(score) or score < 0.80:
                 return
-            expansions: dict[str, tuple[str, float]] = ensure(attribute)["expansions"]
-            key = _normalise_value(text)
-            previous = expansions.get(key)
-            if previous is None or score > previous[1]:
-                expansions[key] = (text, min(max(score, 0.0), 1.0))
+            group["source_attributes"].add(attribute)
+            key = (attribute, _normalise_value(text))
+            previous = group["expansions"].get(key)
+            candidate = (attribute, text, min(max(score, 0.0), 1.0))
+            if previous is None or score > previous[2]:
+                group["expansions"][key] = candidate
 
         for attribute in BM25_CONSTRAINT_ATTRIBUTES:
             for value in self._constraint_values(constraints, attribute):
-                add_original(attribute, value)
+                add_phrase(value, attribute)
 
         semantic_values_by_id: dict[str, str] = {}
         for attribute in BM25_CONSTRAINT_ATTRIBUTES:
@@ -874,8 +910,9 @@ class ProductRetriever:
                 value = canonical_id.split(":", 1)[1].replace("_", " ")
             if value is None:
                 continue
-            add_original(attribute, raw_text or value)
-            add_expansion(attribute, value, confidence)
+            phrase = raw_text or value
+            add_phrase(phrase, attribute)
+            add_expansion(phrase, attribute, value, confidence)
 
         # Exact dictionary ambiguity and otherwise unrecognized spans are kept
         # in ``unmapped``. Reuse the existing BGE n-gram search for these
@@ -889,59 +926,75 @@ class ProductRetriever:
                 dictionary = constraint_module._load_default_dictionary()
             except (ImportError, OSError, RuntimeError, TypeError, ValueError):
                 dictionary = None
-        for phrase in unmapped:
-            if not semantic_query_tokens(phrase):
+        for raw_phrase in unmapped:
+            phrases = semantic_query_ngrams(raw_phrase, max_ngram=3)
+            if not phrases:
                 continue
             matches: Iterable[object] = ()
             if dictionary is not None and getattr(dictionary, "semantic_available", False):
                 try:
                     matches = dictionary.semantic_match_ngrams(
-                        phrase,
+                        raw_phrase,
                         max_ngram=3,
                         min_similarity=0.80,
                     )
                 except (OSError, RuntimeError, TypeError, ValueError):
                     matches = ()
-            found = False
+            matched_phrases: set[str] = set()
             for match in matches:
                 attribute = getattr(match, "attribute", None)
                 value = getattr(match, "value", None)
                 score = getattr(match, "similarity", None)
+                phrase = getattr(match, "raw_text", None)
                 if isinstance(match, Mapping):
                     attribute = match.get("attribute", attribute)
                     value = match.get("value", value)
                     score = match.get("similarity", score)
+                    phrase = match.get("raw_text", phrase)
                 if attribute in BM25_CONSTRAINT_ATTRIBUTES and value:
-                    add_original(str(attribute), phrase)
-                    add_expansion(str(attribute), value, score)
-                    found = True
-            if not found:
-                add_original("unresolved", phrase)
+                    phrase = str(phrase or raw_phrase).strip()
+                    add_phrase(phrase, str(attribute))
+                    add_expansion(phrase, attribute, value, score)
+                    matched_phrases.add(_normalise_value(phrase))
+            for phrase in phrases:
+                add_phrase(phrase)
+                if _normalise_value(phrase) not in matched_phrases:
+                    ensure(phrase)["source_attributes"].add("unresolved")
 
         queries: list[BM25Constraint] = []
-        for attribute in (*BM25_CONSTRAINT_ATTRIBUTES, "unresolved"):
-            group = groups.get(attribute)
-            if not group:
-                continue
-            originals = tuple(group["originals"])
+        for group in sorted(
+            groups.values(),
+            key=lambda item: (_normalise_value(item["phrase"]), item["phrase"]),
+        ):
+            phrase = str(group["phrase"])
             expansions = tuple(
                 sorted(
                     group["expansions"].values(),
-                    key=lambda item: (-item[1], _normalise_value(item[0])),
+                    key=lambda item: (
+                        -item[2],
+                        attribute_order.get(item[0], len(attribute_order)),
+                        _normalise_value(item[1]),
+                    ),
                 )
             )
             terms = tuple(
                 dict.fromkeys(
                     token
-                    for phrase in (*originals, *(item[0] for item in expansions))
-                    for token in semantic_query_tokens(phrase)
+                    for text in (phrase, *(item[1] for item in expansions))
+                    for token in semantic_query_tokens(text)
                 )
             )[:40]
             if terms:
+                source_attributes = tuple(
+                    sorted(
+                        group["source_attributes"],
+                        key=lambda item: attribute_order.get(item, len(attribute_order)),
+                    )
+                )
                 queries.append(
                     BM25Constraint(
-                        attribute=attribute,
-                        original_phrases=originals,
+                        phrase=phrase,
+                        source_attributes=source_attributes,
                         expansions=expansions,
                         terms=terms,
                     )
@@ -1129,7 +1182,7 @@ class ProductRetriever:
 
         BGE contributes only canonical expansion evidence. Product ranking is
         reciprocal-rank fusion of the raw current-goal BM25 query and one
-        BM25 list per active attribute. Budget eligibility and recommendation
+        BM25 list per cleaned phrase. Budget eligibility and recommendation
         exclusions remain hard filters.
         """
 
@@ -1164,7 +1217,7 @@ class ProductRetriever:
 
         # Layer 2 is used here only to expand canonical attribute phrases.
         # Product ranking is then entirely lexical: raw BM25 plus one BM25
-        # query per attribute, with one reciprocal-rank contribution per list.
+        # query per phrase, with one reciprocal-rank contribution per list.
         semantic_scores, semantic_labels = self._semantic_scores(
             eligible_asins,
             semantic_constraints,
@@ -1239,8 +1292,8 @@ class ProductRetriever:
         )
         raw_terms = tuple(dict.fromkeys(semantic_query_tokens(query_text)))[:40]
         raw_ranks = self._bm25_ranked_terms(raw_terms, eligible_set)
-        constraint_ranks = {
-            query.attribute: self._bm25_ranked_terms(query.terms, eligible_set)
+        phrase_ranks = {
+            query.phrase: self._bm25_ranked_terms(query.terms, eligible_set)
             for query in constraint_queries
         }
 
@@ -1249,7 +1302,7 @@ class ProductRetriever:
         }
         candidate_pool: set[str] = set(raw_ranks)
         for query in constraint_queries:
-            ranks = constraint_ranks[query.attribute]
+            ranks = phrase_ranks[query.phrase]
             candidate_pool.update(ranks)
             for asin, rank in ranks.items():
                 fused_scores[asin] = fused_scores.get(asin, 0.0) + self._rrf(rank)
@@ -1283,12 +1336,12 @@ class ProductRetriever:
             "raw_bm25_terms": list(raw_terms),
             "raw_bm25_rank_count": len(raw_ranks),
             "raw_bm25_top_ranks": self._rank_preview(raw_ranks),
-            "constraints": [
+            "phrases": [
                 {
                     **query.as_dict(),
-                    "result_count": len(constraint_ranks[query.attribute]),
+                    "result_count": len(phrase_ranks[query.phrase]),
                     "top_ranks": self._rank_preview(
-                        constraint_ranks[query.attribute]
+                        phrase_ranks[query.phrase]
                     ),
                 }
                 for query in constraint_queries
@@ -1305,9 +1358,9 @@ class ProductRetriever:
                     "parent_asin": asin,
                     "final_score": ranking_base.get(asin, 0.0),
                     "raw_rank": raw_ranks.get(asin),
-                    "constraint_ranks": {
-                        attribute: ranks[asin]
-                        for attribute, ranks in constraint_ranks.items()
+                    "phrase_ranks": {
+                        phrase: ranks[asin]
+                        for phrase, ranks in phrase_ranks.items()
                         if asin in ranks
                     },
                 }
@@ -1331,8 +1384,8 @@ class ProductRetriever:
                 score_override=ranking_base.get(asin, 0.0),
                 bm25_rank=raw_ranks.get(asin),
                 constraint_bm25_ranks={
-                    attribute: ranks[asin]
-                    for attribute, ranks in constraint_ranks.items()
+                    phrase: ranks[asin]
+                    for phrase, ranks in phrase_ranks.items()
                     if asin in ranks
                 },
             )
