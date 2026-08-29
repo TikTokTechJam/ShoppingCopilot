@@ -30,24 +30,49 @@ async function api(path, method = "GET", body = undefined) {
   return payload;
 }
 
-function chips(values) {
-  if (!values || !Object.keys(values).length) return '<span class="muted">none</span>';
-  return `<div class="constraint-list">${Object.entries(values).map(([key, value]) => {
+function canonicalSurface(value) {
+  return String(value ?? "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function similarityFor(similarities, field, value) {
+  if (!similarities || typeof similarities !== "object" || Array.isArray(similarities)) return null;
+  const wanted = canonicalSurface(value);
+  const prefix = `${field}:`;
+  const entry = Object.entries(similarities).find(([id]) => id.startsWith(prefix) && canonicalSurface(id.slice(prefix.length)) === wanted);
+  if (!entry) return null;
+  const numeric = Number(entry[1]);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function constraintChip(field, item, similarities) {
+  const itemText = typeof item === "object" ? JSON.stringify(item) : String(item ?? "");
+  const match = similarityFor(similarities, field, itemText);
+  const rawTitle = match == null ? itemText : `${itemText} · similarity ${String(match)}`;
+  const displayedScore = match == null ? "" : ` <span class="chip-score">${score(match)}</span>`;
+  return `<span class="chip" title="${esc(rawTitle)}">${esc(itemText)}${displayedScore}</span>`;
+}
+
+function chips(values, similarities = undefined) {
+  if (!values || typeof values !== "object" || !Object.keys(values).length) return '<span class="muted">none</span>';
+  const scoreLookup = similarities || values.similarities || {};
+  const entries = Object.entries(values).filter(([key]) => key !== "similarities");
+  if (!entries.length) return '<span class="muted">none</span>';
+  return `<div class="constraint-list">${entries.map(([key, value]) => {
     const items = Array.isArray(value) ? value : [value];
-    const rendered = items.length
-      ? items.map(item => `<span class="chip">${esc(item)}</span>`).join("")
-      : '<span class="muted">none</span>';
+    const rendered = items.length ? items.map(item => constraintChip(key, item, scoreLookup)).join("") : '<span class="muted">none</span>';
     return `<div class="constraint-row"><span class="constraint-label">${esc(key)}</span><div class="constraint-values">${rendered}</div></div>`;
   }).join("")}</div>`;
 }
 
-function similarityRows(evidence) {
-  if (!evidence || !evidence.length) return '<span class="muted">none</span>';
-  return `<div class="similarity-list">${evidence.map(item => `
+function similarityRows(similarities) {
+  const entries = Array.isArray(similarities)
+    ? similarities.map(item => [item.canonical_id || "—", item.confidence ?? item.similarity])
+    : Object.entries(similarities || {});
+  if (!entries.length) return '<span class="muted">none</span>';
+  return `<div class="similarity-list">${entries.map(([canonicalId, value]) => `
     <div class="similarity-row">
-      <code class="similarity-id">${esc(item.canonical_id || "—")}</code>
-      <span class="similarity-method">${esc(item.match_method || item.attribute || "semantic")}</span>
-      <strong>${score(item.confidence ?? item.similarity)}</strong>
+      <code class="similarity-id" title="${esc(canonicalId)}">${esc(canonicalId)}</code>
+      <strong title="${esc(value)}">${score(value)}</strong>
     </div>`).join("")}</div>`;
 }
 
@@ -64,7 +89,7 @@ function renderBanner(data) {
     <div><span class="eyebrow">SESSION</span><strong>${esc(session.session_id)}</strong>
       <span class="badge">${esc(session.scenario)}</span></div>
     <div>Turn <strong>${session.turn}</strong> / ${session.total_turns}</div>
-    <div>Target <code>${esc(target.parent_asin)}</code>${target.title ? ` — ${esc(target.title)}` : ""}</div>`;
+    <div class="banner-target">Target <code>${esc(target.parent_asin)}</code>${target.title ? `<span class="banner-target-title" title="${esc(target.title)}"> — ${esc(target.title)}</span>` : ""}</div>`;
 }
 
 function renderState(data) {
@@ -81,7 +106,7 @@ function renderState(data) {
     <h3>Dense semantic constraints</h3>
     <div>${chips(state.semantic_constraints)}</div>
     <h3>Similarities</h3>
-    <div>${similarityRows(state.semantic_evidence || [])}</div>
+    <div>${similarityRows(state.semantic_constraints?.similarities || state.semantic_evidence || [])}</div>
     <h3>Excluded recommendations (${(state.excluded || []).length})</h3>
     <details><summary>show IDs</summary><pre>${json(state.excluded || [])}</pre></details>
     <h3>Layer 2</h3>
@@ -108,7 +133,7 @@ function renderDiagnostics(data) {
   const top10 = (r.top10 || []).map(item => `
     <tr class="${item.target ? "target-row" : ""}">
       <td>${item.rank}</td><td><code>${esc(item.parent_asin)}</code></td>
-      <td>${esc(item.title || "")}</td><td>${score(item.structured_score)}</td>
+      <td><span class="table-title" title="${esc(item.title || "")}">${esc(item.title || "")}</span></td><td>${score(item.structured_score)}</td>
       <td>${score(item.dense_score)}</td><td>${score(item.final_score)}</td>
     </tr>`).join("");
   $("diagnostics").innerHTML = `
@@ -118,9 +143,13 @@ function renderDiagnostics(data) {
       <div><span>Dense</span><b>${r.dense_rank ?? "N/A"}</b></div>
       <div><span>Hybrid</span><b>${r.hybrid_rank ?? rankFallback}</b></div>
     </div>
-    <div class="score-line">Structured ${score(r.structured_score)} · Dense semantic ${score(r.dense_score)} · Final ${score(r.final_score)}</div>
+    <div class="score-grid">
+      <div><span>Structured</span><strong title="${esc(r.structured_score ?? "N/A")}">${score(r.structured_score)}</strong></div>
+      <div><span>Dense semantic</span><strong title="${esc(r.dense_score ?? "N/A")}">${score(r.dense_score)}</strong></div>
+      <div><span>Final</span><strong title="${esc(r.final_score ?? "N/A")}">${score(r.final_score)}</strong></div>
+    </div>
     <h3>Top 10 (reranker order)</h3>
-    <div class="table-wrap"><table><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=6>none</td></tr>"}</tbody></table></div>
+    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=6>none</td></tr>"}</tbody></table></div>
     <h3>Override</h3>
     <div class="${override.detected ? "override" : "muted"}">${override.detected ? `INTENT OVERRIDE: ${esc(override.kind)}` : "No override"}</div>`;
 }
@@ -129,10 +158,10 @@ function renderTarget(data) {
   const target = data.session?.target || {};
   if (!target.parent_asin) { $("target").innerHTML = "—"; return; }
   $("target").innerHTML = `
-    <div class="target-title">${esc(target.title || "Untitled")}</div>
+    <div class="target-title" title="${esc(target.title || "Untitled")}">${esc(target.title || "Untitled")}</div>
     <div><code>${esc(target.parent_asin)}</code> · ${target.price == null ? "price N/A" : `$${Number(target.price).toFixed(2)}`}</div>
     <h3>Taxonomy</h3><div>${chips({category: target.taxonomy || []})}</div>
-    <h3>Canonical facts</h3><div>${chips(target.facts || {})}</div>`;
+    <h3>Canonical facts</h3><div class="target-facts">${chips(target.facts || {})}</div>`;
 }
 
 function renderConversation(data) {
@@ -148,9 +177,9 @@ function renderConversation(data) {
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
       <h4>Structured extracted this turn</h4><div>${chips(state.extracted_this_turn?.structured || {})}</div>
-      <h4>Semantic extracted this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {})}</div>
+      <h4>Semantic extracted this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
-      <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {})}</div>
+      <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
       <div class="turn-meta">Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");
