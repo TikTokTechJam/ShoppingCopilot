@@ -63,8 +63,10 @@ function renderState(data) {
   $("state").innerHTML = `
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
-    <h3>Accumulated constraints</h3>
+    <h3>Structured constraints</h3>
     <div>${chips(state.constraints)}</div>
+    <h3>Dense semantic constraints</h3>
+    <div>${chips(state.semantic_constraints)}</div>
     <h3>Excluded recommendations (${(state.excluded || []).length})</h3>
     <details><summary>show IDs</summary><pre>${json(state.excluded || [])}</pre></details>
     <h3>Layer 2</h3>
@@ -101,8 +103,8 @@ function renderDiagnostics(data) {
       <div><span>Dense</span><b>${r.dense_rank ?? "N/A"}</b></div>
       <div><span>Hybrid</span><b>${r.hybrid_rank ?? rankFallback}</b></div>
     </div>
-    <div class="score-line">Structured ${score(r.structured_score)} · Dense ${score(r.dense_score)} · Final ${score(r.final_score)}</div>
-    <h3>Top 10</h3>
+    <div class="score-line">Structured ${score(r.structured_score)} · Dense semantic ${score(r.dense_score)} · Final ${score(r.final_score)}</div>
+    <h3>Top 10 (reranker order)</h3>
     <div class="table-wrap"><table><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=6>none</td></tr>"}</tbody></table></div>
     <h3>Override</h3>
     <div class="${override.detected ? "override" : "muted"}">${override.detected ? `INTENT OVERRIDE: ${esc(override.kind)}` : "No override"}</div>`;
@@ -130,8 +132,10 @@ function renderConversation(data) {
     return `<article class="turn-card"><div class="turn-heading"><h3>Turn ${turn.turn}</h3>${status}</div>
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
-      <h4>Extracted this turn</h4><div>${chips(state.extracted_this_turn)}</div>
-      <h4>Accumulated session constraints</h4><div>${chips(state.constraints)}</div>
+      <h4>Structured extracted this turn</h4><div>${chips(state.extracted_this_turn?.structured || {})}</div>
+      <h4>Semantic extracted this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {})}</div>
+      <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
+      <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {})}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
       <div class="turn-meta">Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");

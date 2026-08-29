@@ -84,6 +84,12 @@ class Agent:
         state = self.sessions.get(session_id)
         message = user_message or ""
         delta = self._extract(message)
+        semantic_delta = getattr(delta, "semantic_constraints", None)
+        structured_delta = (
+            delta.structured_only()
+            if hasattr(delta, "structured_only")
+            else delta
+        )
         had_messages = bool(state.messages)
         override_kind = OverrideKind.NONE
 
@@ -105,7 +111,13 @@ class Agent:
         if state.mode is None:
             state.mode = self._route(message)
 
-        replacements = correction_fields(message, state.constraints, delta)
+        replacements = correction_fields(
+            message,
+            state.constraints,
+            delta,
+            current_semantic=getattr(state, "semantic_constraints", None),
+            delta_semantic=semantic_delta,
+        )
         if override_kind is OverrideKind.FULL_GOAL:
             source = "initial"
         elif override_kind is OverrideKind.PREFERENCE:
@@ -114,7 +126,8 @@ class Agent:
             source = "initial" if not had_messages else "clarification"
         self.sessions.update_constraints(
             session_id,
-            delta,
+            structured_delta,
+            semantic_delta=semantic_delta,
             replace_fields=replacements,
             source=source,
         )
@@ -125,6 +138,7 @@ class Agent:
             state.mode or "BROWSING",
             state.query_text,
             state.constraints,
+            semantic_constraints=getattr(state, "semantic_constraints", None),
             limit=100,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,

@@ -183,8 +183,16 @@ def _candidate_payload(
         "dense_score": (
             float(candidate.dense_score) if dense_available else None
         ),
+        "semantic_score": (
+            float(getattr(candidate, "semantic_score", candidate.dense_score))
+            if dense_available
+            else None
+        ),
         "final_score": float(candidate.score),
         "matched_constraints": list(candidate.matched_constraints),
+        "matched_semantic_constraints": list(
+            getattr(candidate, "matched_semantic_constraints", ())
+        ),
         "target": asin == target,
     }
 
@@ -196,7 +204,8 @@ def _ranking_payload(
     ranked: Iterable[str],
 ) -> dict[str, Any]:
     snapshot = _debug_ranking_snapshot(agent, session_id, target)
-    dense_available = bool(getattr(agent.retriever, "dense_available", False))
+    layer2_status = _layer2_status(agent)
+    dense_available = bool(layer2_status.get("available", False))
     eligible = list(snapshot["eligible"])
     global_ranking = list(snapshot["global"])
     target_eligible = snapshot["target_eligible"]
@@ -220,8 +229,10 @@ def _ranking_payload(
                     "price": _product_payload(agent, asin).get("price"),
                     "structured_score": None,
                     "dense_score": None,
+                    "semantic_score": None,
                     "final_score": None,
                     "matched_constraints": [],
+                    "matched_semantic_constraints": [],
                     "target": asin == target,
                 }
             )
@@ -247,6 +258,11 @@ def _ranking_payload(
         ),
         "dense_score": (
             float(score_candidate.dense_score)
+            if score_candidate is not None and dense_available
+            else None
+        ),
+        "semantic_score": (
+            float(getattr(score_candidate, "semantic_score", score_candidate.dense_score))
             if score_candidate is not None and dense_available
             else None
         ),
@@ -324,6 +340,7 @@ class DebugWebController:
         self.turn_records: list[dict[str, Any]] = []
         self.before_state: dict[str, Any] = {}
         self.before_constraints: dict[str, Any] = {}
+        self.before_semantic_constraints: dict[str, Any] = {}
         self.before_exclusions: list[str] = []
 
     @property
@@ -339,6 +356,7 @@ class DebugWebController:
         self.turn_records = []
         self.before_state = {}
         self.before_constraints = {}
+        self.before_semantic_constraints = {}
         self.before_exclusions = []
         return self.state_payload()
 
@@ -404,6 +422,9 @@ class DebugWebController:
         state = self.agent.sessions.get(session_id)
         self.before_state = _state_payload(self.agent, session_id)
         self.before_constraints = _constraint_payload(state.constraints)
+        self.before_semantic_constraints = dict(
+            self.before_state.get("semantic_constraints", {})
+        )
         self.before_exclusions = sorted(
             str(value) for value in state.excluded_recommendations
         )
@@ -412,10 +433,16 @@ class DebugWebController:
         if event is None:
             raise RuntimeError("the active session is complete")
         after_state = _state_payload(self.agent, session_id)
-        extracted_this_turn = _changed_constraint_payload(
-            self.before_constraints,
-            after_state.get("constraints", {}),
-        )
+        extracted_this_turn = {
+            "structured": _changed_constraint_payload(
+                self.before_constraints,
+                after_state.get("constraints", {}),
+            ),
+            "semantic": _changed_constraint_payload(
+                self.before_semantic_constraints,
+                after_state.get("semantic_constraints", {}),
+            ),
+        }
         ranking = _ranking_payload(
             self.agent,
             session_id,
@@ -433,6 +460,9 @@ class DebugWebController:
             "state": {
                 "mode": after_state.get("mode"),
                 "constraints": after_state.get("constraints", {}),
+                "semantic_constraints": after_state.get(
+                    "semantic_constraints", {}
+                ),
                 "extracted_this_turn": extracted_this_turn,
                 "query_text": after_state.get("query_text", ""),
                 "asked_attributes": after_state.get("asked_attributes", []),
@@ -455,6 +485,10 @@ class DebugWebController:
                 "new_mode": after_state.get("mode"),
                 "constraints_before": self.before_constraints,
                 "constraints_after": after_state.get("constraints", {}),
+                "semantic_constraints_before": self.before_semantic_constraints,
+                "semantic_constraints_after": after_state.get(
+                    "semantic_constraints", {}
+                ),
                 "exclusions_before": self.before_exclusions,
                 "exclusions_after": after_state.get("excluded", []),
             },
