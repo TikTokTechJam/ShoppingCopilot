@@ -307,7 +307,7 @@ class ProductRecord:
 
 @dataclass(frozen=True)
 class BM25Constraint:
-    """One phrase-level BM25 query and its cross-attribute BGE evidence."""
+    """One phrase and its cross-attribute BGE expansion evidence."""
 
     phrase: str
     source_attributes: tuple[str, ...]
@@ -812,13 +812,12 @@ class ProductRetriever:
         constraints: object,
         semantic_constraints: object | None,
     ) -> tuple[BM25Constraint, ...]:
-        """Build one bounded BM25 query per cleaned phrase.
+        """Build deterministic phrase groups and their BGE expansions.
 
         Structured values and unresolved 1/2/3-grams each become a phrase
-        query. BGE searches every semantic attribute view only to attach
-        expansion evidence to that phrase. If one phrase matches multiple
-        attributes, all of those expansions share the same BM25 list and the
-        phrase receives only one reciprocal-rank contribution.
+        group. BGE searches every semantic attribute view only to attach
+        expansion evidence to that phrase. Retrieval later combines the terms
+        from all groups into one OR query.
         """
 
         groups: dict[str, dict[str, Any]] = {}
@@ -1180,10 +1179,10 @@ class ProductRetriever:
     ) -> list[Candidate]:
         """Return one deterministic BM25/BGE-expanded candidate ranking.
 
-        BGE contributes only canonical expansion evidence. Product ranking is
-        reciprocal-rank fusion of the raw current-goal BM25 query and one
-        BM25 list per cleaned phrase. Budget eligibility and recommendation
-        exclusions remain hard filters.
+        BGE contributes only canonical expansion evidence. Product ranking uses
+        one BM25 query containing the raw current-goal terms OR every accepted
+        phrase/expansion term. Budget eligibility and recommendation exclusions
+        remain hard filters.
         """
 
         del minimum_candidates
@@ -1216,8 +1215,8 @@ class ProductRetriever:
         eligible_set = set(eligible_asins)
 
         # Layer 2 is used here only to expand canonical attribute phrases.
-        # Product ranking is then entirely lexical: raw BM25 plus one BM25
-        # query per phrase, with one reciprocal-rank contribution per list.
+        # Product ranking is then entirely lexical: raw terms and every
+        # accepted BGE expansion are placed in one BM25 OR query.
         semantic_scores, semantic_labels = self._semantic_scores(
             eligible_asins,
             semantic_constraints,
@@ -1292,20 +1291,20 @@ class ProductRetriever:
         )
         raw_terms = tuple(dict.fromkeys(semantic_query_tokens(query_text)))[:40]
         raw_ranks = self._bm25_ranked_terms(raw_terms, eligible_set)
-        phrase_ranks = {
-            query.phrase: self._bm25_ranked_terms(query.terms, eligible_set)
-            for query in constraint_queries
-        }
+        combined_terms = tuple(
+            dict.fromkeys(
+                (
+                    *raw_terms,
+                    *(term for query in constraint_queries for term in query.terms),
+                )
+            )
+        )[:40]
+        combined_ranks = self._bm25_ranked_terms(combined_terms, eligible_set)
 
         fused_scores: dict[str, float] = {
-            asin: self._rrf(rank) for asin, rank in raw_ranks.items()
+            asin: self._rrf(rank) for asin, rank in combined_ranks.items()
         }
-        candidate_pool: set[str] = set(raw_ranks)
-        for query in constraint_queries:
-            ranks = phrase_ranks[query.phrase]
-            candidate_pool.update(ranks)
-            for asin, rank in ranks.items():
-                fused_scores[asin] = fused_scores.get(asin, 0.0) + self._rrf(rank)
+        candidate_pool: set[str] = set(combined_ranks)
 
         bm25_active = self.bm25_index is not None
         if bm25_active:
@@ -1336,21 +1335,22 @@ class ProductRetriever:
             "raw_bm25_terms": list(raw_terms),
             "raw_bm25_rank_count": len(raw_ranks),
             "raw_bm25_top_ranks": self._rank_preview(raw_ranks),
+            "combined_bm25_query": " OR ".join(combined_terms),
+            "combined_bm25_terms": list(combined_terms),
+            "combined_bm25_rank_count": len(combined_ranks),
+            "combined_bm25_top_ranks": self._rank_preview(combined_ranks),
             "phrases": [
                 {
                     **query.as_dict(),
-                    "result_count": len(phrase_ranks[query.phrase]),
-                    "top_ranks": self._rank_preview(
-                        phrase_ranks[query.phrase]
-                    ),
+                    "included_in_combined_query": True,
                 }
                 for query in constraint_queries
             ],
             "fusion": {
-                "method": "reciprocal_rank_fusion",
+                "method": "single_or_query",
                 "rank_constant": BM25_RRF_K,
-                "raw_query_weight": 1.0,
-                "constraint_query_weight": 1.0,
+                "raw_terms_included": True,
+                "expansion_terms_included": True,
                 "candidate_pool_size": len(candidate_pool),
             },
             "top_fused": [
@@ -1358,11 +1358,7 @@ class ProductRetriever:
                     "parent_asin": asin,
                     "final_score": ranking_base.get(asin, 0.0),
                     "raw_rank": raw_ranks.get(asin),
-                    "phrase_ranks": {
-                        phrase: ranks[asin]
-                        for phrase, ranks in phrase_ranks.items()
-                        if asin in ranks
-                    },
+                    "combined_rank": combined_ranks.get(asin),
                 }
                 for asin in ranked_asins[:10]
             ],
@@ -1379,15 +1375,10 @@ class ProductRetriever:
                 matched_fields.get(asin, set()),
                 constraint_fields,
                 semantic_labels.get(asin, ()),
-                self._rrf(raw_ranks.get(asin)),
+                self._rrf(combined_ranks.get(asin)),
                 w_rating=w_rating,
                 score_override=ranking_base.get(asin, 0.0),
-                bm25_rank=raw_ranks.get(asin),
-                constraint_bm25_ranks={
-                    phrase: ranks[asin]
-                    for phrase, ranks in phrase_ranks.items()
-                    if asin in ranks
-                },
+                bm25_rank=combined_ranks.get(asin),
             )
             for asin in ranked_asins
         ]

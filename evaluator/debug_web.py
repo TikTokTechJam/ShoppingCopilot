@@ -287,6 +287,11 @@ def _ranking_payload(
         if score_candidate is not None
         else {}
     )
+    target_bm25_rank = (
+        getattr(score_candidate, "bm25_rank", None)
+        if score_candidate is not None
+        else None
+    )
 
     target_in_eligible = target_eligible is not None
     return {
@@ -323,6 +328,7 @@ def _ranking_payload(
             if score_candidate is not None and bm25_available
             else None
         ),
+        "target_bm25_rank": target_bm25_rank if bm25_available else None,
         "target_phrase_bm25_ranks": target_constraint_bm25_ranks,
         "final_score": (
             float(score_candidate.score) if score_candidate is not None else None

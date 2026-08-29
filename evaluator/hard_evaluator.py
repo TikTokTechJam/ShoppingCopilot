@@ -1052,7 +1052,7 @@ def _debug_print_breakdown(constraints: Any, candidate: Any) -> None:
 
 
 def _debug_print_bm25_fusion(retriever: Any) -> None:
-    """Print the compact raw/constraint BM25 fusion trace for one turn."""
+    """Print the compact raw/expanded BM25 trace for one turn."""
 
     trace = getattr(retriever, "last_retrieval_debug", {})
     if not isinstance(trace, Mapping) or not trace:
@@ -1074,13 +1074,17 @@ def _debug_print_bm25_fusion(retriever: Any) -> None:
         )
         if expansions:
             print(f"    BGE expansions: {expansions}")
+    fusion = trace.get("fusion", {})
+    if isinstance(fusion, Mapping) and fusion.get("method") == "single_or_query":
+        print(f"Combined OR query: {trace.get('combined_bm25_query', '') or '(empty)'}")
+        print(f"Combined results: {trace.get('combined_bm25_rank_count', 0)}")
     print(f"RRF: 1 / ({trace.get('fusion', {}).get('rank_constant', 60)} * rank)")
     for item in trace.get("top_fused", ())[:10]:
         if isinstance(item, Mapping):
             print(
                 f"  {item.get('parent_asin')}: fused={float(item.get('final_score', 0.0)):.6f} "
                 f"raw_rank={item.get('raw_rank', 'MISS')} "
-                f"phrase_ranks={item.get('phrase_ranks', item.get('constraint_ranks', {}))}"
+                f"combined_rank={item.get('combined_rank', 'MISS')}"
             )
 
 

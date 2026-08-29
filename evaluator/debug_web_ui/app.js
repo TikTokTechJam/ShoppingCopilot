@@ -92,10 +92,13 @@ function targetPhraseRank(targetRanks, phrase, constant) {
   return `<strong class="target-bm25-rank">target #${esc(rank)} <small>RRF ${rrfContribution(rank, constant)}</small></strong>`;
 }
 
-function bm25Fusion(debug, targetRanks = null) {
+function bm25Fusion(debug, targetRank = null) {
   if (!debug || !debug.bm25_available) {
     return '<span class="muted">BM25 fusion unavailable for this turn.</span>';
   }
+  const targetRanks = targetRank && typeof targetRank === "object" ? targetRank : null;
+  const combinedTargetRank = targetRanks ? null : targetRank;
+  const singleOrQuery = debug.fusion?.method === "single_or_query";
   const phrases = Array.isArray(debug.phrases)
     ? debug.phrases
     : (Array.isArray(debug.constraints) ? debug.constraints : []);
@@ -109,23 +112,37 @@ function bm25Fusion(debug, targetRanks = null) {
     const topRanks = (item.top_ranks || []).slice(0, 5).map(hit =>
       `${esc(hit.parent_asin)} #${esc(hit.rank)}`
     ).join(" · ");
+    const rankDetails = singleOrQuery
+      ? '<span class="muted">Included in combined OR query</span>'
+      : targetPhraseRank(targetRanks, phrase, rankConstant);
+    const resultDetails = singleOrQuery
+      ? `terms: ${esc((item.terms || []).join(" OR ") || "none")}`
+      : `ranks: ${topRanks || "none"}`;
     return `<div class="bm25-fusion-row">
       <div class="bm25-fusion-label"><strong>Phrase</strong><span title="${esc(phrase)}">${esc(phrase)}</span></div>
       <div class="constraint-values">${expansions}</div>
-      <div class="bm25-target-rank">${targetPhraseRank(targetRanks, phrase, rankConstant)}</div>
-      <small class="muted">ranks: ${topRanks || "none"}</small>
+      <div class="bm25-target-rank">${rankDetails}</div>
+      <small class="muted">${resultDetails}</small>
     </div>`;
   }).join("") : '<span class="muted">No active phrase queries.</span>';
   const fusedRows = fused.map((item, index) => {
-    const ranks = Object.entries(item.phrase_ranks || item.constraint_ranks || {})
-      .map(([phrase, rank]) => `${esc(phrase)} #${esc(rank)}`).join(" · ");
+    const ranks = singleOrQuery
+      ? `combined #${esc(item.combined_rank ?? "—")}`
+      : Object.entries(item.phrase_ranks || item.constraint_ranks || {})
+        .map(([phrase, rank]) => `${esc(phrase)} #${esc(rank)}`).join(" · ");
     return `<div class="bm25-fused-candidate"><span>#${index + 1} <code>${esc(item.parent_asin)}</code></span><strong>${score(item.final_score)}</strong><small>raw #${esc(item.raw_rank ?? "—")} · ${ranks || "no attribute hit"}</small></div>`;
   }).join("");
+  const combinedDetails = singleOrQuery
+    ? `<div class="kv"><span>Combined OR query</span><code title="${esc(debug.combined_bm25_query || "")}">${esc(debug.combined_bm25_query || "—")}</code></div>
+       <div class="kv"><span>Combined results</span><b>${esc(debug.combined_bm25_rank_count ?? 0)}</b></div>
+       <div class="kv"><span>Target combined rank</span><b>${esc(combinedTargetRank ?? "MISS")}</b></div>
+       <div class="bm25-target-help muted">Raw terms and all accepted BGE expansion terms are searched together with OR.</div>`
+    : `<div class="bm25-target-help muted">Target rank is shown for each phrase BM25 list; RRF is that phrase's contribution.</div>`;
   return `<div class="bm25-fusion">
     <div class="kv"><span>Raw query</span><code title="${esc(debug.raw_bm25_query || "")}">${esc(debug.raw_bm25_query || "—")}</code></div>
     <div class="kv"><span>Raw results</span><b>${esc(debug.raw_bm25_rank_count ?? 0)}</b></div>
     <div class="kv"><span>Fusion</span><b>1 / (${esc(rankConstant)} × rank)</b></div>
-    <div class="bm25-target-help muted">Target rank is shown for each phrase BM25 list; RRF is that phrase's contribution.</div>
+    ${combinedDetails}
     ${rows}
     <h4>Top fused candidates</h4>
     <div class="bm25-fused-list">${fusedRows || '<span class="muted">none</span>'}</div>
@@ -249,7 +266,7 @@ function renderConversation(data) {
       <h4>Semantic extracted this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
-      <h4>BM25 fusion details</h4><div>${bm25Fusion(state.retrieval_debug, turn.ranking?.target_phrase_bm25_ranks ?? null)}</div>
+      <h4>BM25 fusion details</h4><div>${bm25Fusion(state.retrieval_debug, turn.ranking?.target_bm25_rank ?? null)}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
       <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");
