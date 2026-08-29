@@ -236,6 +236,11 @@ NO_PREFERENCE_MARKER = _compile(
     r"(?:additional|specific|strong|particular)?\s*preference",
     r"\bno preference\b",
     r"\buse your judgment\b",
+    r"^\s*(?:i\s+)?(?:don'?t|do not)\s+know(?:\s+(?:yet|what|which)\b[^.!?]*)?[.!?]*$",
+    r"^\s*(?:i\s+)?(?:am|'m)\s+not\s+sure\s*[.!?]*$",
+    r"^\s*(?:i\s+)?(?:don'?t|do not)\s+have\s*[.!?]*$",
+    r"^\s*(?:anything|whatever)\s+(?:is|works?)\s+fine\s*[.!?]*$",
+    r"^\s*(?:you\s+decide|it\s+doesn'?t\s+matter)\s*[.!?]*$",
 )
 
 FILLER_MARKER = _compile(
