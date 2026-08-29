@@ -865,6 +865,20 @@ def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
         "constraints": _debug_constraints(state),
         "semantic_constraints": _debug_semantic_constraints(state),
         "mode": getattr(state, "mode", None),
+        "clarification_cycle": int(getattr(state, "clarification_cycle", 1)),
+        "attribute_call_count": {
+            str(field_name): int(count)
+            for field_name, count in sorted(
+                getattr(state, "attribute_call_count", {}).items()
+            )
+        },
+        "no_preference_attributes": sorted(
+            str(value)
+            for value in getattr(state, "no_preference_attributes", set())
+        ),
+        "clarification_stopped": bool(
+            getattr(state, "clarification_stopped", False)
+        ),
         "override_kind": getattr(state, "last_override_kind", None),
         "override_delta": _debug_constraints(
             getattr(state, "last_override_delta", None)

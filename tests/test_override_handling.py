@@ -150,6 +150,9 @@ class OverrideHandlingTests(unittest.TestCase):
         state.mode = "BROWSING"
         state.messages[:] = ["old goal"]
         state.asked_attributes.update({"color", "material"})
+        state.no_preference_attributes.add("color")
+        state.attribute_call_count["material"] = 1
+        state.clarification_cycle = 2
         state.last_asked = "material"
         state.last_recommendations = ("A", "B")
         state.excluded_recommendations.update({"A", "B"})
@@ -172,6 +175,9 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertEqual(state.constraints.material, ("nylon",))
         self.assertEqual(state.messages, [])
         self.assertEqual(state.asked_attributes, set())
+        self.assertEqual(state.no_preference_attributes, {"color"})
+        self.assertEqual(state.attribute_call_count["material"], 0)
+        self.assertEqual(state.clarification_cycle, 1)
         self.assertIsNone(state.last_asked)
         self.assertEqual(state.last_recommendations, ())
         self.assertEqual(state.excluded_recommendations, set())
@@ -302,7 +308,7 @@ class OverrideHandlingTests(unittest.TestCase):
                 "Those options are not quite right yet. You can ask me about one specific attribute.",
             )
 
-    def test_agent_uses_other_repeatedly_when_no_budget_or_fact_split_exists(self) -> None:
+    def test_other_without_new_information_stops_clarification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             catalog_path = root / "catalog.jsonl"
@@ -335,7 +341,8 @@ class OverrideHandlingTests(unittest.TestCase):
             )
 
             self.assertEqual(first["ask_attribute"], "other")
-            self.assertEqual(second["ask_attribute"], "other")
+            self.assertIsNone(second["ask_attribute"])
+            self.assertTrue(agent.sessions.get("session").clarification_stopped)
 
     def test_normal_clarification_keeps_transcript_and_promotes_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -39,6 +39,13 @@ SUPPORTED_ATTRIBUTES = (
     "other",
 )
 
+# ``other`` is a cycle boundary rather than a field whose value can be
+# clarified.  Keep this derived from the public list so callers do not need a
+# second hand-maintained list of askable attributes.
+NORMAL_CLARIFICATION_ATTRIBUTES = tuple(
+    attribute for attribute in SUPPORTED_ATTRIBUTES if attribute != "other"
+)
+
 ATTRIBUTE_QUESTIONS = {
     "category": "What type of item should I focus on?",
     "material": "Which material should I prioritize?",
@@ -270,7 +277,7 @@ class ClarificationPolicy:
         asked = set(asked_attributes)
         available = [
             attribute
-            for attribute in SUPPORTED_ATTRIBUTES
+            for attribute in NORMAL_CLARIFICATION_ATTRIBUTES
             if attribute not in asked and not _known(constraints, attribute)
         ]
         if not available:
@@ -337,6 +344,7 @@ __all__ = [
     "PRIOR_CEILING",
     "ATTRIBUTE_QUESTIONS",
     "ClarificationPolicy",
+    "NORMAL_CLARIFICATION_ATTRIBUTES",
     "SUPPORTED_ATTRIBUTES",
     "choose_attribute",
 ]
