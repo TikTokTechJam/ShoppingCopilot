@@ -4,55 +4,135 @@ This document describes the implementation on the current main branch. It is
 an implementation snapshot, not a roadmap. The Python source is authoritative
 when behavior and this document disagree.
 
-## 1. Actual system flow
+## 1. Preprocessing and runtime flows
 
-At startup, the Agent loads the catalog, V5 facts, exact/semantic attribute
-dictionary, in-memory posting lists, and the BM25 catalog index. At every
-turn, the runtime follows this path:
+The system has an offline preparation flow and a per-turn runtime flow. The
+offline flow creates the artifacts that the runtime reads; it is not performed
+inside Agent.respond.
 
-    user message
+### Offline preprocessing flow
+
+    data/catalog.jsonl
+            |
+            v
+    V5 single-attribute annotation jobs
+    annotation runner + attribute-specific prompts
+            |
+            +--> annotations/v5/category.jsonl
+            +--> annotations/v5/brand.jsonl
+            +--> annotations/v5/color.jsonl
+            +--> annotations/v5/material.jsonl
+            +--> annotations/v5/feature.jsonl
+            +--> annotations/v5/use_case.jsonl
+            |
+            v
+    scripts.aggregate_v5_annotations
+    catalog order + catalog price + six V5 fields
+            |
+            v
+    data/derived/annotations/v5/annotations.jsonl
+            |
+            +------------------------------+
+            |                              |
+            v                              v
+    optional catalog-facts build       scripts.build_attribute_dictionary
+    scripts.build_catalog_facts        exact canonical registry
+            |                              |
+            v                              v
+    catalog_facts/catalog_facts.jsonl  dictionary/
+                                         canonical_values.json
+                                         normalized_lookup.json
+                                         manifest.json
+                                               |
+                                               v
+                                  scripts.build_v5_attribute_embeddings
+                                  local BGE-small, normalized vectors
+                                               |
+                                               v
+                                  dictionary/attribute_embeddings/
+                                  category, color, material, style,
+                                  feature, and use_case matrices
+
+The current runtime normally reads the aggregated V5 annotations and generated
+dictionary. The optional catalog-facts artifact is a compatible downstream
+representation. The semantic embedding build is separate from annotation and
+does not generate product vectors.
+
+### Per-turn runtime flow
+
+    USER TURN
         |
         v
     Agent.respond
         |
-        +--> TwoPhaseIntentRouter
-        |        |
-        |        +--> generated-dictionary signals
-        |        +--> lexical signal ledger
-        |        +--> sticky session intent
+        v
+    existing utterance processing
         |
-        +--> constraints.extract_constraints
-        |        |
-        |        +--> structured price/size parsing
-        |        +--> exact V5 dictionary matching
-        |        +--> independent BGE 1/2/3-gram semantic matching
-        |
-        +--> SessionManager
-        |        |
-        |        +--> structured constraints
-        |        +--> semantic constraints and similarities
-        |        +--> override/reset state
-        |
-        +--> ProductRetriever.retrieve
-                 |
-                 +--> hard price eligibility
-                 +--> recommendation exclusions
-                 +--> Layer 1 structured posting-list score
-                 +--> semantic attribute posting-list score
-                 +--> optional product-vector score
-                 +--> BM25 catalog-text score
-                 +--> shared hybrid score and rating tie-break
-                 +--> deterministic Top 100 candidate list
-        |
-        +--> fill/backfill to requested Top 10
-        +--> ClarificationPolicy.choose
-        +--> Agent response
-                 |
-                 +--> evaluator scoring
-                 +--> local debug web UI
+        +-----------------------------+
+        |                             |
+        v                             v
+    Layer 1 parsed state          Layer 2 semantic query
+    structured / canonical        independent user phrases
+        |                             |
+        |                             v
+        |                         remove shared stopwords
+        |                             |
+        |                             v
+        |                         1/2/3-gram phrases
+        |                             |
+        |          +------------------+------------------+
+        |          |                  |                  |
+        |          v                  v                  v
+        |      category matrix   color matrix       material matrix
+        |          |                  |                  |
+        |          +------------------+------------------+
+        |                             |
+        |                             v
+        |                       style / feature /
+        |                       use_case matrices
+        |                             |
+        |                             v
+        |                  BGE cosine attribute matches
+        |                             |
+        |                             v
+        |                       threshold >= 0.80
+        |                             |
+        |                             v
+        |                       Layer 2 evidence
+        |                    value + similarity score
+        |                             |
+        +-----------------------------+
+                                      |
+                                      v
+                         SessionManager keeps both states
+                                      |
+                                      v
+                         ProductRetriever.retrieve
+                                      |
+             +------------------------+------------------------+
+             |                        |                        |
+             v                        v                        v
+       Layer 1 posting          Layer 2 value-posting       BM25 FTS5
+       list score               list score                  text score
+             |                        |                        |
+             +------------------------+------------------------+
+                                      |
+                                      v
+                         hard price/exclusion filters
+                                      |
+                                      v
+                         shared hybrid score + rating tie-break
+                                      |
+                                      v
+                         rank candidates and return Top 10
+                                      |
+                                      +--> ClarificationPolicy.choose
+                                      +--> evaluator / debug UI
 
-Clarification is selected after retrieval from the same candidate pool. It is
-not a separate retrieval branch.
+Layer 1 and Layer 2 are independent: exact matches are not removed from the
+semantic phrase stream. Layer 2 is the BGE canonical-attribute path; it finds
+canonical values first and then uses their per-attribute product posting lists.
+It is not a separate Agent or a second asking strategy.
 
 ## 2. Runtime ownership by file
 
