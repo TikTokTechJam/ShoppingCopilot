@@ -1,10 +1,9 @@
-"""Dependency-light in-memory product retrieval for the Layer 1/2 MVP.
+"""Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
 
-The retriever consumes canonical product facts and optional direct Layer 2
-field vectors. It does not parse user language and it does not maintain a
-second lexical/BM25 product-search route. User text is only passed to an
-injected compatible query encoder when dense artifacts are available; canonical
-constraints drive the Buying filters and preference boosts drive Browsing.
+The retriever consumes canonical product facts, optional direct Layer 2 field
+vectors, and a BM25 product-text index. It does not parse user language.
+Structured, semantic, and lexical scores are kept separate until the shared
+final scorer combines them.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import heapq
 import json
 import math
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Mapping
@@ -24,6 +24,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
+from starter.bm25 import BM25Index
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -71,11 +72,74 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 1.00, "dense": 1.00},
-    "BROWSING": {"structured": 1.00, "dense": 1.00},
+    "BUYING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
+    "BROWSING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
 }
 # Backward-compatible name for callers that inspect the Buying contribution.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
+BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
+
+# Rating tie-breaker (INSTRUCTION.md section 1).  The structured matcher scores
+# most candidates identically -- 9.6 of every 10 returned candidates share one
+# score -- so without a continuous term the top-10 order is catalog position.
+# The catalog's own average_rating supplies that term.
+RATING_SCALE = 5.0
+NEUTRAL_NORMALIZED_RATING = 0.5
+CRITICAL_USER_RATING_THRESHOLD = 3.5
+RATING_BOOST_WEIGHT = 0.15
+RATING_DEFAULT_WEIGHT = 0.02
+
+
+def normalized_rating(rating: float | None) -> float:
+    """Catalog rating on [0, 1].  An unusable rating is neutral, never zero.
+
+    Scoring an unrated product as 0.0 would demote it; the shopper said nothing
+    about it, so it is left where the retrieval score put it.
+    """
+
+    try:
+        value = float(rating)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return NEUTRAL_NORMALIZED_RATING
+    if value != value or value <= 0.0:
+        return NEUTRAL_NORMALIZED_RATING
+    return min(1.0, value / RATING_SCALE)
+
+
+def is_critical_user(user_prior_rating: float | None) -> bool:
+    """Whether the shopper rates strictly enough to weight catalog rating up."""
+
+    try:
+        value = float(user_prior_rating)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return value == value and value < CRITICAL_USER_RATING_THRESHOLD
+
+
+def rating_weight(user_prior_rating: float | None) -> float:
+    """``w_r``: boosted for a critical shopper, default for everyone else.
+
+    A missing prior rating is a cold-start shopper and takes the default, which
+    is the spec's null fallback.
+    """
+
+    return (
+        RATING_BOOST_WEIGHT
+        if is_critical_user(user_prior_rating)
+        else RATING_DEFAULT_WEIGHT
+    )
+
+
+def _rating(value: object) -> float | None:
+    """Parse ``average_rating`` off a raw catalog row."""
+
+    try:
+        rating = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if rating != rating or rating <= 0.0:
+        return None
+    return rating
 
 
 def _encoder_model_id(encoder: object | None) -> str | None:
@@ -106,11 +170,17 @@ def _encoder_dimension(encoder: object | None) -> int | None:
     return None
 
 
-def _final_score(mode: str, structured_score: float, dense_score: float) -> float:
+def _final_score(
+    mode: str,
+    structured_score: float,
+    dense_score: float,
+    bm25_score: float = 0.0,
+) -> float:
     weights = MODE_SCORE_WEIGHTS[mode]
     return float(
         weights["structured"] * structured_score
         + weights["dense"] * dense_score
+        + weights.get("bm25", 0.0) * bm25_score
     )
 
 
@@ -216,6 +286,7 @@ class ProductRecord:
     facts: Mapping[str, tuple[str, ...]]
     price: float | None
     catalog_order: int
+    rating: float | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
 
@@ -235,13 +306,19 @@ class Candidate:
     semantic_score: float = 0.0
     matched_semantic_constraints: tuple[str, ...] = ()
     price: float | None = None
+    bm25_score: float = 0.0
+    rating: float | None = None
+    ranking_score: float = 0.0
 
     def as_dict(self) -> dict[str, object]:
         return {
             "parent_asin": self.parent_asin,
             "score": self.score,
+            "rating": self.rating,
+            "ranking_score": self.ranking_score,
             "dense_score": self.dense_score,
             "semantic_score": self.semantic_score,
+            "bm25_score": self.bm25_score,
             "constraint_score": self.constraint_score,
             "matched_constraints": list(self.matched_constraints),
             "matched_semantic_constraints": list(self.matched_semantic_constraints),
@@ -278,8 +355,21 @@ class ProductRetriever:
             field_name: {} for field_name in FACT_FIELDS
         }
         self.price_lookup: dict[str, float | None] = {}
+        self.rating_lookup: dict[str, float | None] = {}
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
+        self.bm25_index: BM25Index | None = None
+        self.bm25_state = "loading"
+        self.bm25_error: str | None = None
+        self.bm25_build_seconds: float | None = None
+        try:
+            self.bm25_index = BM25Index(self.product_by_asin, self._catalog_order)
+            self.bm25_state = "ready"
+            self.bm25_build_seconds = self.bm25_index.build_seconds
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            self.bm25_state = "unavailable"
+            self.bm25_error = f"BM25 index unavailable: {exc}"
+            print(f"[retrieval] {self.bm25_error}", flush=True)
         self.embedding_matrix: Any = None
         self.embedding_asins: tuple[str, ...] = ()
         self._embedding_norms: Any = None
@@ -369,6 +459,10 @@ class ProductRetriever:
             )
         )
 
+    @property
+    def bm25_available(self) -> bool:
+        return self.bm25_index is not None
+
     def _load_fact_artifact(
         self, facts_path: str | Path | None
     ) -> tuple[dict[str, Mapping[str, tuple[str, ...]]], dict[str, float | None]]:
@@ -411,11 +505,13 @@ class ProductRetriever:
                 facts=facts,
                 price=price,
                 catalog_order=len(self._catalog_order),
+                rating=_rating(row.get("average_rating")),
                 raw=dict(row),
             )
             self.product_by_asin[asin] = product
             self._catalog_order.append(asin)
             self.price_lookup[asin] = price
+            self.rating_lookup[asin] = product.rating
             for field_name, values in facts.items():
                 for value in values:
                     self.inverted_index[field_name].setdefault(value, set()).add(asin)
@@ -686,6 +782,21 @@ class ProductRetriever:
         except (ImportError, TypeError, ValueError, RuntimeError):
             return {}
 
+    def _bm25_scores(
+        self,
+        query_text: str,
+        eligible_asins: Collection[str],
+    ) -> dict[str, float]:
+        if self.bm25_index is None:
+            return {}
+        try:
+            return self.bm25_index.search(
+                query_text,
+                allowed_asins=eligible_asins,
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return {}
+
     def _query_embedding(self, query_text: str, dimension: int) -> Any:
         """Encode one query with the shared runtime encoder and validate it."""
         import numpy as np
@@ -734,13 +845,16 @@ class ProductRetriever:
         matched_fields: set[str],
         constraint_fields: tuple[str, ...],
         matched_semantic_constraints: tuple[str, ...] = (),
+        bm25_score: float = 0.0,
+        w_rating: float = 0.0,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score)
+        score = _final_score(mode, structured_score, dense_score, bm25_score)
+        rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
             score=float(score),
@@ -753,6 +867,9 @@ class ProductRetriever:
             semantic_score=float(dense_score),
             matched_semantic_constraints=matched_semantic_constraints,
             price=self.product_by_asin[asin].price,
+            bm25_score=float(bm25_score),
+            rating=rating,
+            ranking_score=float(score + w_rating * normalized_rating(rating)),
         )
 
     def retrieve(
@@ -766,6 +883,7 @@ class ProductRetriever:
         minimum_candidates: int = 50,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
+        user_prior_rating: float | None = None,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
@@ -810,6 +928,7 @@ class ProductRetriever:
         dense_scores = semantic_scores
         if not dense_scores and self.dense_available:
             dense_scores = self._dense_scores(query_text)
+        bm25_scores = self._bm25_scores(query_text, eligible_set)
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
@@ -871,40 +990,63 @@ class ProductRetriever:
                 labels.extend(price_labels)
             return tuple(labels)
 
-        if not dense_scores and not constraint_fields:
-            ranked_asins = eligible_asins[:limit]
-        elif not dense_scores:
-            positive_asins = sorted(
-                matched_weight,
-                key=lambda asin: (
-                    -structured_score(asin),
+        w_rating = rating_weight(user_prior_rating)
+
+        def _rank_key(
+            base: Callable[[str], float]
+        ) -> Callable[[str], tuple[float, int]]:
+            """The spec's S(x), descending, with catalog order as last resort."""
+
+            def key(asin: str) -> tuple[float, int]:
+                bonus = w_rating * normalized_rating(self.rating_lookup.get(asin))
+                return (
+                    -(base(asin) + bonus),
                     self.product_by_asin[asin].catalog_order,
-                ),
-            )
+                )
+
+            return key
+
+        def _select(pool: list[str], base: Callable[[str], float]) -> list[str]:
+            """Rank the whole pool *before* slicing to limit (Task 2)."""
+
+            key = _rank_key(base)
+            if limit < len(pool):
+                return heapq.nsmallest(limit, pool, key=key)
+            return sorted(pool, key=key)
+
+        def _zero(_asin: str) -> float:
+            return 0.0
+
+        if not dense_scores and not constraint_fields:
+            # No constraints and no dense signal: every candidate ties at zero,
+            # so the rating is the only thing left to order them by.
+            ranked_asins = _select(eligible_asins, _zero)
+        elif not dense_scores:
+            positive_asins = sorted(matched_weight, key=_rank_key(structured_score))
             ranked_asins = positive_asins[:limit]
             if len(ranked_asins) < limit:
                 selected = set(ranked_asins)
-                ranked_asins.extend(
+                remainder = [
                     asin for asin in eligible_asins if asin not in selected
+                ]
+                # Zero-match padding is ordered by rating too, not by catalog
+                # position, so the pad respects the same preference.
+                ranked_asins.extend(
+                    heapq.nsmallest(
+                        limit - len(ranked_asins), remainder, key=_rank_key(_zero)
+                    )
                 )
-                ranked_asins = ranked_asins[:limit]
         else:
             final_scores = {
                 asin: _final_score(
                     mode,
                     structured_score(asin),
                     dense_scores.get(asin, 0.0),
+                    bm25_scores.get(asin, 0.0),
                 )
                 for asin in eligible_asins
             }
-            rank_key = lambda asin: (
-                -final_scores[asin],
-                self.product_by_asin[asin].catalog_order,
-            )
-            if limit < len(eligible_asins):
-                ranked_asins = heapq.nsmallest(limit, eligible_asins, key=rank_key)
-            else:
-                ranked_asins = sorted(eligible_asins, key=rank_key)
+            ranked_asins = _select(eligible_asins, final_scores.__getitem__)
         return [
             self._candidate(
                 asin,
@@ -915,6 +1057,8 @@ class ProductRetriever:
                 matched_fields.get(asin, set()),
                 constraint_fields,
                 semantic_labels.get(asin, ()),
+                bm25_scores.get(asin, 0.0),
+                w_rating=w_rating,
             )
             for asin in ranked_asins
         ]
@@ -928,6 +1072,7 @@ class ProductRetriever:
         semantic_constraints: object | None = None,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
+        user_prior_rating: float | None = None,
     ) -> list[Candidate]:
         """Return the complete ranking using the production scorer."""
 
@@ -939,6 +1084,7 @@ class ProductRetriever:
             limit=len(self.product_by_asin),
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,
+            user_prior_rating=user_prior_rating,
         )
 
 
@@ -946,10 +1092,17 @@ InMemoryRetriever = ProductRetriever
 
 
 __all__ = [
+    "CRITICAL_USER_RATING_THRESHOLD",
     "Candidate",
+    "BM25_SCORE_WEIGHT",
     "InMemoryRetriever",
     "MODE_SCORE_WEIGHTS",
     "ProductRecord",
     "ProductRetriever",
+    "RATING_BOOST_WEIGHT",
+    "RATING_DEFAULT_WEIGHT",
     "SharedCandidate",
+    "is_critical_user",
+    "normalized_rating",
+    "rating_weight",
 ]
