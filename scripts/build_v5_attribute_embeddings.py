@@ -14,6 +14,9 @@ from dictionary.registry import ATTRIBUTE_FIELDS, AttributeDictionary, normalize
 from product_embeddings.pipeline import load_local_sentence_transformer
 
 
+ATTRIBUTE_EMBEDDING_FIELDS = tuple(
+    field for field in ATTRIBUTE_FIELDS if field != "brand"
+)
 DEFAULT_DICTIONARY_DIR = Path("data/derived/annotations/v5/dictionary")
 DEFAULT_OUTPUT_DIR = DEFAULT_DICTIONARY_DIR / "attribute_embeddings"
 DEFAULT_MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -221,7 +224,7 @@ def build_v5_attribute_embeddings(
     *,
     model: str | None = None,
     batch_size: int = 32,
-    attributes: Sequence[str] = ATTRIBUTE_FIELDS,
+    attributes: Sequence[str] = ATTRIBUTE_EMBEDDING_FIELDS,
     device: str | None = None,
     half_precision: bool = False,
 ) -> dict[str, Any]:
@@ -230,9 +233,12 @@ def build_v5_attribute_embeddings(
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     selected_attributes = tuple(attributes)
-    unknown = sorted(set(selected_attributes) - set(ATTRIBUTE_FIELDS))
+    unknown = sorted(set(selected_attributes) - set(ATTRIBUTE_EMBEDDING_FIELDS))
     if unknown:
-        raise ValueError(f"unknown dictionary attributes: {unknown}")
+        raise ValueError(
+            "attributes are not eligible for V5 semantic embedding: "
+            f"{unknown}"
+        )
     if len(set(selected_attributes)) != len(selected_attributes):
         raise ValueError("attributes must not contain duplicates")
 
@@ -271,6 +277,10 @@ def build_v5_attribute_embeddings(
     _log(f"model loaded: dimension={dimension}, normalization=l2")
 
     output.mkdir(parents=True, exist_ok=True)
+    stale_brand_matrix = output / "brand_embeddings.npy"
+    if stale_brand_matrix.exists():
+        stale_brand_matrix.unlink()
+        _log("removed stale brand_embeddings.npy; brand is exact Layer 1 only")
     metadata: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "model": model_path,
@@ -327,6 +337,7 @@ def build_v5_attribute_embeddings(
             name: _sha256(path) for name, path in source_files.items()
         },
         "attributes_selected": list(selected_attributes),
+        "attributes_excluded": ["brand"],
         "canonical_value_count": total_values,
         "canonical_value_count_by_attribute": {
             attribute: len(rows_by_attribute[attribute])
@@ -364,8 +375,8 @@ def main() -> None:
     parser.add_argument(
         "--attributes",
         nargs="+",
-        choices=ATTRIBUTE_FIELDS,
-        default=list(ATTRIBUTE_FIELDS),
+        choices=ATTRIBUTE_EMBEDDING_FIELDS,
+        default=list(ATTRIBUTE_EMBEDDING_FIELDS),
     )
     args = parser.parse_args()
     if args.batch_size < 1:

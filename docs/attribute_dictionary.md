@@ -135,11 +135,14 @@ final completion.
 python -m scripts.build_v5_attribute_embeddings --dictionary-dir data/derived/annotations/v5/dictionary --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings --model models/bge-small-en-v1.5 --batch-size 32
 ~~~
 
-The output contains category_embeddings.npy, brand_embeddings.npy,
-color_embeddings.npy, material_embeddings.npy, style_embeddings.npy,
-feature_embeddings.npy, use_case_embeddings.npy, metadata.json, and
-manifest.json. V5 currently has no style values, so its matrix is an empty
-zero-row matrix with the same declared embedding dimension.
+The output contains category_embeddings.npy, color_embeddings.npy,
+material_embeddings.npy, style_embeddings.npy, feature_embeddings.npy,
+use_case_embeddings.npy, metadata.json, and manifest.json. Brand is
+intentionally excluded from semantic embeddings: it remains available in the
+exact dictionary and Layer 1, but the embedding builder rejects `brand` and
+does not retain a stale `brand_embeddings.npy`. V5 currently has no style
+values, so its matrix is an empty zero-row matrix with the same declared
+embedding dimension.
 
 The runtime requires the generated registry. Missing or incomplete dictionary
 artifacts are configuration errors; categorical extraction cannot proceed
