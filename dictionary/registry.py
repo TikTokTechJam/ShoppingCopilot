@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .semantic import (
+    ATTRIBUTE_EMBEDDING_DIMENSION,
+    ATTRIBUTE_EMBEDDING_NORMALIZATION,
+    ATTRIBUTE_EMBEDDING_MODEL,
+    embedding_models_compatible,
+    is_bge_small_en_v1_5,
+)
+
 
 ATTRIBUTE_FIELDS = (
     "category",
@@ -142,6 +150,9 @@ class AttributeDictionary:
         normalized_index: Mapping[str, Mapping[str, Iterable[str]]],
         embedding_rows: Iterable[Mapping[str, Any]] = (),
         embeddings: Any = None,
+        embedding_model: str | None = None,
+        embedding_dimension: int | None = None,
+        embedding_normalization: str | None = None,
     ) -> None:
         self._values = {value.canonical_id: value for value in values}
         phrase_index: dict[str, list[tuple[tuple[str, ...], str]]] = {}
@@ -162,6 +173,9 @@ class AttributeDictionary:
         }
         self._embedding_rows = tuple(dict(row) for row in embedding_rows)
         self._embeddings = embeddings
+        self._embedding_model = embedding_model
+        self._embedding_dimension = embedding_dimension
+        self._embedding_normalization = embedding_normalization
         self._rows_by_attribute: dict[str, tuple[int, ...]] = {}
         for row in self._embedding_rows:
             attribute = str(row["attribute"])
@@ -188,6 +202,33 @@ class AttributeDictionary:
             with metadata_path.open(encoding="utf-8") as handle:
                 rows = _metadata_rows(json.load(handle))
 
+        embedding_model = None
+        embedding_dimension = None
+        embedding_normalization = None
+        manifest_path = root / "manifest.json"
+        if manifest_path.exists():
+            with manifest_path.open(encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            if not isinstance(manifest, Mapping):
+                raise ValueError("dictionary manifest must contain an object")
+            embedding_info = manifest.get("embedding")
+            if isinstance(embedding_info, Mapping):
+                raw_model = embedding_info.get("model")
+                raw_dimension = embedding_info.get("dimension")
+                raw_normalization = embedding_info.get("normalization")
+            else:
+                raw_model = manifest.get("embedding_model", manifest.get("model"))
+                raw_dimension = manifest.get(
+                    "embedding_dimension", manifest.get("dimension")
+                )
+                raw_normalization = manifest.get("normalization")
+            if isinstance(raw_model, str) and raw_model.strip():
+                embedding_model = raw_model.strip()
+            if isinstance(raw_dimension, int) and not isinstance(raw_dimension, bool):
+                embedding_dimension = raw_dimension
+            if isinstance(raw_normalization, str) and raw_normalization.strip():
+                embedding_normalization = raw_normalization.strip()
+
         embeddings = None
         embeddings_path = root / "attribute_embeddings.npy"
         if embeddings_path.exists():
@@ -210,7 +251,15 @@ class AttributeDictionary:
                     count=int(record["count"]),
                 )
             )
-        return cls(values, normalized_lookup, rows, embeddings)
+        return cls(
+            values,
+            normalized_lookup,
+            rows,
+            embeddings,
+            embedding_model=embedding_model,
+            embedding_dimension=embedding_dimension,
+            embedding_normalization=embedding_normalization,
+        )
 
     @property
     def values(self) -> tuple[CanonicalValue, ...]:
@@ -219,6 +268,29 @@ class AttributeDictionary:
     @property
     def rows_by_attribute(self) -> Mapping[str, tuple[int, ...]]:
         return dict(self._rows_by_attribute)
+
+    @property
+    def embedding_model(self) -> str | None:
+        return self._embedding_model
+
+    @property
+    def embedding_dimension(self) -> int | None:
+        return self._embedding_dimension
+
+    @property
+    def embedding_normalization(self) -> str | None:
+        return self._embedding_normalization
+
+    @property
+    def has_semantic_embeddings(self) -> bool:
+        return self._embeddings is not None and bool(self._embedding_rows)
+
+    @property
+    def semantic_available(self) -> bool:
+        return self.has_semantic_embeddings and (
+            callable(getattr(self, "_query_encoder", None))
+            or callable(getattr(getattr(self, "_query_encoder", None), "embed_query", None))
+        )
 
     @property
     def phrase_index(self) -> Mapping[str, tuple[tuple[tuple[str, ...], str], ...]]:
@@ -318,6 +390,18 @@ class AttributeDictionary:
             ) from exc
 
         query = np.asarray(self._encode_query(raw_text), dtype=np.float32)
+        if query.ndim == 2 and query.shape[0] == 1:
+            query = query[0]
+        expected_dimension = self._embedding_dimension
+        if query.ndim != 1 or (
+            expected_dimension is not None and query.size != expected_dimension
+        ):
+            raise ValueError(
+                "semantic query embedding dimension does not match the attribute "
+                f"artifact: {tuple(query.shape)} != ({expected_dimension},)"
+            )
+        if not np.isfinite(query).all():
+            raise ValueError("semantic query embedding contains non-finite values")
         norm = float(np.linalg.norm(query))
         if norm == 0.0:
             return ()
@@ -397,13 +481,35 @@ class AttributeDictionary:
                 "semantic lookup needs a query encoder compatible with the stored "
                 "embedding model; call set_query_encoder()"
             )
-        return encoder(raw_text)
+        if callable(encoder):
+            return encoder(raw_text)
+        embed_query = getattr(encoder, "embed_query", None)
+        if callable(embed_query):
+            return embed_query(raw_text)
+        raise RuntimeError("semantic query encoder does not expose embed_query()")
 
     def set_query_encoder(self, encoder: Any) -> None:
         """Attach ``text -> vector`` encoding for runtime semantic queries."""
 
-        if not callable(encoder):
-            raise TypeError("encoder must be callable")
+        if not callable(encoder) and not callable(getattr(encoder, "embed_query", None)):
+            raise TypeError("encoder must be callable or expose embed_query()")
+        if self.has_semantic_embeddings:
+            actual_model = getattr(encoder, "model_id", None)
+            if not isinstance(actual_model, str) or not actual_model.strip():
+                raise ValueError(
+                    "semantic query encoder must declare a compatible model_id"
+                )
+            if not embedding_models_compatible(self._embedding_model, actual_model):
+                raise ValueError(
+                    "semantic query encoder model does not match the attribute "
+                    f"artifact: {actual_model} != {self._embedding_model}"
+                )
+            actual_dimension = getattr(encoder, "embedding_dimension", None)
+            if actual_dimension is None or int(actual_dimension) != self._embedding_dimension:
+                raise ValueError(
+                    "semantic query encoder dimension does not match the attribute "
+                    f"artifact: {actual_dimension} != {self._embedding_dimension}"
+                )
         self._query_encoder = encoder
 
     def _validate(self) -> None:
@@ -450,10 +556,32 @@ class AttributeDictionary:
             if self._embedding_rows:
                 raise ValueError("embedding metadata exists without an embedding matrix")
             return
+        if self._embedding_model is None:
+            raise ValueError("attribute embedding model metadata is missing")
+        if not is_bge_small_en_v1_5(self._embedding_model):
+            raise ValueError(
+                "unsupported attribute embedding model; expected "
+                f"{ATTRIBUTE_EMBEDDING_MODEL}"
+            )
+        if self._embedding_dimension != ATTRIBUTE_EMBEDDING_DIMENSION:
+            raise ValueError(
+                "attribute embedding dimension must be "
+                f"{ATTRIBUTE_EMBEDDING_DIMENSION}, got {self._embedding_dimension}"
+            )
+        if self._embedding_normalization not in (None, ATTRIBUTE_EMBEDDING_NORMALIZATION):
+            raise ValueError(
+                "attribute embeddings must use "
+                f"{ATTRIBUTE_EMBEDDING_NORMALIZATION} normalization"
+            )
         if getattr(self._embeddings, "ndim", None) != 2:
             raise ValueError("attribute embeddings must be a two-dimensional matrix")
         if int(self._embeddings.shape[0]) != len(self._embedding_rows):
             raise ValueError("embedding row count does not match embedding metadata")
+        if int(self._embeddings.shape[1]) != self._embedding_dimension:
+            raise ValueError(
+                "attribute embedding matrix dimension does not match manifest: "
+                f"{self._embeddings.shape[1]} != {self._embedding_dimension}"
+            )
         for expected_row, row in enumerate(self._embedding_rows):
             if int(row["row"]) != expected_row:
                 raise ValueError("embedding metadata rows must be contiguous and ordered")
