@@ -220,14 +220,14 @@ class AttributeDictionary:
             if isinstance(raw_normalization, str) and raw_normalization.strip():
                 embedding_normalization = raw_normalization.strip()
 
+        embeddings_path = root / "attribute_embeddings.npy"
         metadata_path = root / "embedding_metadata.json"
-        rows: list[Mapping[str, Any]] = []
-        if metadata_path.exists():
+        legacy_rows: list[Mapping[str, Any]] = []
+        if metadata_path.exists() and embeddings_path.exists():
             with metadata_path.open(encoding="utf-8") as handle:
-                rows = _metadata_rows(json.load(handle))
+                legacy_rows = _metadata_rows(json.load(handle))
 
         embeddings = None
-        embeddings_path = root / "attribute_embeddings.npy"
         if embeddings_path.exists():
             try:
                 import numpy as np
@@ -276,8 +276,8 @@ class AttributeDictionary:
                     raise ValueError(
                         f"attribute embedding metadata for {attribute} must be an object"
                     )
-                rows = spec.get("rows", [])
-                if not isinstance(rows, list):
+                attribute_rows = spec.get("rows", [])
+                if not isinstance(attribute_rows, list):
                     raise ValueError(
                         f"attribute embedding metadata rows are invalid for {attribute}"
                     )
@@ -292,7 +292,7 @@ class AttributeDictionary:
                 if not matrix_path.is_file():
                     raise OSError(f"missing attribute embedding matrix: {matrix_path}")
                 matrix = np.load(matrix_path, allow_pickle=False)
-                attribute_embeddings[attribute] = (tuple(rows), matrix)
+                attribute_embeddings[attribute] = (tuple(attribute_rows), matrix)
 
         values = []
         for record in _as_records(registry):
@@ -308,7 +308,7 @@ class AttributeDictionary:
         return cls(
             values,
             normalized_lookup,
-            rows,
+            legacy_rows,
             embeddings,
             embedding_model=embedding_model,
             embedding_dimension=embedding_dimension,
