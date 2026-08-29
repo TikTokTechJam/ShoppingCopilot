@@ -58,7 +58,7 @@ DEFAULT_LAYER2_ARTIFACT_PATHS = (
 
 
 # One shared structured score is used by Buying and Browsing. Values are
-# relative weights, and the final structured score is normalized to [0, 1].
+# configured weighted points, and the final score is the accumulated weighted sum.
 STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "category": 1.00,
     "price": 1.00,
@@ -804,10 +804,6 @@ class ProductRetriever:
         price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
 
-        total_weight = sum(
-            STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
-            for field_name in constraint_fields
-        )
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
         matched_fields: dict[str, set[str]] = {}
@@ -853,9 +849,7 @@ class ProductRetriever:
                 matched_fields.setdefault(asin, set()).add(field_name)
 
         def structured_score(asin: str) -> float:
-            if total_weight <= 0.0:
-                return 0.0
-            return matched_weight.get(asin, 0.0) / total_weight
+            return matched_weight.get(asin, 0.0)
 
         price_labels: list[str] = []
         if "price" in constraint_fields:
