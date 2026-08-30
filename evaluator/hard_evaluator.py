@@ -1190,7 +1190,7 @@ class InteractiveDebugPrinter:
         score_weights = MODE_SCORE_WEIGHTS.get(mode, MODE_SCORE_WEIGHTS["BROWSING"])
         print(
             "Score weights: "
-            f"structured={score_weights['structured']:.2f}, "
+            f"structured={score_weights.get('structured', 0.0):.2f}, "
             f"dense={score_weights['dense']:.2f}, "
             f"bm25={score_weights.get('bm25', 0.0):.2f}"
         )

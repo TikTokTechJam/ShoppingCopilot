@@ -2,8 +2,9 @@
 
 The retriever consumes canonical product facts, optional direct Layer 2 field
 vectors, and a BM25 product-text index. It does not parse user language.
-Structured, semantic, and lexical scores are kept separate until the shared
-final scorer combines them.
+Exact constraints are retained for slot compilation, hard filters, and
+diagnostics. Final ranking combines the BGE semantic signal and lexical BM25
+signal; the former structured point score is no longer part of fusion.
 """
 
 from __future__ import annotations
@@ -59,8 +60,9 @@ DEFAULT_LAYER2_ARTIFACT_PATHS = (
 )
 
 
-# One shared structured score is used by Buying and Browsing. Values are
-# configured weighted points, and the final score is the accumulated weighted sum.
+# Kept for compatibility with diagnostic output and candidate metadata. These
+# values are no longer part of final ranking; exact values still feed the
+# slot-guided BM25 compiler and budget/constraint handling.
 STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "category": 0.70,
     "price": 1.50,
@@ -73,8 +75,8 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
-    "BROWSING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
+    "BUYING": {"structured": 0.00, "dense": 1.00, "bm25": 0.20},
+    "BROWSING": {"structured": 0.00, "dense": 1.00, "bm25": 0.20},
 }
 # Backward-compatible name for callers that inspect the Buying contribution.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
@@ -187,14 +189,12 @@ def _encoder_dimension(encoder: object | None) -> int | None:
 
 def _final_score(
     mode: str,
-    structured_score: float,
     dense_score: float,
     bm25_score: float = 0.0,
 ) -> float:
     weights = MODE_SCORE_WEIGHTS[mode]
     return float(
-        weights["structured"] * structured_score
-        + weights["dense"] * dense_score
+        weights["dense"] * dense_score
         + weights.get("bm25", 0.0) * bm25_score
     )
 
@@ -382,6 +382,9 @@ class ProductRetriever:
             "SHOPPING_BM25_SLOT_GROUPS",
             default=True,
         )
+        bm25_log_path = os.environ.get("SHOPPING_BM25_LOG_PATH", "").strip()
+        self.bm25_log_path = Path(bm25_log_path) if bm25_log_path else None
+        self.last_bm25_diagnostics: dict[str, Any] = {}
         self.bm25_state = "loading"
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
@@ -816,19 +819,44 @@ class ProductRetriever:
         semantic_constraints: object | None = None,
     ) -> dict[str, float]:
         if self.bm25_index is None:
+            self.last_bm25_diagnostics = {
+                "query": query_text,
+                "mode": "unavailable",
+                "groups": {},
+                "aggregate_top": [],
+            }
             return {}
         try:
             if not self.use_slot_bm25_groups:
-                return self.bm25_index.search(
+                scores = self.bm25_index.search(
                     query_text,
                     allowed_asins=eligible_asins,
                 )
+                self._record_bm25_diagnostics(
+                    query_text,
+                    mode="raw",
+                    groups={
+                        "raw": {
+                            "query": query_text,
+                            "matched_count": len(scores),
+                            "top": self._top_score_rows(scores),
+                        }
+                    },
+                    aggregate=scores,
+                )
+                return scores
 
             groups = self.bm25_query_compiler.compile_groups(
                 constraints,
                 semantic_constraints,
             )
             if not groups:
+                self._record_bm25_diagnostics(
+                    query_text,
+                    mode="slot_groups",
+                    groups={},
+                    aggregate={},
+                )
                 return {}
 
             # Each slot is normalized independently before fusion. SQLite's
@@ -837,13 +865,19 @@ class ProductRetriever:
             # contribution and prevents a slot with many lexical realizations
             # from dominating the final lexical signal.
             normalized_by_group: list[dict[str, float]] = []
-            for lexical_query in groups.values():
+            group_diagnostics: dict[str, dict[str, object]] = {}
+            for field_name, lexical_query in groups.items():
                 scores = self.bm25_index.search(
                     lexical_query,
                     allowed_asins=eligible_asins,
                 )
                 if not scores:
                     normalized_by_group.append({})
+                    group_diagnostics[field_name] = {
+                        "query": lexical_query,
+                        "matched_count": 0,
+                        "top": [],
+                    }
                     continue
                 peak = max(
                     (float(score) for score in scores.values() if math.isfinite(float(score))),
@@ -851,25 +885,99 @@ class ProductRetriever:
                 )
                 if peak <= 0.0:
                     normalized_by_group.append({})
-                    continue
-                normalized_by_group.append(
-                    {
-                        str(asin): min(1.0, max(0.0, float(score) / peak))
-                        for asin, score in scores.items()
-                        if math.isfinite(float(score)) and float(score) > 0.0
+                    group_diagnostics[field_name] = {
+                        "query": lexical_query,
+                        "matched_count": len(scores),
+                        "peak": peak,
+                        "top": self._top_score_rows(scores),
                     }
-                )
+                    continue
+                normalized = {
+                    str(asin): min(1.0, max(0.0, float(score) / peak))
+                    for asin, score in scores.items()
+                    if math.isfinite(float(score)) and float(score) > 0.0
+                }
+                normalized_by_group.append(normalized)
+                group_diagnostics[field_name] = {
+                    "query": lexical_query,
+                    "matched_count": len(scores),
+                    "peak": peak,
+                    "top": self._top_score_rows(scores),
+                    "normalized_top": self._top_score_rows(normalized),
+                }
 
             group_count = len(normalized_by_group)
             if group_count == 0:
+                self._record_bm25_diagnostics(
+                    query_text,
+                    mode="slot_groups",
+                    groups=group_diagnostics,
+                    aggregate={},
+                )
                 return {}
             fused: dict[str, float] = {}
             for group_scores in normalized_by_group:
                 for asin, score in group_scores.items():
                     fused[asin] = fused.get(asin, 0.0) + score / group_count
+            self._record_bm25_diagnostics(
+                query_text,
+                mode="slot_groups",
+                groups=group_diagnostics,
+                aggregate=fused,
+            )
             return fused
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            self.last_bm25_diagnostics = {
+                "query": query_text,
+                "mode": "error",
+                "groups": {},
+                "aggregate_top": [],
+            }
             return {}
+
+    @staticmethod
+    def _top_score_rows(scores: Mapping[str, float], limit: int = 10) -> list[dict[str, object]]:
+        rows: list[tuple[str, float]] = []
+        for asin, score in scores.items():
+            try:
+                value = float(score)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value > 0.0:
+                rows.append((str(asin), value))
+        rows.sort(key=lambda item: (-item[1], item[0]))
+        return [
+            {"parent_asin": asin, "score": round(score, 8)}
+            for asin, score in rows[:limit]
+        ]
+
+    def _record_bm25_diagnostics(
+        self,
+        query_text: str,
+        *,
+        mode: str,
+        groups: Mapping[str, Mapping[str, object]],
+        aggregate: Mapping[str, float],
+    ) -> None:
+        """Record one bounded trace without affecting retrieval results."""
+
+        record: dict[str, object] = {
+            "query": query_text,
+            "mode": mode,
+            "groups": {str(name): dict(value) for name, value in groups.items()},
+            "aggregate_count": len(aggregate),
+            "aggregate_top": self._top_score_rows(aggregate),
+        }
+        self.last_bm25_diagnostics = record
+        if self.bm25_log_path is None:
+            return
+        try:
+            self.bm25_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.bm25_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            # Diagnostics must never make retrieval fail.
+            return
 
     def _query_embedding(self, query_text: str, dimension: int) -> Any:
         """Encode one query with the shared runtime encoder and validate it."""
@@ -927,7 +1035,7 @@ class ProductRetriever:
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score, bm25_score)
+        score = _final_score(mode, dense_score, bm25_score)
         rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
@@ -1106,7 +1214,6 @@ class ProductRetriever:
             final_scores = {
                 asin: _final_score(
                     mode,
-                    structured_score(asin),
                     0.0,
                     bm25_scores.get(asin, 0.0),
                 )
@@ -1117,7 +1224,6 @@ class ProductRetriever:
             final_scores = {
                 asin: _final_score(
                     mode,
-                    structured_score(asin),
                     dense_scores.get(asin, 0.0),
                     bm25_scores.get(asin, 0.0),
                 )
