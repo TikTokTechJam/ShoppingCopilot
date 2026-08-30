@@ -146,6 +146,11 @@ For a local turn-by-turn view of the same Manual400 Agent flow, run
 To inspect the public-set local evaluator in the same UI, run
 `python -m evaluator.debug_web --evaluator local --dataset data/public_set.jsonl`.
 
+An optional schema-guided local turn interpreter can be enabled with
+`SHOPPING_TURN_INTERPRETER_MODEL`. It extracts a validated current-turn state
+delta while the existing deterministic parser remains responsible for price
+and size. See [`docs/turn_interpreter.md`](docs/turn_interpreter.md).
+
 The evaluator uses the frozen 50,000-product catalog as the Agent's retrieval universe and for exact `parent_asin` target validation. It does not rebuild facts or alter the benchmark. At each turn, the Agent may ask for one attribute and return up to 10 recommendations; the simulator supplies the corresponding fixed customer reply. The evaluator reports Hit Rate@10, MRR, MTTC, scenario metrics, and TechnicalScore under the ten-turn limit.
 
 This benchmark measures the expected-utility adaptive search idea described in the Improvement Log: maintain a posterior over candidate products, estimate the value of asking each unused attribute, acquire the most useful evidence, and revise stale constraints after an intent override.
