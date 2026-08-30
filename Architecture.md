@@ -1,1401 +1,597 @@
 # Shopping Copilot architecture
 
-Status: MVP architecture source of truth.
-
-This document describes the overall data, retrieval, state, and Agent architecture for Shopping Copilot. It is intentionally organized by system responsibility rather than GitHub issue number. Issues and pull requests may implement parts of this design, but they do not define the architecture.
-
-## 1. Goals and operating constraints
-
-Shopping Copilot runs over a frozen catalog of roughly 50,000 products. The runtime must support multi-turn conversational shopping while remaining simple enough to run in one process with precomputed artifacts loaded into memory.
-
-The design optimizes for the competition objective:
-
-- return the best current Top-K recommendations on every scoreable turn;
-- find the exact target `parent_asin` as early and as high in the ranking as possible;
-- ask at most one useful structured clarification per turn;
-- preserve good candidates while the user is still clarifying intent;
-- treat Buying as precision-first and Browsing as recall-first;
-- keep hidden evaluator information completely outside Agent logic.
-
-The current MVP deliberately favors deterministic preprocessing, in-memory indexes, exact canonical matching, BGE semantic attribute search, and benchmark-driven iteration over infrastructure complexity.
-
-The active runtime does not use whole-product embedding retrieval. The previous
-direct catalog-field/Jina path is retired. Layer 2 now means semantic matching
-against the generated V5 canonical attribute matrices using the local
-`BAAI/bge-small-en-v1.5` model; brand remains exact-only.
-
-## 2. System-level architecture
-
-```text
-                              catalog.jsonl
-                                   |
-                    +--------------+--------------+
-                    |                             |
-                    v                             v
-        LAYER 1 — EXISTING FLOW       LAYER 2 — BGE ATTRIBUTE FLOW
-              (UNCHANGED)             (V5 CANONICAL DICTIONARY)
-                    |                             |
-      +-------------+-------------+       +------+-------+-------+-------+---------+
-      |             |             |       |              |       |       |         |
-      v             v             v       v              v       v       v         v
-  Tier 1         Tier 2        Tier 3   category   color material style feature use_case
- structured     trusted       descriptive                |       |       |         |
- extraction     annotation    annotation                 |       |       |         |
-      |             |             |       |              |       |       |         |
-      | category    | brand       | style |              |       |       |         |
-      | price       | color       | feature              |       |       |         |
-      | size labels | material    | use_case             |       |       |         |
-      | measurements|             |                      |       |       |         |
-      | package dims|             |                      |       |       |         |
-      | product dims|             |                      |       |       |         |
-      | item weight |             |                      |       |       |         |
-      +-------------+-------------+                      |       |       |         |
-                    |                                    |       |       |         |
-                    v                                    v       v       v
-        validation + normalization                 BGE attribute matrices
-                    |                              category/color/material/style
-                    v                              feature/use_case
-          canonical product facts                                           |
-                    |                                                       |
-          +---------+---------+                                             |
-          |                   |                                             |
-          v                   v                                             |
- exact / numeric       canonical registries                                 |
-      indexes                                                               |
-          |                   |                                             |
-          +---------+---------+                                             |
-                    |                                                       |
-                    +----------------------+--------------------------------+
-                                           |
-                                           v
-                                  RETRIEVAL / RANKING
-                                           |
-                              +------------+------------+
-                              |                         |
-                              v                         v
-                    Layer 1 evidence             Layer 2 evidence
-                    exact / structured           canonical value similarity
-                    canonical matches
-                              |                         |
-                              +------------+------------+
-                                           |
-                                           v
-                                        Top-K
-```
-
-The central principle remains unchanged for Layer 1: not all facts have the same reliability or retrieval role.
-
-Layer 2 is an independent semantic attribute path built from the generated V5
-canonical dictionary. It does not load whole-product vectors. Layer 1 exact
-constraints and Layer 2 semantic attribute evidence meet in the existing
-structured scorer.
-
-Layer 2 creates one canonical-value matrix per semantic attribute:
-
-```text
-category
-color
-material
-style
-feature
-use_case
-```
-
-Brand remains exact-only and has no semantic matrix. Each attribute matrix is
-embedded with local BGE-small vectors and searched independently.
-
-### Runtime flow
-
-```text
-                               USER TURN
-                                   |
-                                   v
-                     existing utterance processing
-                                   |
-                    +--------------+--------------+
-                    |                             |
-                    v                             v
-          Layer 1 parsed state            Layer 2 semantic query
-          structured / canonical          residual user phrases
-                    |                             |
-                    |                             v
-                    |                      remove stopwords
-                    |                             |
-                    |                             v
-                    |              1/2/3-gram phrases
-                    |                             |
-                    |              +--------------+--------------+--------------+--------------+
-                    |              |              |              |              |              |
-                    |              v              v              v              v              v
-                    |         category       color       material       style       feature       use_case
-                    |          matrix         matrix       matrix        matrix       matrix        matrix
-                    |              |              |              |              |              |
-                    |              v              v              v              v              v
-                    |        semantic attribute matches with cosine similarity
-                    |              |              |              |              |              |
-                    |              +--------------+--------------+--------------+--------------+
-                    |                                             |
-                    |                                             v
-                    |                                thresholded BGE evidence
-                    |                                             |
-                    +----------------------+----------------------+
-                                           |
-                                           v
-                              combine Layer 1 + Layer 2 evidence
-                                           |
-                                           v
-                                      rank candidates
-                                           |
-                                           v
-                                         Top-K
-```
-
-At runtime, whole-product catalog embeddings are not loaded. The Agent loads
-the V5 canonical dictionary and available attribute matrices once at startup.
-It encodes the residual one-, two-, and three-token phrases locally with the
-same BGE model used to build those matrices.
-
-## 3. Product knowledge model
-
-### Tier 1 — exact structured facts
-
-Tier 1 contains facts that can be parsed or copied into a typed representation with high reliability:
-
-```text
-category
-price
-size labels
-numeric measurements
-package dimensions
-product dimensions
-item weight
-```
-
-These are not free-form semantic keywords. They should be represented with explicit types and units whenever possible.
-
-Examples:
-
-```json
-{
-  "size_labels": ["s", "m", "l", "xl"],
-  "measurements": [
-    {
-      "type": "inseam",
-      "values": [4, 6, 8],
-      "unit": "inch"
-    }
-  ]
-}
-```
-
-```json
-{
-  "measurements": [
-    {
-      "type": "case_diameter",
-      "values": [44],
-      "unit": "mm"
-    }
-  ]
-}
-```
-
-```json
-{
-  "package_dimensions": {
-    "values": [10, 8, 3],
-    "unit": "inch"
-  }
-}
-```
-
-The structured extractor should be conservative. If a measurement cannot be typed confidently, leave it unstructured and allow raw-text retrieval to preserve recall.
-
-Package dimensions and product dimensions remain distinct from shopper size. They are preserved because a user may explicitly request packaging, shipping, or physical-dimension constraints.
-
-### Tier 2 — trusted semantic facts
-
-Tier 2 contains semantic fields that are useful enough to receive strong exact-match weight, so annotation precision is more important than coverage:
-
-```text
-brand
-color
-material
-```
-
-The annotation policy is sparse and conservative:
-
-- emit only facts clearly supported by the product record;
-- prefer omission over a speculative value;
-- normalize to reusable canonical forms;
-- do not confuse patterns with colors;
-- do not transfer accessory or packaging materials to the main product.
-
-Brand should use deterministic structured metadata when it is clearly reliable, but catalog metadata can be noisy. The trusted brand pipeline may normalize, verify, or recover the brand from title/store/manufacturer evidence when necessary. A suspicious manufacturer value must not automatically become the final brand.
-
-Tier 2 exact matches can receive very high ranking weight. Missing Tier 2 annotation is not automatically proof that the product violates the request, because the annotation policy intentionally favors precision over recall.
-
-### Tier 3 — descriptive semantic facts
-
-Tier 3 contains broader semantic descriptors:
-
-```text
-style
-feature
-use_case
-```
-
-These fields are primarily for:
-
-- semantic matching;
-- product embedding enrichment;
-- soft ranking boosts;
-- candidate interpretation;
-- clarification planning;
-- later learned ranking or posterior logic.
-
-The extraction policy is higher recall than Tier 2. Values still need source support, but some noise is acceptable because Tier 3 is not a hard-filter layer by default.
-
-Examples:
-
-```text
-style:
-  bohemian
-  relaxed_fit
-  wide_leg
-  platform
-  wrap
-  minimalist
-
-feature:
-  breathable
-  lightweight
-  arch_support
-  waterproof
-  adjustable_straps
-  cushioned
-
-use_case:
-  running
-  hiking
-  camping
-  fishing
-  wedding_guest
-  meditation
-```
-
-Generic descriptors that add little retrieval value should still be avoided when possible, for example `lifestyle`, `all_occasions`, or `daily_life`.
-
-`use_case` belongs in Tier 3. It is intentionally broader and fuzzier than brand, color, or material. A use-case mismatch must not eliminate a candidate.
-
-### Tier 4 — raw product text
-
-Tier 4 is the recall safety net:
-
-```text
-title
-features
-description
-details
-```
-
-The original catalog remains immutable. Raw text is preserved even when a fact was not successfully structured or annotated.
-
-Tier 4 remains available as source text for future retrieval work, but it is
-not embedded or searched by the active runtime.
-
-The architecture must not require the annotation schema to represent every possible user request.
-
-## 4. Canonical product-facts representation
-
-A derived product record should conceptually separate the trust tiers:
-
-```json
-{
-  "parent_asin": "B123",
-  "structured": {
-    "category": ["women", "clothing", "active", "active_shorts"],
-    "price": 20.99,
-    "size_labels": ["s", "m", "l", "xl"],
-    "measurements": [
-      {
-        "type": "inseam",
-        "values": [4, 6, 8],
-        "unit": "inch"
-      }
-    ],
-    "package_dimensions": null,
-    "product_dimensions": null,
-    "item_weight": null
-  },
-  "trusted_semantic": {
-    "brand": "example_brand",
-    "color": ["black"],
-    "material": ["nylon", "spandex"]
-  },
-  "descriptive_semantic": {
-    "style": ["high_waisted", "biker_shorts"],
-    "feature": ["compression", "hidden_pockets", "non_see_through"],
-    "use_case": ["yoga", "training"]
-  }
-}
-```
-
-The physical storage may remain flattened for compatibility during migration, but retrieval code should preserve the conceptual tier distinction and must not assign the same semantics or weight to every field.
-
-Derived facts should retain enough provenance internally to distinguish deterministic extraction, exact normalization, LLM annotation, and later semantic resolution where needed.
-
-## 5. Offline processing pipeline
-
-### 5.1 Preserve the source catalog
-
-`catalog.jsonl` is the immutable source record. Derived processing must not rewrite or remove source text.
-
-### 5.2 Structured extraction
-
-A deterministic extractor should derive:
-
-```text
-category path
-price
-size labels
-numeric measurements
-package dimensions
-product dimensions
-item weight
-```
-
-Typical supported measurements include:
-
-```text
-inseam
-waist
-length
-width
-height
-diameter
-case_diameter
-heel_height
-shaft_height
-canopy_size
-necklace_length
-shoe/sock size ranges
-```
-
-Units should be normalized into a consistent internal representation while retaining the original semantic type.
-
-The parser should distinguish shopper-facing measurements from generic catalog metadata. For example, `31 inch inseam` is a typed shopper measurement, while `Package Dimensions: 10 x 8 x 3 inches` belongs specifically to package dimensions rather than generic size.
-
-### 5.3 Semantic annotation
-
-The LLM annotator should output the semantic fields only:
-
-```text
-brand
-color
-material
-style
-feature
-use_case
-```
-
-The prompt must explicitly use two policies:
-
-```text
-brand/color/material
-    -> sparse, high precision
-
-style/feature/use_case
-    -> broader, source-supported semantic coverage
-```
-
-The LLM should not be responsible for category hierarchy, price, numeric size parsing, package dimensions, or typed measurements.
-
-### 5.4 Validation and normalization
-
-LLM output must pass deterministic cleanup before becoming canonical product facts.
-
-Typical normalization responsibilities:
-
-```text
-crewneck          -> crew_neck
-vneck             -> v_neck
-quick_dry         -> quick_drying
-machine_wash      -> machine_washable
-4_way_stretch     -> four_way_stretch
-```
-
-Validation should also reject or remap known field mistakes where rules are reliable, such as pattern terms incorrectly emitted as colors.
-
-The validator should remain conservative. It should not become a second speculative semantic model.
-
-## 6. Canonical registries and attribute embeddings
-
-Canonical semantic values receive stable IDs:
-
-```text
-brand:nike
-color:black
-material:leather
-style:relaxed_fit
-feature:waterproof
-use_case:hiking
-```
-
-The registry owns deterministic normalization and exact lookup.
-
-Exact phrase matching should be longest/specific-first. A normalized surface may map to multiple canonical IDs; ambiguity should be preserved rather than arbitrarily resolved.
-
-Semantic fallback is attribute-scoped:
-
-- `brand`: exact/normalized matching by default;
-- `color`: exact first, optional high-threshold semantic fallback;
-- `material`: exact first, optional high-threshold semantic fallback;
-- `style`: exact plus semantic fallback;
-- `feature`: exact plus semantic fallback;
-- `use_case`: exact plus semantic fallback;
-- `size`: structured/exact only by default;
-- `price` and measurements: numeric only.
-
-Attribute-value embeddings are the active semantic retrieval index. They
-resolve residual user phrases to canonical values; no whole-product embedding
-index is used by the runtime.
-
-## 7. Active canonical attribute semantic embeddings
-
-Layer 1 remains unchanged. The active Layer 2 path consumes the generated V5
-canonical dictionary rather than the raw catalog.
-
-For each semantic attribute, the offline builder stores one matrix containing
-L2-normalized BGE-small embeddings for canonical values. Runtime removes the
-configured stopwords from the residual utterance, creates deterministic
-one-, two-, and three-token phrases, and searches the matching attribute
-matrix. A score at or above the configured threshold becomes Layer 2 evidence
-in session state; its cosine similarity is retained by the scorer.
-
-The active matrices are:
-
-```text
-category, color, material, style, feature, use_case
-```
-
-Brand remains exact-only. Price, size, and measurements remain structured and
-are never resolved by semantic similarity.
-
-The old direct catalog-field design is retained below only as historical
-context. It is not loaded, searched, or required by the Agent or evaluator.
-
-## Appendix A. Retired direct field embedding design
-
-The following subsections describe the retired whole-product embedding path.
-
-Layer 1 remains unchanged.
-
-The former Layer 2 path read directly from `catalog.jsonl`.
-
-For every product, Layer 2 creates four core semantic views and reserves selected details as an optional later view:
-
-```text
-categories
-title
-features
-description
-selected details  # optional / later implementation
-```
-
-The views are embedded separately. The architecture does not create one giant embedding from the entire product record.
-
-### 7.1 Categories embedding
-
-Build one embedding from the product's ordered category path.
-
-Example source:
-
-```json
-{
-  "categories": [
-    "Clothing, Shoes & Jewelry",
-    "Women",
-    "Jewelry",
-    "Rings"
-  ]
-}
-```
-
-Embedding text:
-
-```text
-clothing shoes jewelry women jewelry rings
-```
-
-The category view provides a strong semantic product-type signal and complements the existing Layer 1 category logic.
-
-### 7.2 Title embedding
-
-Build one embedding from the original product title.
-
-Example:
-
-```text
-DALEGEM Genuine Yellow Tiger Eye Stone Ring for Men Women,
-Retro Vintage Quartz Crystal Gemstone Turkish Ring Jewelry Gift
-```
-
-The title is expected to be one of the strongest semantic views because it is concise and often contains product type, identity, material, style, and use-case information.
-
-### 7.3 Features embedding
-
-Build one embedding from all feature bullets for the product.
-
-For the MVP, concatenate the feature strings into one input:
-
-```python
-feature_text = " ".join(product["features"])
-```
-
-Do not create one vector per individual feature bullet.
-
-Feature text is often information-rich, but it can also contain seller marketing, guarantees, package contents, SEO wording, or unsupported claims. Keeping features in their own embedding view prevents that noise from contaminating title or category similarity.
-
-### 7.4 Description embedding
-
-Build one embedding from the product description when description content exists.
-
-Description can recover useful long-tail information that does not appear in the title or feature bullets, but it can also contain repetitive or marketing-heavy language.
-
-Description therefore remains a separate view with an independently tunable weight.
-
-If a product has no description, description contributes no score rather than negative evidence.
-
-### 7.5 Selected details embedding — optional / later implementation
-
-This view is optional for the first MVP and may be implemented later. When it is added, do not embed the full `details` dictionary blindly.
-
-Build the details embedding only from shopper-relevant keys.
-
-Useful examples may include:
-
-```text
-Fabric Type
-Outer Material
-Sole Material
-Closure Type
-Water Resistance Level
-Fit
-Compatibility
-Style Name
-Lining
-```
-
-Avoid embedding metadata that usually has little semantic shopping value:
-
-```text
-Date First Available
-ASIN
-Best Sellers Rank
-internal identifiers
-seller/catalog bookkeeping
-```
-
-Numeric details that already have strong structured meaning should continue to be handled by Layer 1 rather than semantic similarity.
-
-Examples include:
-
-```text
-Package Dimensions
-Item Weight
-Stone Width
-Stone Length
-case diameter
-```
-
-### 7.6 Embedding artifacts
-
-A practical artifact layout is:
-
-```text
-data/derived/product_embeddings/
-├── category_embeddings.npy
-├── title_embeddings.npy
-├── features_embeddings.npy
-├── description_embeddings.npy
-├── details_embeddings.npy          # optional / later
-├── product_embedding_metadata.json
-└── manifest.json
-```
-
-All implemented matrices must use exactly the same product row order. The optional details matrix must follow the same mapping when added.
-
-Metadata must preserve the exact row-to-`parent_asin` mapping.
-
-The manifest records:
-
-```text
-embedding model
-embedding dimension
-normalization
-source catalog version
-product count
-field/view names
-generation configuration
-```
-
-### 7.7 Query embedding
-
-For the first MVP baseline, create one semantic embedding from the current user/session query and compare the same query vector against the four core product views. The optional selected-details view can be added later without changing this query flow.
-
-Example:
-
-```python
-query_embedding = embed(user_query)
-
-category_scores = category_embeddings @ query_embedding
-title_scores = title_embeddings @ query_embedding
-features_scores = features_embeddings @ query_embedding
-description_scores = description_embeddings @ query_embedding
-# Optional later:
-# details_scores = details_embeddings @ query_embedding
-```
-
-This keeps the baseline simple and avoids adding query-to-field routing before benchmark evidence justifies it.
-
-### 7.8 Multi-view Layer 2 score
-
-A conceptual Layer 2 score is:
-
-```text
-layer2_score(product) =
-    w_category    * category_similarity
-  + w_title       * title_similarity
-  + w_features    * features_similarity
-  + w_description * description_similarity
-  + w_details     * details_similarity   # optional / later
-```
-
-Actual weights are benchmark-tuned and should not be fixed in this document.
-
-A reasonable starting trust order is:
-
-```text
-title          very high
-categories     very high
-features       high
-description    medium
-details        optional / later, medium / supporting
-```
-
-### 7.9 Missing fields
-
-Products may have missing or empty catalog fields.
-
-The runtime should keep presence masks such as:
-
-```text
-has_categories
-has_title
-has_features
-has_description
-has_details    # optional / later
-```
-
-A missing field contributes no Layer 2 score and must not be treated as negative evidence.
-
-### 7.10 Vector normalization and search
-
-Vectors should be L2-normalized float32.
-
-For normalized vectors:
-
-```python
-scores = embeddings @ query_embedding
-```
-
-is cosine similarity.
-
-For roughly 50,000 products, exact in-process search is sufficient. Normalized NumPy inner product or FAISS `IndexFlatIP` is acceptable.
-
-An external vector database is not required.
-
-### 7.11 Layer 1 and Layer 2 relationship
-
-Layer 1 remains the existing structured/canonical pipeline.
-
-Layer 2 does not replace Layer 1 and does not require Layer 1 output.
-
-The two paths run independently:
-
-```text
-catalog.jsonl
-    |
-    +--> Layer 1 existing structured / annotation / canonical path
-    |
-    `--> Layer 2 canonical attribute embedding path
-```
-
-They meet only during retrieval/ranking.
-
-Layer 1 contributes:
-
-```text
-structured constraints
-exact / numeric evidence
-trusted canonical matches
-descriptive canonical matches
-```
-
-Layer 2 contributes:
-
-```text
-category similarity
-title similarity
-features similarity
-description similarity
-details similarity  # optional / later
-```
-
-The ranking layer combines both sources of evidence.
-
-## 8. User-utterance processing
-
-User processing mirrors the product trust tiers.
-
-Example:
-
-```text
-"I need black waterproof running shorts,
- 6 inch inseam, under $30, for hot weather"
-```
-
-should be decomposed approximately into:
-
-```json
-{
-  "structured": {
-    "price_max": 30,
-    "measurements": [
-      {
-        "type": "inseam",
-        "value": 6,
-        "unit": "inch"
-      }
-    ]
-  },
-  "trusted_semantic": {
-    "color": ["black"]
-  },
-  "descriptive_semantic": {
-    "feature": ["waterproof"],
-    "use_case": ["running"]
-  },
-  "residual_text": "for hot weather"
-}
-```
-
-The runtime flow is:
-
-```text
-user utterance
-    |
-    v
-1. deterministic structured parser
-    |   price, quantities, size labels, measurements, dimensions
-    |
-    v
-2. exact/normalized canonical matching
-    |   category, brand, color, material, known descriptors
-    |
-    v
-3. mark matched spans
-    |
-    v
-4. semantic fallback on meaningful residual phrases
-    |   primarily style, feature, use_case
-    |
-    v
-5. retain unresolved/full semantic context for future raw-text retrieval
-```
-
-Priority is:
-
-```text
-structured parse
-> exact/normalized canonical match
-> high-confidence semantic fallback
-> unresolved/raw semantic context
-```
-
-An exact match must not be remapped semantically.
-
-Size and typed measurements should not rely on embedding similarity for final enforcement. Natural-language aliases may be normalized, but `xl` must not become `l` or `xxl` because those strings are semantically similar.
-
-## 9. Session state
-
-Session state is process-local for the MVP.
-
-Conceptually:
-
-```json
-{
-  "session_id": "...",
-  "mode": "BUYING",
-  "structured": {
-    "category": [],
-    "price_min": null,
-    "price_max": null,
-    "size_labels": [],
-    "measurements": []
-  },
-  "trusted_semantic": {
-    "brand": [],
-    "color": [],
-    "material": []
-  },
-  "descriptive_semantic": {
-    "style": [],
-    "feature": [],
-    "use_case": []
-  },
-  "asked_attributes": [],
-  "last_recommendations": [],
-  "last_user_message": null,
-  "turn": 0
-}
-```
-
-The Buying/Browsing router runs on the first shopping utterance and stores the mode. Later clarification replies update constraints rather than rerunning the router automatically.
-
-New explicit information overrides stale conflicting information. For example, `actually brown` replaces `black` rather than appending both.
-
-An intent override that clearly changes the shopping goal clears stale goal-specific constraints before applying the new request.
-
-No database or Redis is required for the MVP.
-
-## 10. Retrieval architecture
-
-The retriever consumes parsed session state. It does not re-parse raw user language.
-
-### 10.1 Trust-aware evidence
-
-Retrieval must distinguish evidence strength:
-
-```text
-Tier 1 explicit structured match
-    -> strongest / often hard constraint in Buying
-
-Tier 2 trusted semantic exact match
-    -> very strong ranking evidence
-
-Tier 3 descriptive semantic match
-    -> soft ranking evidence
-
-Layer 2 direct-field similarity
-    -> recall and broad semantic ranking
-```
-
-A useful mental model is:
-
-```text
-category exact / numeric budget / explicit size or measurement    VERY HIGH
-brand exact                                                       VERY HIGH
-color/material exact                                              HIGH
-style/feature/use_case                                            MEDIUM
-Layer 2 canonical attribute similarity                              MEDIUM
-```
-
-Actual weights are benchmark-tuned and should not be hard-coded into this document.
-
-Absence of a sparse Tier 2 annotation should not automatically equal contradiction. Hard elimination should be reserved for fields whose semantics and coverage make it safe, especially explicit Tier 1 constraints.
-
-### 10.2 Buying mode
-
-Buying is precision-first.
-
-```text
-all products
-    |
-    v
-apply explicit Tier 1 constraints
-    |
-    v
-apply strong trusted-semantic evidence
-    |
-    v
-score descriptive semantic matches
-    |
-    v
-use Layer 2 canonical attribute evidence among viable candidates
-    |   category / color / material / style / feature / use_case
-    v
-rank candidate pool
-```
-
-Examples of constraints that may be enforced strongly:
-
-```text
-category
-price bounds
-explicit size
-explicit typed measurements
-package-dimension limits when requested
-```
-
-Tier 2 matches such as exact brand, color, or material receive high weight. Whether a Tier 2 mismatch becomes a hard filter is a benchmark-driven decision and must account for annotation coverage.
-
-Tier 3 fields are soft by default.
-
-If the strict pool becomes too small or empty, controlled relaxation should remove the weakest soft semantic evidence first while preserving explicit numeric and exact structured requirements as long as possible.
-
-If controlled relaxation still cannot produce a useful pool, deterministic
-catalog-order fallback can recover candidates while recording the fallback in
-provenance.
-
-### 10.3 Browsing mode
-
-Browsing is recall-first.
-
-```text
-full current/session semantic context
+This document describes the implementation on the current main branch. It is
+an implementation snapshot, not a roadmap. The Python source is authoritative
+when behavior and this document disagree.
+
+## 1. Preprocessing and runtime flows
+
+The system has an offline preparation flow and a per-turn runtime flow. The
+offline flow creates the artifacts that the runtime reads; it is not performed
+inside Agent.respond.
+
+### Offline preprocessing flow
+
+    data/catalog.jsonl
+            |
+            v
+    V5 single-attribute annotation jobs
+    annotation runner + attribute-specific prompts
+            |
+            +--> annotations/v5/category.jsonl
+            +--> annotations/v5/brand.jsonl
+            +--> annotations/v5/color.jsonl
+            +--> annotations/v5/material.jsonl
+            +--> annotations/v5/feature.jsonl
+            +--> annotations/v5/use_case.jsonl
+            |
+            v
+    scripts.aggregate_v5_annotations
+    catalog order + catalog price + six V5 fields
+            |
+            v
+    data/derived/annotations/v5/annotations.jsonl
+            |
+            +------------------------------+
+            |                              |
+            v                              v
+    optional catalog-facts build       scripts.build_attribute_dictionary
+    scripts.build_catalog_facts        exact canonical registry
+            |                              |
+            v                              v
+    catalog_facts/catalog_facts.jsonl  dictionary/
+                                         canonical_values.json
+                                         normalized_lookup.json
+                                         manifest.json
+                                               |
+                                               v
+                                  scripts.build_v5_attribute_embeddings
+                                  local BGE-small, normalized vectors
+                                               |
+                                               v
+                                  dictionary/attribute_embeddings/
+                                  category, color, material, style,
+                                  feature, and use_case matrices
+
+The current runtime normally reads the aggregated V5 annotations and generated
+dictionary. The optional catalog-facts artifact is a compatible downstream
+representation. The semantic embedding build is separate from annotation and
+does not generate product vectors.
+
+### Per-turn runtime flow
+
+    USER TURN
         |
         v
-Layer 2 canonical attribute matching over the available dictionary values
+    Agent.respond
         |
         v
-broad candidate pool
+    existing utterance processing
         |
-        v
-Tier 2 / Tier 3 preference boosts
-        |
-        v
-ranked candidates
-```
-
-Vague preferences should not be aggressive hard filters.
-
-### 10.4 Shared candidate contract
-
-Both modes should produce one downstream candidate representation:
-
-```json
-{
-  "parent_asin": "B123",
-  "retrieval_mode": "BUYING",
-  "dense_score": 0.82,
-  "structured_score": 1.0,
-  "trusted_semantic_score": 0.9,
-  "descriptive_semantic_score": 0.55,
-  "matched_constraints": ["brand:nike", "color:black"],
-  "violated_constraints": [],
-  "relaxed_constraints": []
-}
-```
-
-The exact internal score fields may evolve, but downstream ranking and clarification should not depend on a separate candidate type for each retrieval route.
-
-## 11. In-memory runtime indexes
-
-At Agent construction, load reusable data once:
-
-```text
-canonical product facts
-product_by_asin
-structured numeric arrays/lookups
-Tier 2 canonical inverted indexes
-Tier 3 canonical inverted indexes where useful
-canonical registries
-Layer 2 category/color/material/style/feature/use_case matrices + shared canonical metadata
-```
-
-Typical exact indexes:
-
-```text
-category[value] -> set(parent_asin)
-brand[value]    -> set(parent_asin)
-color[value]    -> set(parent_asin)
-material[value] -> set(parent_asin)
-style[value]    -> set(parent_asin)
-feature[value]  -> set(parent_asin)
-use_case[value] -> set(parent_asin)
-```
-
-Size and measurements should use typed structured indexes rather than pretending every numeric value is one flat categorical vocabulary.
-
-No Postgres, external vector database, or distributed serving layer is required for the first MVP.
-
-## 12. Clarification policy
-
-Every scoreable turn returns recommendations even when asking a question.
-
-```text
-current candidate pool
-      |
-      +--> current best Top-K
-      |
-      `--> optional ONE clarification attribute
-```
-
-A deterministic one-step policy is sufficient initially. It can estimate question value using candidate coverage, diversity/split quality, expected remaining-pool size, whether the attribute is already known/asked, and Buying/Browsing mode.
-
-Do not ask an attribute if it is already known, already asked, has poor candidate coverage, or is unlikely to materially change ranking.
-
-The supported public `ask_attribute` values remain those required by the competition contract. Internal typed measurements can still map to the closest supported public question category when needed.
-
-Recursive DP, learned question policies, or posterior planning can replace the utility later without changing the Agent response contract.
-
-Whether a turn returns a newly ranked list or holds the previous one is decided separately, in Section 12b.
-
-### 12.1 Combined question utility
-
-The pool term above answers only one of the three questions that decide whether
-to ask. Asking is a bet with three independent factors, and `_utility` in
-`starter/clarification.py` is their product:
-
-```text
-ExpectedGain(a, t) = Split(a) * P(answer | a, mode, profile) * Horizon(t)
-```
-
-```text
-Split(a)     coverage * gini * (0.75 + 0.25 * diversity)
-             how much an answer would narrow the pool.  Unchanged from
-             Section 12; the -inf vetoes (pool < 2, coverage < 0.20, fewer
-             than 2 distinct values, gini < 0.10) still apply first.
-
-P(answer)    PRIOR_CEILING * MODE_PRIORS[mode][a], updated by the shopper's
-             profile.  How likely this shopper is to answer at all.
-
-Horizon(t)   U(t + 1, 1) from Section 12b.1, or 0 on the final turn.
-             What the answer is still worth if it converts next turn.
-```
-
-The product is in `TechnicalScore` units, which is what makes the three factors
-commensurable: a large pool split late in a session and a small one early can
-be compared directly.
-
-**The profile enters as a likelihood ratio, not a multiplier.** `MODE_PRIORS`
-is the population prior for the mode; `preference_tags` is evidence about this
-shopper. Evidence composes on the odds, not on the probability:
-
-```text
-odds' = odds(prior) * ratio        ratio in [1 - w, 1 + w], w = PROFILE_WEIGHT
-p'    = odds' / (1 + odds')
-```
-
-A multiplier on the probability would leave `[0, 1]` and clip, and clipping
-lands hardest on the highest-priority attribute, which is exactly where the
-evidence should still be able to move something. The odds update has the most
-leverage where the prior is least certain and cannot escape the interval.
-
-`PRIOR_CEILING = 0.90` exists for the same reason. `MODE_PRIORS` tops out at
-`1.00` as a relative weight; read literally as a probability that is infinite
-odds, and no finite evidence could ever displace the top-priority attribute.
-The ceiling scales every attribute equally, so it cannot change an argmax on
-its own, and the floors absorb it.
-
-A ratio of exactly `0` is the one veto and is reserved for direct evidence: the
-shopper has already declined that attribute (`observe_no_preference`).
-
-**Two consequences of putting the decision in score units:**
-
-- The abstain floor is a bet size, not a magic number. `ASK_UTILITY_FLOOR` is
-  the historical `0.035` split threshold re-expressed on the same scale, so a
-  profile-free decision on turn 1 is bit-for-bit what it was before.
-- The `turn < 10` guard is gone from `Agent.respond`. On the final turn no
-  answer can be acted on, `Horizon` is `0`, every question scores `0`, and the
-  policy abstains on its own arithmetic.
-
-Both bounds mean the same thing in practice: the profile reorders near-ties
-(`color 0.92` against `size 0.90`) and cannot overturn a decisive prior
-(`material 1.00` against `budget 0.66`).
-
-
-## 12b. Follow-up strategy
-
-Section 12 decides *what to ask*. This section decides whether the turn should
-return a newly ranked list at all, or hold and wait for more information.
-
-### 12b.1 Per-session score decomposition
-
-The competition metric decomposes exactly into a per-session utility. With
-`MAX_TURNS = 10` and misses assigned turn 11, every per-session efficiency term
-`(11 - t)/10` already lies in `[0, 1]`, so the corpus-level `clip` never binds and
-`TechnicalScore` is a plain mean:
-
-```text
-TechnicalScore = mean_i U_i
-
-U(t, r) = 0.50 + 0.30/r + 0.02 * (11 - t)     # hit at turn t, rank r
-U(miss) = 0
-```
-
-This is an identity, not an approximation. It is the only objective the turn
-policy may optimize.
-
-```text
-U(t, r)   r=1     r=2     r=3     r=5     r=10
-t=1      1.000   0.850   0.800   0.760   0.730
-t=3      0.960   0.810   0.760   0.720   0.690
-t=10     0.820   0.670   0.620   0.580   0.550
-miss     0.000
-```
-
-Three constants follow, and they drive every decision below:
-
-```text
-cost of delaying one turn at fixed rank      0.02
-value of promoting rank 10 -> rank 1         0.27   (13.5 turns of delay)
-value of any hit over a miss               >= 0.55
-```
-
-Timing is the cheapest of the three axes. Never trade hit probability for turn
-count.
-
-### 12b.2 Evaluator dynamics the policy must assume
-
-```text
-a hit ends the session immediately   -> only the FIRST hit is scored
-the Agent is never told whether it hit
-being called at turn t+1 implies turn t did not score
-an intent-override session does not count a hit before its override turn (3 or 4)
-items ranked below the target do not change the target's rank
-invalid and duplicate IDs are dropped, not penalized
-```
-
-A **scoreable turn** is any turn whose returned list can record a hit. Every turn
-is scoreable except the pre-override turns of an intent-override session, which
-the Agent cannot identify. The policy must therefore treat every turn as
-scoreable.
-
-Because a hit is absorbing, recommending is not a free action: it forecloses a
-possibly better rank later. That is the only real cost of recommending now, and
-it is bounded by `0.30 * (1 - 1/r)`.
-
-### 12b.3 Decision rule
-
-The choice is per item, not per list. Let `p_x` be the calibrated posterior that
-candidate `x` is the target and `j` its rank in the list about to be returned.
-Let `gamma_x` be the **promotion probability**: the probability that, having
-withheld `x` now, the Agent both retrieves it next turn and ranks it first.
-
-Include `x` at rank `j` unless:
-
-```text
-gamma_x * U(t + 1, 1)  >  U(t, j)
-```
-
-Required `gamma` thresholds — withholding is justified only above these:
-
-```text
-rank j    t=1     t=5     t=9
-1        1.02    1.02    1.02      # > 1: withholding rank 1 is never optimal
-2        0.87    0.86    0.84
-3        0.82    0.80    0.78
-5        0.78    0.76    0.73
-10       0.74    0.72    0.70
-```
-
-Consequences that are binding, not advisory:
-
-- **Withholding the top-ranked candidate is never optimal.** The threshold
-  exceeds 1 at every turn.
-- Withholding rank 10 requires roughly 74% confidence that this exact item
-  becomes rank 1 on the very next turn.
-- `gamma` is bounded by the information the next turn can deliver, and the
-  simulator's disclosure budget is small: a shopper reveals at most a handful of
-  constraints and then answers further questions with no new information. The
-  realistic budget is two to three informative clarifications per session, so
-  `gamma` is small and recommending now dominates by default.
-- Rank ordering *is* posterior ordering. A state where the Agent "knows the
-  target but must rank it low" is incoherent; a low rank means a low `p_x`.
-  Waiting is therefore justified only by expected *reordering* from new
-  information, never by current belief.
-
-Until `gamma` is measured (12b.6), the policy is: **always recommend.**
-
-### 12b.4 Mandatory invariants
-
-These preserve the Agent contract in Section 14 and terminate the recursion.
-
-1. **Every turn returns a full list.** Waiting never means an empty or short
-   response. The weakest admissible wait action is re-returning the previous
-   recommendations. Section 12 and principle 5 of Section 16 remain in force.
-2. **Pad to `top_k`.** Appending lower-confidence candidates below the good ones
-   cannot change the rank of anything above them, so padding is weakly dominant,
-   and returning fewer than `top_k` while more valid catalog IDs exist is a pure
-   expected-value loss. When the constrained pool holds `n < top_k` items, fill
-   the remaining `top_k - n` slots by relaxing the weakest soft evidence first
-   (Section 10.2), then by Layer 2 similarity over the broader catalog. Only a
-   pool still smaller than `top_k` after full relaxation over the whole catalog
-   may return fewer, and that case should be logged as a defect.
-3. **Turn anchor.** Waiting is unavailable at `turn == MAX_TURNS`; backward
-   induction from there makes the recursion well-founded.
-4. **Progress guard.** Waiting requires that the previous turn produced a
-   measurable state change: a new constraint absorbed, or a candidate-pool size
-   reduction. If the last turn yielded no new information, waiting is disabled
-   for the remainder of the session.
-5. **Consecutive-wait cap.** At most one consecutive wait turn.
-6. **No question, no wait.** Waiting requires a non-null `ask_attribute`. Waiting
-   without asking cannot gather information.
-
-### 12b.5 Open design question: implicit negative feedback
-
-Being called at turn `t+1` proves the turn-`t` list did not score. That is true
-on every session except an intent-override one before its override turn, where
-the target may legitimately have been shown early and not counted. Demoting
-already-shown candidates is therefore positive-expected-value on most sessions
-and actively harmful on that minority. This is a benchmark-driven decision, not
-a design assumption; measure it before enabling. Session state must retain the
-per-turn shown sets, not only the last recommendations, to support the
-experiment.
-
-### 12b.6 Measuring `gamma`
-
-The evaluator stops at the first hit, so the target's rank trajectory afterwards
-is unobserved and `gamma` cannot be read off ordinary runs. Add a diagnostic
-replay mode that continues the session past a hit and records the target's rank
-on every turn. That yields a full per-session rank trajectory, from which
-`gamma`, the optimal stopping rule, and the value of waiting can be computed by
-backward induction rather than estimated. Until that measurement exists, no
-wait-branch implementation should ship.
-
-## 13. Agent contract
-
-The runtime must preserve the official interface:
-
-```text
-reset(session_id, user_profile)
-respond(session_id, user_message, turn, top_k)
-```
-
-A response has the evaluator-compatible shape:
-
-```json
-{
-  "message": "Do you have a material preference?",
-  "ask_attribute": "material",
-  "recommendations": [
-    {"parent_asin": "B000..."}
-  ],
-  "usage": {
-    "prompt_tokens": 0,
-    "completion_tokens": 0
-  }
-}
-```
-
-Requirements:
-
-- recommendation IDs must be valid catalog `parent_asin` values;
-- recommendations are ordered best-first and unique;
-- return exactly the requested `top_k` whenever that many valid catalog IDs exist, padding per invariant 2 of Section 12b.4;
-- every scoreable turn returns the current best recommendations;
-- asking a clarification does not replace recommendations;
-- `ask_attribute` is one supported enum value or `null`;
-- optional usage values are non-negative;
-- hidden target or simulator-only information is never exposed to Agent logic.
-
-Partial parsing or missing artifacts must degrade to a valid best-effort response rather than an exception or ask-only turn.
-
-## 14. Artifact and runtime boundaries
-
-Offline artifacts are versioned build outputs, not runtime source-of-truth claims.
-
-Expected derived areas may include:
-
-```text
-data/derived/
-├── annotations/
-├── catalog_facts/
-├── dictionary/
-└── product_embeddings/
-    ├── category_embeddings.npy
-    ├── title_embeddings.npy
-    ├── features_embeddings.npy
-    ├── description_embeddings.npy
-    └── details_embeddings.npy      # optional / later
-```
-
-Every generated artifact should record enough information to detect mismatches, including source/facts version, model or normalization configuration, dimensions/counts, and row mappings where relevant.
-
-Artifacts are generated offline and loaded once into the Agent process. The runtime must not regenerate all product annotations or embeddings per session.
-
-## 15. Evaluation architecture
-
-The evaluator is outside the Agent boundary.
-
-Core competition metrics are:
-
-```text
-HitRate@10
-MRR
-MTTC
-Efficiency
-TechnicalScore
-```
-
-The fixed Manual400 benchmark is a development diagnostic set and must remain unchanged while comparing architecture iterations.
-
-Useful diagnostics include:
-
-```text
-cumulative hit rate by turn
-first-hit turn distribution
-target rank buckets
-structured parse success/failure
-Tier 2 exact matches and unresolved phrases
-Tier 3 semantic fallback rates
-candidate-pool sizes
-controlled relaxation frequency
-dense fallback frequency
-clarification frequency and value
-startup latency
-mean/p50/p95 response latency
-```
-
-Hidden targets, hidden simulator facts, and benchmark labels stay evaluator-side. They must never influence Agent preprocessing, retrieval, ranking, state, or clarification.
-
-After repeated optimization on Manual400, treat it as a dev set and validate changes on public200 or another unseen sample before drawing strong conclusions.
-
-## 16. Design principles for future changes
-
-1. **Precision and recall come from different layers.**
-   Structured and trusted facts provide precision; BGE canonical-attribute semantics recover wording variation.
-
-2. **Do not make embeddings enforce discrete constraints.**
-   Semantic similarity can help understand wording, but final size, numeric, and measurement constraints are structured.
-
-3. **Do not require perfect annotation coverage.**
-   Raw catalog text remains available for future retrieval work; it is not part of the active embedding path.
-
-4. **Weight evidence according to trust.**
-   A `size=10` exact match is not the same type of evidence as `use_case=hiking`.
-
-5. **Always recommend.**
-   Early Top-K hits directly improve the competition objective. Clarification is supplementary.
-   Section 12b derives this from the metric: a hit is worth at least `0.55` and a turn of
-   delay only `0.02`, so hit probability is never traded for turn count.
-
-6. **Keep runtime in memory.**
-   The frozen catalog is small enough that external databases and vector services are unnecessary for the MVP.
-
-7. **Add complexity only after measurement.**
-   BM25/lexical product branches, cross-encoder reranking, hosted LLM rerankers, recursive DP, ANN indexes, and other advanced paths should be justified by benchmark evidence rather than added preemptively.
-
-8. **Keep component boundaries explicit.**
-   Product preprocessing, user parsing, retrieval, ranking, session state, clarification, and evaluation are separate responsibilities.
-
-## 17. Current MVP non-goals
-
-The architecture does not currently require:
-
-```text
-Postgres
-Redis
-Pinecone / Milvus / Weaviate
-complex ANN indexing
-parallel BM25 product retrieval
-cross-encoder reranking
-hosted LLM reranking
-recursive depth-2+ clarification DP
-learned posterior model
-```
-
-These may be added later only when measured failures justify them and the architecture is intentionally revised.
+        +-----------------------------+
+        |                             |
+        v                             v
+    Layer 1 parsed state          Layer 2 semantic query
+    structured / canonical        independent user phrases
+        |                             |
+        |                             v
+        |                         remove shared stopwords
+        |                             |
+        |                             v
+        |                         1/2/3-gram phrases
+        |                             |
+        |          +------------------+------------------+
+        |          |                  |                  |
+        |          v                  v                  v
+        |      category matrix   color matrix       material matrix
+        |          |                  |                  |
+        |          +------------------+------------------+
+        |                             |
+        |                             v
+        |                       style / feature /
+        |                       use_case matrices
+        |                             |
+        |                             v
+        |                  BGE cosine attribute matches
+        |                             |
+        |                             v
+        |                       threshold >= 0.80
+        |                             |
+        |                             v
+        |                       Layer 2 evidence
+        |                    value + similarity score
+        |                             |
+        +-----------------------------+
+                                      |
+                                      v
+                         SessionManager keeps both states
+                                      |
+                                      v
+                         ProductRetriever.retrieve
+                                      |
+             +------------------------+------------------------+
+             |                        |                        |
+             v                        v                        v
+       Layer 1 posting          Layer 2 value-posting       BM25 FTS5
+       list score               list score                  text score
+             |                        |                        |
+             +------------------------+------------------------+
+                                      |
+                                      v
+                         hard price/exclusion filters
+                                      |
+                                      v
+                         shared hybrid score + rating tie-break
+                                      |
+                                      v
+                         rank candidates and return Top 10
+                                      |
+                                      +--> ClarificationPolicy.choose
+                                      +--> evaluator / debug UI
+
+Layer 1 and Layer 2 are independent: exact matches are not removed from the
+semantic phrase stream. Layer 2 is the BGE canonical-attribute path; it finds
+canonical values first and then uses their per-attribute product posting lists.
+It is not a separate Agent or a second asking strategy.
+
+## 2. Runtime ownership by file
+
+| Stage | Implementation |
+| --- | --- |
+| Public Agent contract | starter/agent.py: Agent.reset and Agent.respond |
+| Intent routing | starter/routing/intent_router.py: TwoPhaseIntentRouter, CascadingIntentRouter, LexicalIntentRouter |
+| Routing signal definitions | starter/routing/lexicon.py: SIGNALS and thresholds |
+| Constraint extraction | starter/routing/constraints.py: extract_constraints and _extract_dictionary_constraints |
+| Exact dictionary | dictionary/registry.py: AttributeDictionary, exact_match, normalize_text |
+| Attribute semantic matching | dictionary/registry.py: semantic_match_ngrams; dictionary/semantic.py: BGE loader |
+| Mutable session state | starter/session.py: SessionState, SessionManager, merge_constraints, merge_semantic_constraints |
+| Question policy | starter/clarification.py: ClarificationPolicy.choose |
+| Turn horizon/promotion helpers | starter/followup.py: MAX_TURNS, utility, fill_to_top_k |
+| Product catalog/fact indexes | starter/retrieval.py: ProductRetriever._load_catalog |
+| Structured and semantic retrieval | starter/retrieval.py: ProductRetriever.retrieve and _semantic_scores |
+| Optional product-vector retrieval | starter/retrieval.py: _load_layer2, _dense_scores, _query_embedding |
+| BM25 retrieval | starter/bm25.py: BM25Index |
+| Hard benchmark | evaluator/hard_evaluator.py: validate_sessions, Manual400SessionRunner, evaluate |
+| Public evaluator | evaluator/local_evaluator.py |
+| Interactive evaluator UI | evaluator/debug_web.py and evaluator/debug_web_ui/ |
+| Evaluator Agent construction | evaluator/agent_factory.py: build_evaluator_agent |
+
+## 3. Product data and startup artifacts
+
+The raw product universe is data/catalog.jsonl. Product order and parent ASINs
+come from that file.
+
+The default fact search order in ProductRetriever is:
+
+    data/derived/annotations/v5/annotations.jsonl
+    data/derived/annotations/v4/annotations.jsonl
+    data/derived/catalog_facts/catalog_facts.jsonl
+    data/derived/annotations/v2/annotations.jsonl
+    data/derived/annotations/v1/annotations.jsonl
+    data/derived/facts/facts.jsonl
+    data/facts.jsonl
+
+The first existing file is selected unless facts_path is explicitly supplied.
+Successful annotation rows are loaded. Raw catalog taxonomy supplies safe
+category facts, and annotation facts are merged with them. An annotated usable
+price takes precedence over the raw catalog price.
+
+The generated V5 dictionary is required for categorical extraction:
+
+    data/derived/annotations/v5/dictionary/
+        canonical_values.json
+        normalized_lookup.json
+        manifest.json
+
+The dictionary contains these seven fields:
+
+    category, brand, color, material, style, feature, use_case
+
+Price and size remain structured runtime fields. Brand is exact-only in the
+semantic matcher. The dictionary loader fails closed to an extraction error if
+the generated V5 dictionary is absent; there is no active legacy
+CANONICAL_VOCAB fallback.
+
+## 4. Intent routing
+
+Agent.respond uses TwoPhaseIntentRouter when no custom router is injected.
+The router first extracts constraints and counts populated fields, excluding
+category from the tag count. Two or more populated fields normally classify the
+message as BUYING. A lexical browsing veto at confidence 0.70 can prevent that
+decision.
+
+Messages not settled by the tag phase use the lexical signal ledger. The
+default terminal decision is BROWSING when confidence remains below 0.70.
+The optional cascading backend can be used only for uncertain lexical results;
+it is not configured by the default evaluator Agent.
+
+IntentResult carries the selected intent, confidence, margin, tier, tags,
+signals, and extracted constraints. Agent stores only BUYING or BROWSING as its
+session mode. SessionIntentTracker keeps the initial mode sticky and permits a
+later flip only when the margin reaches the configured flip margin of 0.80.
+A BUYING-to-BROWSING flip also needs an explicit exploring signal.
+
+The lexical ledger has the following weighted signals:
+
+| Signal | Weight | Direction |
+| --- | ---: | --- |
+| budget | 1.50 | buying |
+| brand | 1.20 | buying |
+| size | 1.00 | buying |
+| color | 1.00 | buying |
+| material | 1.00 | buying |
+| feature | 1.00 | buying |
+| use_case | 0.60 | buying |
+| style | 0.70 | buying |
+| request verb | 0.45 | buying evidence required |
+| undecided | 1.40 | browsing |
+| explore verb | 1.10 | browsing |
+| option seeking | 0.90 | browsing |
+| vague head | 1.00 | browsing |
+| vague quality | 0.50 | browsing |
+| hedged language | 0.60 | browsing |
+
+The main lexical constants are bias 0.35, buying scale 1.25, browsing scale
+1.15, logistic k 1.60, buying tag threshold 2, browsing-veto confidence 0.70,
+decision confidence 0.70, reranker acceptance confidence 0.80, and flip margin
+0.80. Vague signals are suppressed when hard evidence is present. Request verbs
+need buying evidence.
+
+## 5. Constraint extraction
+
+The single public extraction entry point is
+starter.routing.constraints.extract_constraints.
+
+It returns CanonicalShoppingConstraints with two deliberately separate
+representations:
+
+1. structured constraints: price, size, and exact dictionary claims;
+2. semantic_constraints: accepted BGE canonical values plus evidence and
+   similarity scores.
+
+The semantic pass is independent of the exact pass. Exact matches do not remove
+text from semantic processing. The semantic query uses the shared stopword
+policy, creates deterministic one-, two-, and three-token phrases, and keeps
+every canonical match at or above 0.80. It searches category, color, material,
+style, feature, and use_case matrices. Brand has no attribute embedding and
+remains exact-only.
+
+Exact matching normalizes Unicode NFKC, case-folds, changes underscores and
+hyphens to spaces, removes apostrophes inside words, and collapses whitespace.
+Dictionary phrases are matched on token boundaries longest-first. A consumed
+span is not reused by a shorter overlapping phrase.
+
+Explicit local context restricts an exact match to the requested attribute:
+
+| Context | Attribute |
+| --- | --- |
+| brand, from, made by | brand |
+| color, colour | color |
+| made of, made from, fabric | material |
+| style, fit | style |
+| feature, features | feature |
+| for, use for, good for | use_case |
+
+If the requested contextual attribute has no candidate, the value is left
+unresolved rather than assigned to another attribute by frequency. Without
+explicit context, an ambiguous surface is accepted only when one candidate
+passes the frequency share and ratio thresholds: top share 0.75 and count ratio
+3.0. Common single-token brand collisions for find, it, make, and on are
+suppressed unless explicitly scoped.
+
+Price parsing supports upper bounds, lower bounds, ranges, around/about bands,
+currency words, and shopping numbers without a currency symbol. Numeric size
+phrases, measurement units, and likely years from 1900 through 2099 are guarded
+so they do not become price claims.
+
+The semantic stopword policy is owned by
+dictionary.registry.SEMANTIC_QUERY_STOPWORDS and is reused by BM25. It
+intentionally keeps product-relevant words such as wear, work, fit, dry, and
+id.
+
+## 6. Session state, corrections, and overrides
+
+SessionState is held in memory by SessionManager. It includes:
+
+- mode and anonymized profile;
+- structured constraints and evidence;
+- semantic constraints and semantic evidence;
+- last asked attribute and per-cycle ask counts;
+- no-preference attributes and clarification state;
+- last recommendations and excluded recommendations;
+- chronological messages/query text;
+- turn and last override metadata.
+
+Categorical fields accumulate by default. Price minimums refine upward and
+maximums refine downward. Explicit correction markers can replace populated
+fields. The structured and semantic stores are merged independently.
+
+detect_override_kind recognizes:
+
+- FULL_GOAL: an explicit new goal or strong reset;
+- PREFERENCE: an explicit preference correction with extracted facts;
+- NONE: ordinary clarification, marker-only text, or no usable fact.
+
+FULL_GOAL clears the goal, mode, constraints, semantic state, exclusions, and
+messages while retaining the profile. PREFERENCE keeps the category and
+explicit budget but resets the replaced preference state. Before an ordinary
+turn, the previous recommendations are promoted to the current-goal exclusion
+set. A valid override resets the relevant exclusion behavior.
+
+Answers to an asked attribute can be re-read with that attribute as scope.
+No-preference replies and the evaluator's generic clarification filler are
+treated as conversation metadata and are not passed as normal product claims.
+
+## 7. Clarification strategy
+
+ClarificationPolicy.choose receives the current candidate list and structured
+constraints. It does not build a static decision tree or run an exhaustive DP.
+It scores each not-yet-used attribute using candidate coverage, value
+distribution/Gini split, mode prior, optional profile affinity, and turn
+horizon.
+
+The supported question attributes are category, material, color, size, style,
+brand, budget, feature, use_case, and the cycle marker other. The normal
+question order is not a fixed sequence; the policy chooses the highest utility
+that clears its floor.
+
+Mode priors are:
+
+| Attribute | BUYING | BROWSING |
+| --- | ---: | ---: |
+| material | 1.00 | 0.84 |
+| feature | 0.98 | 0.96 |
+| color | 0.92 | 0.92 |
+| size | 0.90 | 0.76 |
+| style | 0.78 | 1.00 |
+| use_case | 0.74 | 0.98 |
+| brand | 0.68 | 0.64 |
+| budget | 0.66 | 0.62 |
+| category | 0.60 | 0.90 |
+
+The prior ceiling is 0.90, the historical split floor is 0.035, and the
+utility floor is derived from that floor and follow-up utility. Coverage below
+20 percent, fewer than two values, or Gini below 0.10 makes an attribute
+unaskable. The horizon is zero on turn 10. If no normal field remains, Agent
+asks other; a non-answer to other stops clarification.
+
+## 8. Retrieval and ranking
+
+ProductRetriever builds one in-memory ProductRecord per catalog ASIN and
+per-attribute posting lists:
+
+    inverted_index[field][normalized_value] -> set[parent_asin]
+
+The candidate universe is the full catalog unless a hard budget is active.
+Recommendation exclusions are applied after budget eligibility and before
+ranking.
+
+### Structured Layer 1
+
+The structured score is an accumulated weighted sum for matched product facts:
+
+| Field | Weight |
+| --- | ---: |
+| category | 0.70 |
+| price | 1.50 |
+| brand | 3.00 |
+| size | 0.80 |
+| color | 1.00 |
+| material | 1.20 |
+| style | 0.50 |
+| feature | 0.50 |
+| use_case | 0.50 |
+
+An exact claim contributes its field weight. A semantic attribute claim can
+contribute the field weight multiplied by its retained similarity when the
+matching product posting list contains that value. Multiple matched fields add;
+there is no normalization or cap at 1.0.
+
+### Semantic attribute path
+
+The active semantic path uses BAAI/bge-small-en-v1.5, dimension 384, for the
+short canonical attribute matrices under:
+
+    data/derived/annotations/v5/dictionary/attribute_embeddings/
+
+The matrices cover category, color, material, style, feature, and use_case.
+Brand is not embedded. The loader is local-only and keeps exact matching
+available if the local BGE model cannot be loaded.
+
+Each accepted semantic canonical ID is looked up through the corresponding
+product posting list. Its similarity is retained in semantic evidence and
+added to the product's semantic score. Therefore this path searches the
+products containing accepted canonical values; it is not a full-product
+sentence-vector search.
+
+### Optional product-vector compatibility path
+
+starter/retrieval.py still contains compatibility support for a direct
+Layer2EmbeddingIndex and older product embedding matrices. If a compatible
+query_encoder is explicitly injected, it can load an artifact from:
+
+    data/derived/product_embeddings
+    data/derived/layer2_embeddings
+    data/layer2_embeddings
+    layer2_embeddings
+
+The direct path validates model compatibility and vector dimension, then scores
+the eligible catalog with _dense_scores. The default evaluator factory does
+not inject a product query encoder and does not discover or enable the retired
+Jina product path. No Jina model is part of the default Agent retrieval flow.
+
+### BM25 product-text path
+
+BM25Index builds an in-memory SQLite FTS5 table over title, categories,
+features, details, store, and description. Parent ASIN is unindexed. It reuses
+semantic_query_tokens and up to 40 unique terms. FTS fields have weights:
+
+    ASIN 0.0, title 6.0, categories 4.0, features 2.5,
+    details 2.5, store 1.5, description 1.0
+
+SQLite's lower-is-better negative rank is converted to a non-negative,
+higher-is-better BM25 score. BM25 is built eagerly at Agent startup and logs
+preprocessing progress.
+
+### Shared final score and ordering
+
+The current mode table is identical for both modes:
+
+    BUYING  = 1.00 * structured + 1.00 * dense + 0.20 * bm25
+    BROWSING = 1.00 * structured + 1.00 * dense + 0.20 * bm25
+
+The implementation uses _final_score as the shared base scorer. Here, dense
+means the semantic attribute score when semantic constraints exist; it can mean
+the optional direct product-vector score when that compatibility path is
+active.
+
+The ordering key adds a secondary catalog-rating bonus:
+
+    base final score + rating_weight * normalized_rating
+
+with rating weight 0.02 by default and 0.15 for a critical user whose prior
+rating is below 3.5. Unusable ratings are neutral at 0.5 on a five-point
+scale. Catalog order is the deterministic last tie-break. Candidate.score
+stores the base final score; Candidate.ranking_score stores the score including
+the rating bonus.
+
+One current branch detail matters: when no dense/semantic score exists but
+structured constraints do exist, the retrieval code ranks positive structured
+matches and pads them by rating. BM25 is still computed but is not included in
+that branch's ordering. When a dense/semantic score exists, the full eligible
+pool is ranked by the shared hybrid score.
+
+## 9. Hard eligibility and recommendations
+
+If either price bound is active, a product is eligible only when its known
+price satisfies all active bounds. A null price is excluded. Without a budget,
+all catalog products are eligible.
+
+Previously recommended products are excluded from the next ordinary goal turn.
+The exclusion is applied before hybrid ranking. If the normal result is shorter
+than requested Top K, Agent calls a relaxed backfill retrieval that can disable
+the budget and omit the previous-recommendation exclusion. Backfill exists to
+return valid catalog ASINs rather than leave a short response.
+
+Agent retrieves up to 100 candidates and then uses fill_to_top_k to return the
+requested number of unique, valid parent ASINs. Its public response contains
+only message, ask_attribute, recommendations, and usage. Recommendation scores
+are not required by the public Agent contract.
+
+## 10. Evaluators and debug UI
+
+### Hard evaluator
+
+evaluator/hard_evaluator.py defaults to:
+
+    catalog:  data/catalog.jsonl
+    sessions: data/derived/gptannotation/sessions.jsonl
+    output:   results_gptannotation.json
+
+The fixed benchmark contains exactly 400 sessions:
+
+    buying 160
+    browsing 160
+    intent_override 60
+    boundary 20
+
+validate_sessions checks unique samples and targets, catalog membership,
+two-to-four hidden facts, evidence fields, initial-fact rules, and override
+turn/fact rules.
+
+Manual400SessionRunner executes one session turn at a time for at most 10
+turns. It simulates customer replies from the committed hidden facts and
+override message. The target ASIN is kept only in evaluator-side state and is
+never given to Agent.respond. A target in Top 10 before an intent override is
+recorded as pre_override_hit but is not scoreable. A scoreable hit ends the
+session; an unhit session ends at turn 10.
+
+Agent responses are strictly validated. The evaluator keeps only unique,
+known catalog parent ASINs from the first 10 recommendations. HitRate@10 is
+the fraction of scoreable hits; MRR is the mean reciprocal best rank; MTTC is
+the mean first hit turn, using 11 for a miss. Efficiency is:
+
+    clamp((11 - MTTC) / 10, 0, 1)
+
+TechnicalScore is:
+
+    0.50 * HitRate@10 + 0.30 * MRR + 0.20 * Efficiency
+
+The batch evaluator can print progress and writes detailed result JSON. Its
+debug mode shuffles sessions with an optional seed and can inspect a limited
+number of sessions.
+
+### Public evaluator
+
+evaluator/local_evaluator.py uses data/public_set.jsonl, also has a ten-turn
+limit and Top 10 contract, simulates public customer behavior, and reports
+similar hit, MRR, MTTC, efficiency, and technical-score metrics. It is a
+separate public-set harness from the fixed 400-session hard evaluator.
+
+### Local web debugger
+
+evaluator/debug_web.py reuses Manual400SessionRunner and the hard evaluator
+ranking/debug helpers. It exposes local HTTP endpoints for loading a random or
+named session, advancing one turn, running to the end, and reading state.
+The browser UI displays the same structured, semantic, BM25, hybrid, target,
+and hard-score diagnostics; it does not change Agent or evaluator behavior.
+
+## 11. Configurable versus hardcoded
+
+### Configurable through constructors or CLI
+
+- Agent catalog_path, facts_path, optional product embedding paths, metadata,
+  query encoder, profile use, optional Layer2 artifact directory, optional
+  Layer2 weights, retriever, and router;
+- ProductRetriever fact/embedding paths, injected query encoder, direct Layer2
+  directory, and direct Layer2 view weights;
+- evaluator catalog, sessions, output, profile ablation, strictness, progress,
+  debug seed, and debug-session count;
+- local debug web catalog, sessions, port, and seed;
+- ClarificationPolicy candidate/provider/profile callback inputs.
+
+### Hardcoded defaults and policies
+
+- V5 dictionary location and its seven-field contract;
+- BGE model identity/path convention and 384 dimension;
+- semantic threshold 0.80 and one-/two-/three-gram search;
+- all routing signal weights and thresholds;
+- all structured field weights;
+- identical BUYING/BROWSING hybrid weights;
+- BM25 fields, token limit, and field weights;
+- price eligibility, exclusion, backfill, rating, and tie-breaking rules;
+- clarification questions, priors, floors, and ten-turn horizon;
+- hard evaluator scenario counts, score formulas, and default paths.
+
+## 12. Known limitations and code-level risks
+
+These are observations about the current code, not proposed changes:
+
+1. Mode-specific hybrid ranking is not currently mode-specific: BUYING and
+   BROWSING use the same structured, dense, and BM25 weights.
+2. If semantic/product dense scores are absent while structured constraints are
+   present, BM25 does not affect the ordering even though it was calculated.
+3. Candidate.score excludes the rating bonus that participates in ordering, so
+   a score shown to a caller may not fully explain a rating-based tie decision.
+4. ProductRetriever contains optional direct product-vector compatibility code,
+   but the default evaluator Agent does not configure it. This can make
+   “Layer 2” terminology ambiguous: active BGE semantic attributes and
+   optional direct product vectors are different paths.
+5. The semantic attribute artifact currently has no useful style rows when its
+   source dictionary has no style values, so style semantic matching may have
+   no matches.
+6. BGE loading is optional at extraction startup. If the local model is absent,
+   exact dictionary extraction can still work, but semantic attribute scores
+   are unavailable.
+7. BM25 construction is eager and scans the entire catalog on every Agent
+   construction, so startup cost is visible before the first turn.
+8. The initial turn can cause extraction in Agent and again inside the
+   TwoPhaseIntentRouter because routing uses its own constraint extraction.
+
+## 13. Intentional non-goals of the current implementation
+
+The current runtime does not include BM25 as a replacement for the structured
+or semantic paths, product reranking by a cross-encoder, an LLM query-rewrite
+stage, semantic aliases/synonyms, stemming, a vector database, or a network
+model download during ordinary evaluator startup. Product retrieval does not
+receive hidden evaluator targets or hidden target facts.
