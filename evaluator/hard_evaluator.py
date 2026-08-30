@@ -202,6 +202,21 @@ def validate_sessions(
     return rows
 
 
+def select_sessions(
+    sessions: Iterable[Mapping[str, Any]],
+    *,
+    override_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Select the benchmark rows to execute after full-set validation."""
+
+    rows = [dict(row) for row in sessions]
+    if not override_only:
+        return rows
+    return [
+        row for row in rows if str(row.get("scenario_type", "")) == "intent_override"
+    ]
+
+
 def validate_agent_response(response: Any) -> dict[str, Any]:
     if not isinstance(response, dict):
         raise TypeError("Agent response must be an object")
@@ -745,6 +760,7 @@ def evaluate(
     scenario_metrics = {
         scenario: add_score_fields(metric_summary(grouped[scenario]))
         for scenario in SCENARIO_COUNTS
+        if grouped.get(scenario)
     }
 
     return {
@@ -1324,8 +1340,13 @@ def debug_evaluate(
     debug_sessions: int | None = None,
     strict: bool = True,
     input_fn: Any | None = None,
+    validate: bool = True,
 ) -> dict[str, Any]:
-    rows = validate_sessions(sessions, catalog_ids)
+    rows = (
+        validate_sessions(sessions, catalog_ids)
+        if validate
+        else [dict(row) for row in sessions]
+    )
     selected = debug_session_order(rows, seed=seed, limit=debug_sessions)
     seed_label = str(seed) if seed is not None else "random"
     print(
@@ -1381,6 +1402,11 @@ def main() -> None:
         help="Treat malformed Agent responses as empty instead of failing.",
     )
     parser.add_argument(
+        "--override-only",
+        action="store_true",
+        help="Evaluate only the 60 intent_override sessions.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Interactively inspect randomly ordered benchmark sessions.",
@@ -1400,6 +1426,20 @@ def main() -> None:
     sessions = load_jsonl(args.sessions)
     catalog_ids = load_catalog_ids(args.catalog)
 
+    try:
+        validated_sessions = validate_sessions(sessions, catalog_ids)
+    except ValueError as exc:
+        parser.error(str(exc))
+    selected_sessions = select_sessions(
+        validated_sessions,
+        override_only=args.override_only,
+    )
+    if args.override_only:
+        print(
+            f"Override-only mode: evaluating {len(selected_sessions)} "
+            "intent_override sessions."
+        )
+
     if not args.debug and (args.seed is not None or args.debug_sessions is not None):
         parser.error("--seed and --debug-sessions require --debug")
     if args.debug_sessions is not None and args.debug_sessions <= 0:
@@ -1416,11 +1456,12 @@ def main() -> None:
         try:
             debug_evaluate(
                 agent=agent,
-                sessions=sessions,
+                sessions=selected_sessions,
                 catalog_ids=catalog_ids,
                 seed=args.seed,
                 debug_sessions=args.debug_sessions,
                 strict=not args.non_strict,
+                validate=False,
             )
         except (KeyboardInterrupt, EOFError):
             print("\nInteractive debug mode stopped.")
@@ -1428,9 +1469,10 @@ def main() -> None:
 
     result = evaluate(
         agent=agent,
-        sessions=sessions,
+        sessions=selected_sessions,
         catalog_ids=catalog_ids,
         strict=not args.non_strict,
+        validate=False,
         progress=not args.no_progress,
     )
 
