@@ -32,6 +32,3 @@ data/derived/
 # Local embedding model weights. Download into this path; never commit them.
 model/*
 !model/.gitkeep
-
-# Locally compiled SQLite extensions.
-native/build/
