@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 from evaluator.agent_factory import build_evaluator_agent
 from starter.agent import Agent
 from starter.retrieval import MODE_SCORE_WEIGHTS, STRUCTURED_FIELD_WEIGHTS
+from starter.routing import constraints as constraint_module
 
 
 MAX_TURNS = 10
@@ -908,6 +909,11 @@ def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
             )
         ),
         "query_text": getattr(state, "query_text", ""),
+        "retrieval_query_text": getattr(
+            state,
+            "retrieval_query_text",
+            getattr(state, "query_text", ""),
+        ),
         "excluded": sorted(
             str(value)
             for value in getattr(state, "excluded_recommendations", set())
@@ -945,7 +951,11 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         raise RuntimeError("ProductRetriever.debug_rank_all is required in debug mode")
 
     mode = getattr(state, "mode", None) or "BROWSING"
-    query_text = getattr(state, "query_text", "")
+    query_text = getattr(
+        state,
+        "retrieval_query_text",
+        getattr(state, "query_text", ""),
+    )
     constraints = getattr(state, "constraints", None)
     semantic_constraints = getattr(state, "semantic_constraints", None)
     exclusions = getattr(state, "excluded_recommendations", set())
@@ -977,24 +987,57 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         )
 
     structured = sort_by(eligible, "constraint_score")
+    canonical = sort_by(eligible, "semantic_score")
     dense = sort_by(eligible, "dense_score")
     bm25 = sort_by(eligible, "bm25_score")
     hybrid = sort_by(eligible, "ranking_score")
     global_structured = sort_by(global_ranking, "constraint_score")
+    global_canonical = sort_by(global_ranking, "semantic_score")
     global_dense = sort_by(global_ranking, "dense_score")
     global_bm25 = sort_by(global_ranking, "bm25_score")
-    global_hybrid = sort_by(global_ranking, "ranking_score")
+    global_hybrid = sort_by(global_ranking, "score")
+    bm25_debug: dict[str, Any] = {}
+    debug_bm25 = getattr(retriever, "debug_bm25", None)
+    if callable(debug_bm25):
+        eligible_for_bm25 = getattr(retriever, "_eligible_asins", None)
+        if callable(eligible_for_bm25):
+            try:
+                allowed_asins = [
+                    asin
+                    for asin in eligible_for_bm25(constraints)
+                    if asin not in set(exclusions)
+                ]
+            except (TypeError, ValueError, RuntimeError):
+                allowed_asins = [candidate.parent_asin for candidate in eligible]
+        else:
+            allowed_asins = [candidate.parent_asin for candidate in eligible]
+        try:
+            bm25_debug = debug_bm25(
+                query_text,
+                constraints,
+                semantic_constraints,
+                eligible_asins=allowed_asins,
+                target_asin=target,
+                expanded=str(mode).upper() == "BUYING",
+            )
+        except (TypeError, ValueError, RuntimeError):
+            bm25_debug = {}
     return {
         "eligible": eligible,
         "global": global_ranking,
         "structured": structured,
+        "canonical": canonical,
+        "semantic": canonical,
         "dense": dense,
         "bm25": bm25,
         "hybrid": hybrid,
         "global_structured": global_structured,
+        "global_canonical": global_canonical,
+        "global_semantic": global_canonical,
         "global_dense": global_dense,
         "global_bm25": global_bm25,
         "global_hybrid": global_hybrid,
+        "bm25_debug": bm25_debug,
         "target_eligible": next(
             (candidate for candidate in eligible if candidate.parent_asin == target),
             None,
@@ -1148,7 +1191,7 @@ class InteractiveDebugPrinter:
         print()
         print("STRUCTURED CONSTRAINTS SO FAR")
         print(json.dumps(_debug_constraints(state), indent=2, ensure_ascii=False))
-        print("DENSE SEMANTIC CONSTRAINTS SO FAR")
+        print("BGE CANONICAL EXPANSIONS SO FAR")
         print(
             json.dumps(
                 _debug_semantic_constraints(state),
@@ -1167,33 +1210,63 @@ class InteractiveDebugPrinter:
                     ensure_ascii=False,
                 )
             )
-        print(f"Semantic query: {getattr(state, 'query_text', '')}")
-        retriever = agent.retriever
-        layer2_index = getattr(retriever, "layer2_index", None)
-        query_encoder = getattr(retriever, "query_encoder", None)
-        artifact_manifest = getattr(layer2_index, "manifest", {}) if layer2_index else {}
-        artifact_model = artifact_manifest.get(
-            "embedding_model", artifact_manifest.get("model", "N/A")
+        print(
+            "Retrieval query: "
+            f"{getattr(state, 'retrieval_query_text', getattr(state, 'query_text', ''))}"
         )
-        encoder_model = getattr(query_encoder, "model_id", None) or "N/A"
-        artifact_dimension = getattr(layer2_index, "dimension", None)
+        retriever = agent.retriever
+        canonical_dictionary = getattr(
+            constraint_module,
+            "_load_default_dictionary",
+            lambda: None,
+        )()
         print()
-        print("LAYER 2")
-        print(f"Enabled: {'YES' if bool(getattr(retriever, 'dense_available', False)) else 'NO'}")
-        print(f"Artifact model: {artifact_model}")
-        print(f"Query model: {encoder_model}")
-        print(f"Dimension: {artifact_dimension if artifact_dimension is not None else 'N/A'}")
-        compatibility_error = getattr(retriever, "layer2_compatibility_error", None)
-        if compatibility_error and not bool(getattr(retriever, "dense_available", False)):
-            print(f"Dense status: {compatibility_error}")
+        print("BGE CANONICAL EXPANSION")
+        print(
+            "Enabled: "
+            f"{'YES' if bool(getattr(canonical_dictionary, 'semantic_available', False)) else 'NO'}"
+        )
+        if canonical_dictionary is not None:
+            print(f"Model: {getattr(canonical_dictionary, 'embedding_model', 'N/A')}")
+            print(
+                "Dimension: "
+                f"{getattr(canonical_dictionary, 'embedding_dimension', None) or 'N/A'}"
+            )
+        product_index = getattr(retriever, "product_embedding_index", None)
+        product_manifest = (
+            getattr(product_index, "manifest", {}) if product_index is not None else {}
+        )
+        if not isinstance(product_manifest, Mapping):
+            product_manifest = {}
+        product_available = bool(getattr(retriever, "product_dense_available", False))
+        print("PRODUCT DENSE (BROWSING)")
+        print(f"Enabled: {'YES' if product_available else 'NO'}")
+        print(
+            "Artifact model: "
+            f"{product_manifest.get('embedding_model', product_manifest.get('model', 'N/A'))}"
+        )
+        print(
+            "Query model: "
+            f"{getattr(getattr(retriever, 'product_query_encoder', None), 'model_id', None) or 'N/A'}"
+        )
+        print(f"Dimension: {getattr(product_index, 'dimension', None) or 'N/A'}")
+        product_error = getattr(retriever, "product_embedding_compatibility_error", None)
+        if product_error and not product_available:
+            print(f"Product dense status: {product_error}")
         mode = str(getattr(state, "mode", None) or "BROWSING").upper()
         score_weights = MODE_SCORE_WEIGHTS.get(mode, MODE_SCORE_WEIGHTS["BROWSING"])
-        print(
-            "Score weights: "
-            f"structured={score_weights['structured']:.2f}, "
-            f"dense={score_weights['dense']:.2f}, "
-            f"bm25={score_weights.get('bm25', 0.0):.2f}"
-        )
+        if mode == "BUYING":
+            print(
+                "Buying score: "
+                f"{score_weights['structured']:.2f} * structured + "
+                f"{score_weights.get('semantic', 0.0):.2f} * canonical + "
+                f"{score_weights.get('bm25', 0.0):.2f} * BM25"
+            )
+        else:
+            print(
+                "Browsing score: RRF(dense top-100, BM25 top-100), "
+                "then MMR when product dense is available"
+            )
         print(
             "BM25: "
             f"{'AVAILABLE' if bool(getattr(retriever, 'bm25_available', False)) else 'UNAVAILABLE'}"
@@ -1225,6 +1298,7 @@ class InteractiveDebugPrinter:
         eligible = ranking["eligible"]
         global_ranking = ranking["global"]
         structured_ranking = ranking["structured"]
+        canonical_ranking = ranking["canonical"]
         dense_ranking = ranking["dense"]
         bm25_ranking = ranking["bm25"]
         hybrid_ranking = ranking["hybrid"]
@@ -1254,18 +1328,43 @@ class InteractiveDebugPrinter:
         target_candidate = target_eligible or target_global
         if target_candidate is not None:
             print(f"Structured score: {target_candidate.constraint_score:.4f}")
-            print(f"Dense score: {target_candidate.dense_score:.4f}")
+            print(f"Canonical expansion score: {target_candidate.semantic_score:.4f}")
+            print(f"Product dense score: {target_candidate.dense_score:.4f}")
             print(f"BM25 score: {target_candidate.bm25_score:.4f}")
+            print(f"RRF score: {target_candidate.fusion_score:.4f}")
+            print(
+                "MMR score: "
+                f"{target_candidate.mmr_score:.4f}"
+                if target_candidate.mmr_score is not None
+                else "MMR score: N/A"
+            )
             print(f"Final score: {target_candidate.ranking_score:.4f}")
         else:
             print("Target score: N/A")
         print("Target ranks (eligible products):")
         print(f"  Structured rank: {_debug_rank(structured_ranking, target) or 'MISS'}")
-        print(f"  Dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
+        print(f"  Canonical expansion rank: {_debug_rank(canonical_ranking, target) or 'MISS'}")
+        print(f"  Product dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
         print(f"  BM25 rank: {_debug_rank(bm25_ranking, target) or 'MISS'}")
         print(f"  Hybrid rank: {_debug_rank(hybrid_ranking, target) or 'MISS'}")
         top10_rank = ranked.index(target) + 1 if target in ranked else None
         print(f"Top10 rank: {top10_rank if top10_rank is not None else 'MISS'}")
+        bm25_debug = ranking.get("bm25_debug", {})
+        if bm25_debug:
+            print()
+            print("BM25 QUERIES")
+            raw_query = bm25_debug.get("raw") or {}
+            print(
+                f"  raw: {raw_query.get('query', '')} "
+                f"target_rank={raw_query.get('target_rank') or 'MISS'} "
+                f"target_score={raw_query.get('target_score') if raw_query.get('target_score') is not None else 'N/A'}"
+            )
+            for field_name, detail in (bm25_debug.get("constraints") or {}).items():
+                print(
+                    f"  {field_name}: {detail.get('query', '')} "
+                    f"target_rank={detail.get('target_rank') or 'MISS'} "
+                    f"target_score={detail.get('target_score') if detail.get('target_score') is not None else 'N/A'}"
+                )
 
         print()
         print("TOP 10")
@@ -1275,11 +1374,18 @@ class InteractiveDebugPrinter:
             if candidate is None:
                 print(f"{index}. {asin} (score unavailable)")
                 continue
+            mmr_text = (
+                f"{candidate.mmr_score:.4f}"
+                if candidate.mmr_score is not None
+                else "N/A"
+            )
             print(
                 f"{index}. {asin} score={candidate.ranking_score:.4f} "
                 f"structured={candidate.constraint_score:.4f} "
-                f"dense={candidate.dense_score:.4f} "
-                f"bm25={candidate.bm25_score:.4f}"
+                f"canonical={candidate.semantic_score:.4f} "
+                f"product_dense={candidate.dense_score:.4f} "
+                f"bm25={candidate.bm25_score:.4f} "
+                f"rrf={candidate.fusion_score:.4f} mmr={mmr_text}"
             )
             print(f"   matched={list(candidate.matched_constraints)}")
 

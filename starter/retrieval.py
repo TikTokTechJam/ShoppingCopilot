@@ -1,9 +1,10 @@
 """Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
 
-The retriever consumes canonical product facts, optional direct Layer 2 field
-vectors, and a BM25 product-text index. It does not parse user language.
-Structured, semantic, and lexical scores are kept separate until the shared
-final scorer combines them.
+The retriever consumes canonical product facts, a BM25 product-text index,
+optional BGE canonical-expansion evidence, and an optional V5 product-card
+vector index. It does not parse user language. Structured, canonical, product
+dense, and lexical scores are kept separate until the mode-specific ranker
+combines them.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
+from product_embeddings.v5 import (
+    V5_PRODUCT_MODEL,
+    V5ProductEmbeddingIndex,
+    load_v5_product_embedding_index,
+)
 from starter.bm25 import BM25Index, BM25QueryCompiler
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
@@ -51,12 +57,16 @@ DEFAULT_METADATA_PATHS = (
     Path("data/product_embedding_metadata.json"),
     Path("product_embedding_metadata.json"),
 )
-DEFAULT_LAYER2_ARTIFACT_PATHS = (
-    Path("data/derived/product_embeddings"),
-    Path("data/derived/layer2_embeddings"),
-    Path("data/layer2_embeddings"),
-    Path("layer2_embeddings"),
+DEFAULT_V5_PRODUCT_ARTIFACT_PATHS = (
+    Path("data/derived/product_embeddings_v5"),
+    Path("data/derived/annotations/v5/product_embeddings"),
 )
+DEFAULT_PRODUCT_EMBEDDING_MODEL_PATHS = (
+    Path("models/qwen3-embedding-0.6b"),
+    Path("models/Qwen3-Embedding-0.6B"),
+    Path("model/qwen3-embedding-0.6b"),
+)
+PRODUCT_EMBEDDING_MODEL_ENV = "SHOPPING_PRODUCT_EMBEDDING_MODEL"
 
 
 # One shared structured score is used by Buying and Browsing. Values are
@@ -73,12 +83,23 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
-    "BROWSING": {"structured": 1.00, "dense": 1.00, "bm25": 0.20},
+    # Buying uses structured evidence and BM25 as its primary signals.  The
+    # canonical BGE posting-list score is a small supporting signal; it is not
+    # product-level dense retrieval.
+    "BUYING": {"structured": 1.00, "semantic": 0.20, "dense": 0.00, "bm25": 1.00},
+    # Browsing is fused by rank below, not by adding cosine and BM25 values.
+    "BROWSING": {"structured": 0.00, "semantic": 0.00, "dense": 1.00, "bm25": 1.00},
 }
-# Backward-compatible name for callers that inspect the Buying contribution.
-DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
+# Retain the public name for integrations that used it for the former small
+# semantic contribution.  Product-level dense retrieval is Browsing-only.
+DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["semantic"]
 BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
+
+RRF_K = 60
+BROWSING_DENSE_TOP_K = 100
+BROWSING_BM25_TOP_K = 100
+BROWSING_FUSED_POOL_K = 50
+BROWSING_MMR_LAMBDA = 0.80
 
 # Rating tie-breaker (INSTRUCTION.md section 1).  The structured matcher scores
 # most candidates identically -- 9.6 of every 10 returned candidates share one
@@ -190,11 +211,17 @@ def _final_score(
     structured_score: float,
     dense_score: float,
     bm25_score: float = 0.0,
+    semantic_score: float | None = None,
+    browsing_fusion_score: float | None = None,
 ) -> float:
+    if mode == "BROWSING" and browsing_fusion_score is not None:
+        return float(browsing_fusion_score)
     weights = MODE_SCORE_WEIGHTS[mode]
+    canonical_score = dense_score if semantic_score is None else semantic_score
     return float(
         weights["structured"] * structured_score
         + weights["dense"] * dense_score
+        + weights.get("semantic", 0.0) * canonical_score
         + weights.get("bm25", 0.0) * bm25_score
     )
 
@@ -322,6 +349,8 @@ class Candidate:
     matched_semantic_constraints: tuple[str, ...] = ()
     price: float | None = None
     bm25_score: float = 0.0
+    fusion_score: float = 0.0
+    mmr_score: float | None = None
     rating: float | None = None
     ranking_score: float = 0.0
 
@@ -334,6 +363,8 @@ class Candidate:
             "dense_score": self.dense_score,
             "semantic_score": self.semantic_score,
             "bm25_score": self.bm25_score,
+            "fusion_score": self.fusion_score,
+            "mmr_score": self.mmr_score,
             "constraint_score": self.constraint_score,
             "matched_constraints": list(self.matched_constraints),
             "matched_semantic_constraints": list(self.matched_semantic_constraints),
@@ -358,11 +389,14 @@ class ProductRetriever:
         embeddings_path: str | Path | None = None,
         metadata_path: str | Path | None = None,
         query_encoder: QueryEncoder | None = None,
+        product_query_encoder: QueryEncoder | None = None,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
+        product_embedding_artifact_dir: str | Path | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.query_encoder = query_encoder
+        self.product_query_encoder = product_query_encoder
         self.layer2_weights = dict(layer2_weights) if layer2_weights is not None else None
         self.product_by_asin: dict[str, ProductRecord] = {}
         self._catalog_order: list[str] = []
@@ -404,6 +438,10 @@ class ProductRetriever:
         self._layer2_encoder_compatible = False
         self.layer2_compatibility_error: str | None = None
         self._load_layer2(layer2_artifact_dir)
+        self.product_embedding_index: V5ProductEmbeddingIndex | None = None
+        self._product_embedding_encoder_compatible = False
+        self.product_embedding_compatibility_error: str | None = None
+        self._load_v5_product_embeddings(product_embedding_artifact_dir)
 
     @property
     def valid_asins(self) -> frozenset[str]:
@@ -411,25 +449,38 @@ class ProductRetriever:
 
     @property
     def has_dense_index(self) -> bool:
-        return bool(self.layer2_index is not None and self.layer2_index.asins) or (
+        return bool(
+            self.product_embedding_index is not None
+            and self.product_embedding_index.asins
+        ) or bool(self.layer2_index is not None and self.layer2_index.asins) or (
             self.embedding_matrix is not None and bool(self.embedding_asins)
+        )
+
+    @property
+    def product_dense_available(self) -> bool:
+        """Whether the V5 product-card query/vector pair is usable."""
+
+        encoder = self.product_query_encoder
+        return bool(
+            self.product_embedding_index is not None
+            and self._product_embedding_encoder_compatible
+            and (
+                callable(encoder)
+                or any(
+                    callable(getattr(encoder, name, None))
+                    for name in ("embed_query", "encode", "embed_documents", "embed")
+                )
+            )
         )
 
     def _load_layer2(self, artifact_dir: str | Path | None) -> None:
         if artifact_dir is None:
-            if self.query_encoder is None:
-                return
-            try:
-                is_default_catalog = self.catalog_path.resolve() == Path(
-                    "data/catalog.jsonl"
-                ).resolve()
-            except OSError:
-                is_default_catalog = False
-            if not is_default_catalog:
-                return
-        candidates = (
-            (Path(artifact_dir),) if artifact_dir is not None else DEFAULT_LAYER2_ARTIFACT_PATHS
-        )
+            # The legacy direct-catalog Layer 2/Jina artifact is opt-in.  The
+            # active product-level semantic path is the V5 product-card index;
+            # do not accidentally turn an older artifact into the Browsing
+            # dense signal merely because a caller supplied another encoder.
+            return
+        candidates = (Path(artifact_dir),)
         expected_asins = tuple(self._catalog_order)
         for candidate in candidates:
             if not candidate.is_dir():
@@ -472,8 +523,123 @@ class ProductRetriever:
             return False
         return True
 
+    @staticmethod
+    def _local_product_model_path() -> str | None:
+        configured = os.environ.get(PRODUCT_EMBEDDING_MODEL_ENV, "").strip()
+        if configured:
+            return configured
+        for path in DEFAULT_PRODUCT_EMBEDDING_MODEL_PATHS:
+            if path.is_dir():
+                return path.as_posix()
+        return None
+
+    def _load_v5_product_embeddings(
+        self,
+        artifact_dir: str | Path | None,
+    ) -> None:
+        if artifact_dir is None:
+            candidates = DEFAULT_V5_PRODUCT_ARTIFACT_PATHS
+        else:
+            candidates = (Path(artifact_dir),)
+        expected_asins = tuple(self._catalog_order)
+        for candidate in candidates:
+            if not candidate.is_dir():
+                continue
+            try:
+                index = load_v5_product_embedding_index(
+                    candidate,
+                    expected_asins=expected_asins,
+                )
+            except (ImportError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.product_embedding_compatibility_error = (
+                    f"unable to load V5 product embedding artifact {candidate}: {exc}"
+                )
+                continue
+            self.product_embedding_index = index
+            if self.product_query_encoder is None:
+                model_path = self._local_product_model_path()
+                if model_path is not None:
+                    try:
+                        from product_embeddings.pipeline import load_local_sentence_transformer
+
+                        self.product_query_encoder = load_local_sentence_transformer(
+                            model_path,
+                            trust_remote_code=True,
+                        )
+                    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                        self.product_embedding_compatibility_error = (
+                            "V5 product query encoder could not be loaded locally: "
+                            f"{exc}"
+                        )
+                else:
+                    self.product_embedding_compatibility_error = (
+                        f"set {PRODUCT_EMBEDDING_MODEL_ENV} to a local "
+                        "Qwen3-Embedding-0.6B model directory"
+                    )
+            self._product_embedding_encoder_compatible = (
+                self._validate_product_embedding_encoder(index)
+            )
+            return
+
+    def _validate_product_embedding_encoder(
+        self,
+        index: V5ProductEmbeddingIndex,
+    ) -> bool:
+        encoder = self.product_query_encoder
+        if encoder is None:
+            if self.product_embedding_compatibility_error is None:
+                self.product_embedding_compatibility_error = (
+                    "V5 product query encoder is not configured"
+                )
+            return False
+        expected_model = index.manifest.get(
+            "embedding_model",
+            index.manifest.get("model"),
+        )
+        if not expected_model or not embedding_models_compatible(
+            V5_PRODUCT_MODEL,
+            expected_model,
+        ):
+            self.product_embedding_compatibility_error = (
+                "V5 product embedding artifact must use the required Qwen model: "
+                f"artifact={expected_model!r}, required={V5_PRODUCT_MODEL!r}"
+            )
+            return False
+        actual_model = _encoder_model_id(encoder)
+        if not expected_model or not actual_model or not embedding_models_compatible(
+            expected_model,
+            actual_model,
+        ):
+            self.product_embedding_compatibility_error = (
+                "V5 product embedding model does not match the query encoder: "
+                f"artifact={expected_model!r}, encoder={actual_model!r}"
+            )
+            return False
+        actual_dimension = _encoder_dimension(encoder)
+        if actual_dimension is not None and actual_dimension != index.dimension:
+            self.product_embedding_compatibility_error = (
+                "V5 product embedding dimension does not match the query encoder: "
+                f"artifact={index.dimension}, encoder={actual_dimension}"
+            )
+            return False
+        if not any(
+            callable(getattr(encoder, name, None))
+            for name in ("embed_query", "encode", "embed_documents", "embed")
+        ) and not callable(encoder):
+            self.product_embedding_compatibility_error = (
+                "V5 product query encoder has no supported embedding method"
+            )
+            return False
+        self.product_embedding_compatibility_error = None
+        return True
+
     @property
     def dense_available(self) -> bool:
+        if self.product_embedding_index is not None:
+            # A V5 product artifact must use its matching product encoder; a
+            # BGE canonical encoder or a legacy product encoder is never a
+            # substitute for it.
+            return self.product_dense_available
         encoder = self.query_encoder
         if self.layer2_index is not None and not self._layer2_encoder_compatible:
             return False
@@ -481,7 +647,7 @@ class ProductRetriever:
             callable(encoder)
             or any(
                 callable(getattr(encoder, name, None))
-                for name in ("encode", "embed_documents", "embed")
+                for name in ("embed_query", "encode", "embed_documents", "embed")
             )
         )
 
@@ -659,17 +825,17 @@ class ProductRetriever:
             )
         return similarities
 
-    def _semantic_scores(
+    def _canonical_scores(
         self,
         asins: Iterable[str],
         constraints: object | None,
     ) -> tuple[dict[str, float], dict[str, tuple[str, ...]]]:
-        """Score product facts against the independent Layer 2 state.
+        """Score product facts against BGE canonical expansion state.
 
         Each accepted semantic value contributes its retained cosine
         similarity only when the product contains that canonical value. The
-        dense track score is the accumulated similarity points; exact
-        structured matching is calculated separately.
+        accumulated points are sparse canonical evidence, not product-vector
+        dense retrieval. Exact structured matching is calculated separately.
         """
 
         if constraints is None:
@@ -721,6 +887,14 @@ class ProductRetriever:
         }
         return scores, normalized_labels
 
+    # Compatibility name for integrations that used the old terminology.
+    def _semantic_scores(
+        self,
+        asins: Iterable[str],
+        constraints: object | None,
+    ) -> tuple[dict[str, float], dict[str, tuple[str, ...]]]:
+        return self._canonical_scores(asins, constraints)
+
     def _matches_field(self, asin: str, field_name: str, constraints: object) -> bool:
         product = self.product_by_asin[asin]
         if field_name == "price":
@@ -771,11 +945,34 @@ class ProductRetriever:
         )
 
     def _dense_scores(self, query_text: str) -> dict[str, float]:
+        if self.product_embedding_index is not None:
+            if not self.product_dense_available or not query_text.strip():
+                return {}
+            try:
+                query = self._query_embedding(
+                    query_text,
+                    self.product_embedding_index.dimension,
+                    encoder=self.product_query_encoder,
+                )
+                if query is None:
+                    return {}
+                scores = self.product_embedding_index.score_all(query)
+                return {
+                    asin: float(score)
+                    for asin, score in zip(self.product_embedding_index.asins, scores)
+                }
+            except (TypeError, ValueError, RuntimeError):
+                return {}
+
         if self.query_encoder is None:
             return {}
         if self.layer2_index is not None:
             try:
-                query = self._query_embedding(query_text, self.layer2_index.dimension)
+                query = self._query_embedding(
+                    query_text,
+                    self.layer2_index.dimension,
+                    encoder=self.query_encoder,
+                )
                 if query is None:
                     return {}
                 scores, _ = self.layer2_index.score_all(
@@ -815,36 +1012,48 @@ class ProductRetriever:
         constraints: object | None = None,
         semantic_constraints: object | None = None,
     ) -> dict[str, float]:
+        """Return BM25 scores with canonical BGE expansions for Buying.
+
+        This is the expanded lexical signal. Browsing uses the raw query
+        separately as its lexical complement to product-vector retrieval;
+        keeping the two methods separate prevents canonical expansion from
+        being mistaken for product-level dense retrieval.
+        """
+
         if self.bm25_index is None:
             return {}
         try:
             if not self.use_slot_bm25_groups:
-                return self.bm25_index.search(
-                    query_text,
-                    allowed_asins=eligible_asins,
-                )
+                return self._raw_bm25_scores(query_text, eligible_asins)
 
             groups = self.bm25_query_compiler.compile_groups(
                 constraints,
                 semantic_constraints,
             )
-            if not groups:
+            raw_scores = self._raw_bm25_scores(query_text, eligible_asins)
+            if not groups and not raw_scores:
                 return {}
 
-            # Each slot is normalized independently before fusion. SQLite's
-            # raw BM25 scores are only comparable within the same query; a
-            # per-group peak normalization gives every active slot one equal
-            # contribution and prevents a slot with many lexical realizations
-            # from dominating the final lexical signal.
-            normalized_by_group: list[dict[str, float]] = []
+            # Include the raw current-goal query even when no structured slot
+            # has been extracted. Expanded slot queries are additional lexical
+            # evidence, not a replacement for the user's words.
+            query_groups: list[dict[str, float]] = []
+            if raw_scores:
+                query_groups.append(raw_scores)
             for lexical_query in groups.values():
                 scores = self.bm25_index.search(
                     lexical_query,
                     allowed_asins=eligible_asins,
                 )
-                if not scores:
-                    normalized_by_group.append({})
-                    continue
+                if scores:
+                    query_groups.append(scores)
+
+            # Each query is normalized independently before fusion. SQLite's
+            # raw BM25 scores are only comparable within the same query; a
+            # per-query peak normalization gives every active query one equal
+            # contribution while retaining the BGE-expanded slot groups.
+            normalized_by_group: list[dict[str, float]] = []
+            for scores in query_groups:
                 peak = max(
                     (float(score) for score in scores.values() if math.isfinite(float(score))),
                     default=0.0,
@@ -871,11 +1080,100 @@ class ProductRetriever:
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
 
-    def _query_embedding(self, query_text: str, dimension: int) -> Any:
+    def _raw_bm25_scores(
+        self,
+        query_text: str,
+        eligible_asins: Collection[str],
+    ) -> dict[str, float]:
+        """Search the current-goal text without canonical slot expansion."""
+
+        if self.bm25_index is None or not str(query_text).strip():
+            return {}
+        try:
+            return self.bm25_index.search(
+                query_text,
+                allowed_asins=eligible_asins,
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return {}
+
+    def debug_bm25(
+        self,
+        query_text: str,
+        constraints: object | None = None,
+        semantic_constraints: object | None = None,
+        *,
+        eligible_asins: Collection[str] | None = None,
+        target_asin: str | None = None,
+        expanded: bool = True,
+    ) -> dict[str, Any]:
+        """Describe raw and per-slot BM25 searches for evaluator diagnostics.
+
+        This method only observes the same search calls used by retrieval. It
+        never changes candidate state and is intentionally kept outside the
+        Agent path so target ranks cannot affect production ranking.
+        """
+
+        if self.bm25_index is None:
+            return {
+                "available": False,
+                "raw": None,
+                "constraints": {},
+            }
+        allowed = set(
+            self._catalog_order if eligible_asins is None else eligible_asins
+        )
+        target = str(target_asin).strip() if target_asin is not None else None
+
+        def describe(label: str, search_text: str) -> dict[str, Any]:
+            scores = self.bm25_index.search(search_text, allowed_asins=allowed)
+            rank_map = self._rank_map(
+                scores,
+                allowed,
+                top_k=len(allowed),
+                positive_only=True,
+            )
+            target_score = None
+            if target:
+                raw_score = scores.get(target)
+                if raw_score is not None and math.isfinite(float(raw_score)):
+                    target_score = float(raw_score)
+            return {
+                "label": label,
+                "query": search_text,
+                "expression": self.bm25_index.query_expression(search_text),
+                "match_count": len(scores),
+                "target_rank": rank_map.get(target) if target else None,
+                "target_score": target_score,
+            }
+
+        result: dict[str, Any] = {
+            "available": True,
+            "raw": describe("raw", str(query_text or "")),
+            "constraints": {},
+        }
+        if expanded:
+            groups = self.bm25_query_compiler.compile_groups(
+                constraints,
+                semantic_constraints,
+            )
+            result["constraints"] = {
+                field_name: describe(field_name, group_query)
+                for field_name, group_query in groups.items()
+            }
+        return result
+
+    def _query_embedding(
+        self,
+        query_text: str,
+        dimension: int,
+        *,
+        encoder: object | None = None,
+    ) -> Any:
         """Encode one query with the shared runtime encoder and validate it."""
         import numpy as np
 
-        encoder = self.query_encoder
+        encoder = self.query_encoder if encoder is None else encoder
         if encoder is None:
             return None
         if hasattr(encoder, "embed_query"):
@@ -921,30 +1219,155 @@ class ProductRetriever:
         matched_semantic_constraints: tuple[str, ...] = (),
         bm25_score: float = 0.0,
         w_rating: float = 0.0,
+        semantic_score: float = 0.0,
+        fusion_score: float = 0.0,
+        mmr_score: float | None = None,
+        ranking_override: float | None = None,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score, bm25_score)
+        score = (
+            float(ranking_override)
+            if ranking_override is not None
+            else _final_score(
+                mode,
+                structured_score,
+                dense_score,
+                bm25_score,
+                semantic_score,
+                browsing_fusion_score=fusion_score if mode == "BROWSING" else None,
+            )
+        )
         rating = self.rating_lookup.get(asin)
+        ranking_score = float(score + w_rating * normalized_rating(rating))
         return Candidate(
             parent_asin=asin,
-            score=float(score),
+            score=ranking_score,
             dense_score=float(dense_score),
             constraint_score=float(structured_score),
             matched_constraints=matched_constraints,
             violated_constraints=violated,
             retrieval_mode=mode,
             attributes=self.product_by_asin[asin].facts,
-            semantic_score=float(dense_score),
+            semantic_score=float(semantic_score),
             matched_semantic_constraints=matched_semantic_constraints,
             price=self.product_by_asin[asin].price,
             bm25_score=float(bm25_score),
+            fusion_score=float(fusion_score),
+            mmr_score=(None if mmr_score is None else float(mmr_score)),
             rating=rating,
-            ranking_score=float(score + w_rating * normalized_rating(rating)),
+            ranking_score=ranking_score,
         )
+
+    def _rank_map(
+        self,
+        scores: Mapping[str, float],
+        eligible_asins: Collection[str],
+        *,
+        top_k: int,
+        positive_only: bool = False,
+    ) -> dict[str, int]:
+        """Return deterministic one-based ranks for one retrieval signal."""
+
+        eligible = set(eligible_asins)
+        scored: list[str] = []
+        for asin in eligible:
+            try:
+                score = float(scores.get(asin, 0.0))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(score) or (positive_only and score <= 0.0):
+                continue
+            scored.append(asin)
+        scored.sort(
+            key=lambda asin: (
+                -float(scores.get(asin, 0.0)),
+                self.product_by_asin[asin].catalog_order,
+            )
+        )
+        return {
+            asin: rank
+            for rank, asin in enumerate(scored[: max(0, int(top_k))], 1)
+        }
+
+    @staticmethod
+    def _rrf_scores(*rank_maps: Mapping[str, int]) -> dict[str, float]:
+        """Fuse ranked lists without comparing their unrelated raw scores."""
+
+        fused: dict[str, float] = {}
+        for rank_map in rank_maps:
+            for asin, rank in rank_map.items():
+                fused[asin] = fused.get(asin, 0.0) + 1.0 / (RRF_K + int(rank))
+        return fused
+
+    def _mmr_rank(
+        self,
+        pool: Collection[str],
+        fusion_scores: Mapping[str, float],
+        *,
+        limit: int,
+        w_rating: float,
+    ) -> tuple[list[str], dict[str, float]]:
+        """Apply Browsing-only MMR using V5 product-card cosine similarity."""
+
+        ordered_pool = list(pool)
+        index = self.product_embedding_index
+        if index is None or not self.product_dense_available:
+            ordered_pool.sort(
+                key=lambda asin: (
+                    -float(fusion_scores.get(asin, 0.0)),
+                    -w_rating * normalized_rating(self.rating_lookup.get(asin)),
+                    self.product_by_asin[asin].catalog_order,
+                )
+            )
+            return ordered_pool[:limit], {
+                asin: float(fusion_scores.get(asin, 0.0)) for asin in ordered_pool
+            }
+
+        peak = max((float(fusion_scores.get(asin, 0.0)) for asin in ordered_pool), default=0.0)
+        if peak <= 0.0:
+            peak = 1.0
+        remaining = set(ordered_pool)
+        selected: list[str] = []
+        mmr_scores: dict[str, float] = {}
+        while remaining and len(selected) < max(0, int(limit)):
+            best_asin: str | None = None
+            best_key: tuple[float, float, float, int] | None = None
+            for asin in remaining:
+                relevance = max(0.0, float(fusion_scores.get(asin, 0.0))) / peak
+                redundancy = 0.0
+                if selected:
+                    redundancy = max(
+                        0.0,
+                        max(
+                            (index.similarity(asin, previous) for previous in selected),
+                            default=0.0,
+                        ),
+                    )
+                mmr = BROWSING_MMR_LAMBDA * relevance - (
+                    1.0 - BROWSING_MMR_LAMBDA
+                ) * redundancy
+                mmr_scores[asin] = mmr
+                effective = mmr + w_rating * normalized_rating(
+                    self.rating_lookup.get(asin)
+                )
+                key = (
+                    effective,
+                    mmr,
+                    float(fusion_scores.get(asin, 0.0)),
+                    -self.product_by_asin[asin].catalog_order,
+                )
+                if best_key is None or key > best_key:
+                    best_asin = asin
+                    best_key = key
+            if best_asin is None:
+                break
+            remaining.remove(best_asin)
+            selected.append(best_asin)
+        return selected, mmr_scores
 
     def retrieve(
         self,
@@ -995,18 +1418,26 @@ class ProductRetriever:
         price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
 
-        semantic_scores, semantic_labels = self._semantic_scores(
+        canonical_scores, semantic_labels = self._canonical_scores(
             eligible_asins,
             semantic_constraints,
         )
-        dense_scores = semantic_scores
-        if not dense_scores and self.dense_available:
+        dense_scores: dict[str, float] = {}
+        if mode == "BROWSING" and self.dense_available:
             dense_scores = self._dense_scores(query_text)
-        bm25_scores = self._bm25_scores(
-            query_text,
-            eligible_set,
-            constraints,
-            semantic_constraints,
+        # Buying uses the expanded lexical signal (raw text plus accepted BGE
+        # canonical expansions). Browsing keeps its lexical complement raw so
+        # the RRF arm represents an independent text search next to product
+        # vectors rather than another copy of canonical-attribute evidence.
+        bm25_scores = (
+            self._raw_bm25_scores(query_text, eligible_set)
+            if mode == "BROWSING"
+            else self._bm25_scores(
+                query_text,
+                eligible_set,
+                constraints,
+                semantic_constraints,
+            )
         )
 
         constraint_similarities = self._constraint_similarities(constraints)
@@ -1096,34 +1527,71 @@ class ProductRetriever:
         def _zero(_asin: str) -> float:
             return 0.0
 
-        if not dense_scores and not constraint_fields and not bm25_scores:
-            # No constraints and no dense signal: every candidate ties at zero,
-            # so the rating is the only thing left to order them by.
-            ranked_asins = _select(eligible_asins, _zero)
-        elif not dense_scores:
-            # BM25 is still a lexical signal when dense retrieval is absent;
-            # do not silently discard it and fall back to dictionary order.
-            final_scores = {
+        base_scores: dict[str, float] = {}
+        fusion_scores: dict[str, float] = {}
+        ranking_overrides: dict[str, float] = {}
+        mmr_scores: dict[str, float] = {}
+        if mode == "BUYING":
+            # BM25 is part of the Buying score even when no product-vector
+            # signal is available.  Canonical BGE posting points are a small
+            # supporting signal; they are deliberately not called dense here.
+            base_scores = {
                 asin: _final_score(
                     mode,
                     structured_score(asin),
                     0.0,
                     bm25_scores.get(asin, 0.0),
+                    canonical_scores.get(asin, 0.0),
                 )
                 for asin in eligible_asins
             }
-            ranked_asins = _select(eligible_asins, final_scores.__getitem__)
+            ranked_asins = _select(eligible_asins, base_scores.__getitem__)
         else:
-            final_scores = {
-                asin: _final_score(
-                    mode,
-                    structured_score(asin),
-                    dense_scores.get(asin, 0.0),
-                    bm25_scores.get(asin, 0.0),
+            dense_ranks = self._rank_map(
+                dense_scores,
+                eligible_asins,
+                top_k=BROWSING_DENSE_TOP_K,
+            )
+            bm25_ranks = self._rank_map(
+                bm25_scores,
+                eligible_asins,
+                top_k=BROWSING_BM25_TOP_K,
+                positive_only=True,
+            )
+            fusion_scores = self._rrf_scores(dense_ranks, bm25_ranks)
+            if fusion_scores:
+                pool = [asin for asin in self._catalog_order if asin in fusion_scores]
+                pool.sort(
+                    key=lambda asin: (
+                        -float(fusion_scores.get(asin, 0.0)),
+                        self.product_by_asin[asin].catalog_order,
+                    )
                 )
-                for asin in eligible_asins
-            }
-            ranked_asins = _select(eligible_asins, final_scores.__getitem__)
+                pool = pool[:BROWSING_FUSED_POOL_K]
+                if self.product_dense_available and dense_ranks:
+                    ranked_asins, mmr_scores = self._mmr_rank(
+                        pool,
+                        fusion_scores,
+                        limit=limit,
+                        w_rating=w_rating,
+                    )
+                    ranking_overrides.update(mmr_scores)
+                else:
+                    ranking_overrides.update(fusion_scores)
+                    ranked_asins = _select(pool, fusion_scores.__getitem__)
+            else:
+                # Safe fallback when the product artifact and BM25 are both
+                # unavailable: retain the old structured/canonical evidence,
+                # but do not pretend that it is product dense retrieval.
+                ranking_overrides = {
+                    asin: structured_score(asin)
+                    + MODE_SCORE_WEIGHTS["BUYING"].get("semantic", 0.0)
+                    * canonical_scores.get(asin, 0.0)
+                    for asin in eligible_asins
+                }
+                ranked_asins = _select(eligible_asins, ranking_overrides.__getitem__)
+        if not ranked_asins:
+            ranked_asins = _select(eligible_asins, _zero)
         return [
             self._candidate(
                 asin,
@@ -1136,6 +1604,14 @@ class ProductRetriever:
                 semantic_labels.get(asin, ()),
                 bm25_scores.get(asin, 0.0),
                 w_rating=w_rating,
+                semantic_score=canonical_scores.get(asin, 0.0),
+                fusion_score=fusion_scores.get(asin, 0.0),
+                mmr_score=mmr_scores.get(asin),
+                ranking_override=(
+                    ranking_overrides.get(asin)
+                    if mode == "BROWSING"
+                    else None
+                ),
             )
             for asin in ranked_asins
         ]
@@ -1172,7 +1648,12 @@ __all__ = [
     "CRITICAL_USER_RATING_THRESHOLD",
     "Candidate",
     "BM25_SCORE_WEIGHT",
+    "BROWSING_BM25_TOP_K",
+    "BROWSING_DENSE_TOP_K",
+    "BROWSING_FUSED_POOL_K",
+    "BROWSING_MMR_LAMBDA",
     "InMemoryRetriever",
+    "RRF_K",
     "MODE_SCORE_WEIGHTS",
     "ProductRecord",
     "ProductRetriever",
