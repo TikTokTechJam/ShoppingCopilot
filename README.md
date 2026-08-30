@@ -1,223 +1,155 @@
-# TechJam Conversational E-Commerce Search Challenge
 
-Build an AI shopping agent that asks useful follow-up questions and recommends the customer's hidden target product within at most 10 turns.
+## LLM Slot-Filling Turn Interpreter
 
-For a chronological record of agent changes, the reasons behind them, and their measured impact, see the [Improvement Log](IMPROVEMENT_LOG.md).
+The runtime uses a small self-hosted LLM as a schema-guided turn interpreter between raw user language and deterministic session state.
 
-## What You Receive
-
-- A frozen catalog of 50,000 products from the `Clothing_Shoes_and_Jewelry` category of Amazon Reviews 2023.
-- 200 labeled public sessions for local development.
-- A weak BM25 starter agent and deterministic local evaluator.
-- The Agent API contract and scoring rules.
-
-The organizer keeps 800 additional sessions private for final evaluation.
-
-## Task
-
-For each session, your agent receives an anonymized preference profile and a short customer message. Raw user IDs, review text, timestamps, and purchase history are never disclosed. On every turn the agent may:
-
-- ask a natural clarification question in `message` and identify one requested field in `ask_attribute`;
-- return a ranked list of up to 10 catalog `parent_asin` values;
-- do both in the same response.
-
-The session ends when the target product appears in the scored Top 10 or after turn 10. Sessions cover Buying, Browsing, Intent Override, and Boundary behavior.
-
-## Download the Catalog
-
-Download `catalog.jsonl.gz` from the GitHub Release attached to this repository, then run:
-
-```bash
-gzip -dk catalog.jsonl.gz
-mv catalog.jsonl data/catalog.jsonl
-```
-
-Verify the downloaded file using the published `SHA256SUMS` file.
-
-## Run the Starter and Public Local Benchmark
-
-Python 3.10 or later is recommended. The starter uses only the Python standard library.
-
-```bash
-python3 -m evaluator.local_evaluator
-```
-
-The local command runs the 200-session public benchmark in
-`data/public_set.jsonl` and writes detailed results and aggregate metrics to
-`results.json`. It uses the same `build_evaluator_agent` resource factory as
-the hard evaluator, so both evaluators load the same catalog, V5 facts, local
-BGE model, canonical attribute dictionary, and attribute embedding artifacts.
-Only the benchmark dataset, conversation simulator, and evaluator wrapper
-are different.
-
-Edit `starter/agent.py` to implement your system. Do not edit the evaluator or
-benchmark labels when reporting your local score.
-
-The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
-MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
-
-## Canonical Catalog Facts (Issue #5)
-
-Issue #5 provides a reusable product-facts layer without modifying the frozen `data/catalog.jsonl`. The file-based pipeline separates the hosted-model annotation/audit artifacts from the deterministic Agent-facing `catalog_facts.jsonl` output:
+This design follows recent **Dialogue State Tracking (DST)** and **joint intent/slot filling** work, where language models convert natural-language turns into structured slot updates instead of relying on token-level stopword heuristics.
 
 ```text
-catalog.jsonl
-    -> scripts.annotate_catalog
-    -> data/derived/annotations/v5/annotations.jsonl + failures.jsonl + manifest.json
-    -> scripts.build_catalog_facts
-    -> data/derived/catalog_facts/catalog_facts.jsonl
+User utterance
+      ↓
+Deterministic parsers
+(price, numeric ranges, size)
+      ↓
+Self-hosted LLM
+      ↓
+Structured slot/state delta
+      ↓
+Deterministic validation
+      ↓
+Dependency-aware Session State
+      ↓
+BM25 + BGE retrieval
 ```
 
-The annotation runner is resumable: every completed success or failure is flushed to JSONL immediately, successful `parent_asin` values are skipped on later runs, failures are recorded with retry attempts, and prompt/model settings are stored in the manifest. Press `Ctrl+C` to stop scheduling new work; completed records remain saved and the next run resumes from the same output directory. It makes no network call unless a local endpoint is configured. Hosted endpoint URL, API key environment variable, model, timeout, token limit, retry count, concurrency, and an optional range/limit are configurable; credentials are never stored in the repository.
+### Schema-guided extraction
 
-Create a local environment file from the ignored template, then fill in your own endpoint, model, and key:
+The LLM receives a fixed shopping schema and extracts only supported semantic fields:
 
-```powershell
-Copy-Item .env.example .env
-notepad .env
+```json
+{
+  "intent": "buying | browsing",
+  "constraints": {
+    "category": [],
+    "brand": [],
+    "color": [],
+    "material": [],
+    "feature": [],
+    "use_case": [],
+    "style": []
+  },
+  "override": {
+    "type": "none | preference | full_goal",
+    "fields": []
+  }
+}
 ```
 
-`.env` is ignored by Git. Never paste the real API key into tracked files, README text, a commit, or a pull request. `ANNOTATION_BASE_URL` may be either an OpenAI-compatible `/v1` base URL or a full `/chat/completions` URL; the client adds the path when needed.
+This follows **schema-driven dialogue state tracking**, where natural-language descriptions of slots guide the model toward the intended structured representation rather than unrestricted generation.
 
-Preview the work without calling a model:
+Reference:
+- Lee et al., *Dialogue State Tracking with a Language Model using Schema-Driven Prompting*, EMNLP 2021.
 
-```powershell
-python -m scripts.annotate_catalog --dry-run --limit 100
-```
+### Intent-aware slot filling
 
-First, make one local test request. The command below reads the ignored `.env`, uses a long timeout for a remote/local model, and keeps concurrency at one so the setup is easy to diagnose:
-
-```powershell
-python -m scripts.annotate_catalog --env-file .env --limit 1 --timeout 180 --max-tokens 2048 --concurrency 1
-```
-
-Progress is printed immediately to stderr, including the selected product, request attempt, retry reason, success/failure, elapsed time, saved-record count, and batch totals. The final JSON summary remains on stdout. Press `Ctrl+C` once to stop cleanly; already completed records have been flushed and can be resumed with the same command. Use `--log-every 100` for a large run, or `--quiet` to suppress progress logs.
-
-After that succeeds, run a small batch and review the generated facts before considering larger work:
-
-```powershell
-python -m scripts.annotate_catalog --env-file .env --output-dir data/derived/annotations/v5 --limit 10 --timeout 180 --max-tokens 2048 --concurrency 1 --retries 2 --log-every 1
-```
-
-For future larger runs, increase concurrency gradually (1, then 4, 8, and 16) only after checking precision, latency, and failure rates. Do not start a full 50,000-product run until those measurements are understood. After an annotation run completes, build and validate the deterministic facts output:
-
-```powershell
-python -m scripts.build_catalog_facts --annotations data/derived/annotations/v5/annotations.jsonl
-python -m scripts.validate_catalog_facts
-
-The six V5 single-attribute files can be joined without rerunning any model.
-Run:
-
-    python -m scripts.aggregate_v5_annotations --catalog data/catalog.jsonl --input-dir data/derived/annotations/v5 --output data/derived/annotations/v5/annotations.jsonl
-
-This emits one record for every catalog product in catalog order. The catalog
-supplies parent_asin and normalized price; missing V5 rows or empty attribute
-results become []. Duplicate or catalog-external ASINs fail explicitly. The
-aggregate contains category, brand, color, material, feature, and use_case;
-style and size are not included.
-```
-
-Reasoning is disabled by default for extraction; use `--thinking` only for an explicit comparison. The runner retries transient 429/network/5xx failures, gives at most one corrective retry for schema errors, and does not repeat a request that ended with `finish_reason=length` or a context-length error. Use `--no-json-mode` if the endpoint does not support the OpenAI `response_format` option. The runner sends the API key only as an in-memory `Authorization` header and never writes it to output or the manifest.
-
-The V4 model response is exactly six array fields: `brand`, `color`, `material`, `style`, `feature`, and `use_case`. V4 deliberately removes `size` from the LLM request and response; structured sizes and measurements remain a separate concern. High-trust `brand`, `color`, and `material` values favor precision, while descriptive `style`, `feature`, and `use_case` values favor useful source-supported coverage. Values use lowercase natural text with spaces, not `snake_case`. `category`, `parent_asin`, and `price` are copied outside the model response. The annotation artifact keeps brand as an array; the deterministic Issue #5 builder adapts the first strongly identified brand value to the existing scalar final-facts contract and leaves `size` empty for downstream compatibility. The original catalog remains unchanged.
-
-## Hard Evaluator and Expected-Utility Search Benchmark
-
-The repository also includes a fixed hard benchmark for the expected-utility adaptive search policy. It contains 400 GPTAnnotation sessions in `data/derived/gptannotation/sessions.jsonl`: 160 Buying, 160 Browsing, 60 Intent Override, and 20 Boundary sessions. Each session has a catalog target and evidence-backed hidden facts used only by the simulator.
-
-Run the hard evaluator with:
-
-```bash
-python -m evaluator.hard_evaluator
-```
-
-To evaluate only the Intent Override scenario, use:
-
-```bash
-python -m evaluator.hard_evaluator --override-only --output results_override.json
-```
-
-The evaluator still validates the complete fixed 400-session benchmark before
-selecting its 60 override sessions.
-
-For a local turn-by-turn view of the same Manual400 Agent flow, run
-`python -m evaluator.debug_web` and open <http://127.0.0.1:8765>. See
-[`docs/debug_web.md`](docs/debug_web.md) for model setup and controls.
-To inspect the public-set local evaluator in the same UI, run
-`python -m evaluator.debug_web --evaluator local --dataset data/public_set.jsonl`.
-
-The evaluator uses the frozen 50,000-product catalog as the Agent's retrieval universe and for exact `parent_asin` target validation. It does not rebuild facts or alter the benchmark. At each turn, the Agent may ask for one attribute and return up to 10 recommendations; the simulator supplies the corresponding fixed customer reply. The evaluator reports Hit Rate@10, MRR, MTTC, scenario metrics, and TechnicalScore under the ten-turn limit.
-
-This benchmark measures the expected-utility adaptive search idea described in the Improvement Log: maintain a posterior over candidate products, estimate the value of asking each unused attribute, acquire the most useful evidence, and revise stale constraints after an intent override.
-
-## Agent Interface
-
-```python
-class Agent:
-    def reset(self, session_id: str, user_profile: dict) -> None:
-        ...
-
-    def respond(self, session_id: str, user_message: str, turn: int, top_k: int) -> dict:
-        return {
-            "message": "Do you have a material preference?",
-            "ask_attribute": "material",
-            "recommendations": [
-                {"parent_asin": "B000..."},
-                {"parent_asin": "B001..."}
-            ],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 30}
-        }
-```
-
-`ask_attribute` is one of `category`, `material`, `color`, `size`, `style`, `brand`, `budget`, `feature`, `use_case`, `other`, or `null`. See `docs/agent_api_contract.json`.
-
-## Technical Metrics
-
-- **Hit Rate@10:** fraction of sessions that find the target within 10 turns.
-- **MRR:** mean reciprocal rank of the target; a miss contributes zero.
-- **MTTC:** mean first-hit turn; a miss is assigned turn 11.
-- **Reported token usage:** prompt and completion tokens returned by the team's model client.
+Example:
 
 ```text
-TechnicalScore = 0.50 × HitRate@10 + 0.30 × MRR + 0.20 × Efficiency
-Efficiency = clip((11 - MTTC) / 10, 0, 1)
+"I'm exploring sweatshirts and would like to compare some options."
+
+→ intent: browsing
+→ category: sweatshirt
+→ use_case: none
 ```
 
-Only exact `parent_asin` equality produces a hit. Core metrics are also reported by scenario.
-
-## Model Choice and Cost
-
-Teams may use any legally accessible LLM API or local model. Teams manage their own credentials and must never commit API keys. Model choice, estimated cost, token usage, and latency must be disclosed. Token usage is a feasibility metric, not part of the core technical score. The organizer does not provide or reimburse model API credits; teams are responsible for any costs incurred through optional external services.
-
-## Files
+The model separates dialogue intent from product attributes, avoiding false constraints such as:
 
 ```text
-data/public_set.jsonl             200 labeled development sessions
-docs/competition_specification.md participant rules and evaluation protocol
-docs/agent_api_contract.json      machine-readable Agent contract
-docs/evaluation_config.json       scoring configuration
-docs/baseline_results.json        reproducible weak-starter reference score
-starter/agent.py                  editable weak starter
-evaluator/local_evaluator.py      public-set simulator and scorer
-annotation/                       annotation prompt, schema, client, and runner
-scripts/annotate_catalog.py      resumable hosted-model annotation CLI
-scripts/build_catalog_facts.py   deterministic canonical-facts builder
-scripts/validate_catalog_facts.py read-only canonical-facts validator
-scripts/aggregate_v5_annotations.py catalog-ordered V5 attribute joiner
-evaluator/hard_evaluator.py       fixed GPTAnnotation hard benchmark evaluator
-data/derived/gptannotation/       400-session hard benchmark input
-IMPROVEMENT_LOG.md                chronological change and evaluation record
+use_case: exploring
+use_case: city exploring
 ```
 
-## Judging and Submission Policy
+This is aligned with **joint intent detection and slot filling** research, where utterance-level intent and token/slot-level semantics are modeled together instead of independently.
 
-- Participant submission requirements: `docs/submission_rules.md`
-- Participant release checklist: `docs/participant_release_checklist.md`
-- Organizer-only final judging controls: `organizer/JUDGING_RUNBOOK.md`
-- Organizer private release checklist: `organizer/private_release_checklist.md`
-- Judging day operations SOP: `organizer/JUDGING_DAY_SOP.md`
+References:
+- Goo et al., *Slot-Gated Modeling for Joint Slot Filling and Intent Prediction*, NAACL 2018.
+- Chen et al., *BERT for Joint Intent Classification and Slot Filling*, 2019.
 
-## Data Source
+### Structured function-style output
 
-The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab, UCSD. See `DATA_ATTRIBUTION.md` before using or redistributing the data.
-Sessions are sampled deterministically from the official Clothing 5-core leave-last-out split and joined to the frozen catalog.
+The LLM does not retrieve products or directly modify state. It only emits a structured current-turn delta.
+
+This is similar to **FnCTOD**, which formulates dialogue-state tracking as function calling: domains and slots are represented as structured function arguments and the LLM produces the corresponding state update.
+
+Reference:
+- Li et al., *Large Language Models as Zero-shot Dialogue State Tracker through Function Calling*, ACL 2024.
+
+### Few-shot semantic guidance
+
+The prompt can include a small number of contrastive examples to teach ambiguous constructions:
+
+```text
+"I'm exploring sweatshirts."
+→ browsing intent
+→ category: sweatshirt
+
+"I need boots for exploring caves."
+→ category: boots
+→ use_case: exploring caves
+```
+
+This follows findings from schema-guided prompting work showing that demonstrations can improve semantic slot interpretation when schema names alone are insufficient.
+
+Reference:
+- Gupta et al., *Show, Don't Tell: Demonstrations Outperform Descriptions for Schema-Guided Task-Oriented Dialogue*, NAACL 2022.
+
+### Incremental state updates
+
+The LLM returns only the current-turn delta rather than regenerating the entire session state.
+
+Example:
+
+```text
+Existing state:
+category = shirt
+use_case = sunny weather
+color = black
+
+User:
+"Actually I'll mostly use it when it's raining."
+
+LLM delta:
+override = preference
+fields = [use_case]
+use_case = rain
+```
+
+The deterministic session manager then:
+
+```text
+remove old use_case
+        ↓
+invalidate dependent inferred constraints
+        ↓
+preserve independent explicit constraints
+        ↓
+apply new use_case
+```
+
+This follows the incremental update pattern used in modern dialogue-state tracking: the language model interprets the turn, while deterministic state-management logic owns persistence and conflict resolution.
+
+### Design boundary
+
+```text
+LLM
+= language understanding / slot extraction
+
+Deterministic code
+= validation
+= dependency-aware override handling
+= state mutation
+= retrieval
+= ranking
+```
+
+The LLM therefore improves contextual understanding without becoming the source of truth for session state or retrieval behavior.
