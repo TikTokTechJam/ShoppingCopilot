@@ -32,6 +32,7 @@ from product_embeddings.v5 import (
     load_v5_product_embedding_index,
 )
 from starter.bm25 import BM25Index, BM25QueryCompiler
+from starter.browsing import build_browsing_query, format_qwen_query
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -944,13 +945,28 @@ class ProductRetriever:
             price_max is None or price <= price_max
         )
 
-    def _dense_scores(self, query_text: str) -> dict[str, float]:
+    def _dense_scores(
+        self,
+        query_text: str,
+        *,
+        browsing_query_text: str | None = None,
+    ) -> dict[str, float]:
         if self.product_embedding_index is not None:
-            if not self.product_dense_available or not query_text.strip():
+            # V5 product cards are built from structured facts.  Pair them
+            # with the active structured state at query time instead of the
+            # transcript/retrieval history, which can contain overridden or
+            # otherwise stale preferences.  The legacy dense branches below
+            # intentionally retain their existing query contract.
+            product_query_text = (
+                browsing_query_text
+                if browsing_query_text is not None
+                else query_text
+            )
+            if not self.product_dense_available or not product_query_text.strip():
                 return {}
             try:
                 query = self._query_embedding(
-                    query_text,
+                    format_qwen_query(product_query_text),
                     self.product_embedding_index.dimension,
                     encoder=self.product_query_encoder,
                 )
@@ -1423,7 +1439,15 @@ class ProductRetriever:
         )
         dense_scores: dict[str, float] = {}
         if mode == "BROWSING" and self.dense_available:
-            dense_scores = self._dense_scores(query_text)
+            # Qwen Browsing uses only the current active slot values.  This is
+            # deliberately separate from ``retrieval_query_text`` used by
+            # the lexical route so old conversational wording cannot leak
+            # into the product-card dense query.
+            browsing_query_text = build_browsing_query(constraints)
+            dense_scores = self._dense_scores(
+                query_text,
+                browsing_query_text=browsing_query_text,
+            )
         # Both modes use the same expanded lexical route. Browsing still keeps
         # BM25 separate from product dense retrieval and fuses the two by rank.
         bm25_scores = self._bm25_scores(
