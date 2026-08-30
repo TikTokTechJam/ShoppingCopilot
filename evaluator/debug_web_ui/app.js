@@ -77,6 +77,9 @@ function similarityRows(similarities) {
 }
 
 function renderBanner(data) {
+  $("session-id").placeholder = data.evaluator === "local"
+    ? "public_0001"
+    : "manual400_0095";
   const session = data.session;
   if (!session) {
     $("session-banner").className = "panel empty";
@@ -100,6 +103,9 @@ function renderState(data) {
   const layer2 = data.layer2 || {};
   const benchmark = data.benchmark || {};
   const metrics = benchmark.metrics || {};
+  const evaluatorLabel = data.evaluator === "local"
+    ? "Local evaluator score"
+    : "Hard evaluator score";
   const interactiveHint = data.interactive_mode
     ? '<div class="muted interactive-hint">Console input is active; this page updates after each reply.</div>'
     : "";
@@ -123,7 +129,7 @@ function renderState(data) {
     <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
     <h3>BM25 lexical search</h3>
     <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
-    <h3>Hard evaluator score</h3>
+    <h3>${evaluatorLabel}</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
     <div class="kv"><span>MTTC</span><b>${score(metrics.mttc)}</b></div>
@@ -211,6 +217,17 @@ function updateInteractivePolling(data) {
 }
 
 function render(data) {
+  const evaluator = data.evaluator || "hard";
+  $("eyebrow").textContent = evaluator === "local"
+    ? "LOCAL EVALUATOR TOOL"
+    : evaluator === "interactive"
+      ? "INTERACTIVE DEBUG TOOL"
+      : "HARD EVALUATOR TOOL";
+  $("subtitle").textContent = evaluator === "local"
+    ? "One real Agent turn at a time — public-set local evaluator mode."
+    : evaluator === "interactive"
+      ? "One real Agent turn at a time — replies entered in the console."
+      : "One real Agent turn at a time — Manual400 benchmark mode.";
   renderBanner(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
   const active = !data.interactive_mode && Boolean(data.session) && !data.done;
   $("next").disabled = !active;
