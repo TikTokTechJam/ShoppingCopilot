@@ -30,11 +30,13 @@ def build_evaluator_agent(
     *,
     disable_user_profile: bool = False,
 ) -> Agent:
-    """Build the evaluator Agent without product-level model loading.
+    """Build the evaluator Agent with local-only optional model loading.
 
     Semantic matching is initialized by ``starter.routing.constraints`` from
-    the generated BGE canonical-attribute registry. The retired direct
-    product-embedding path is intentionally not discovered or configured here.
+    the generated BGE canonical-attribute registry. If the V5 product-card
+    artifact is present, ``ProductRetriever`` independently discovers its
+    local Qwen query encoder for Browsing; it never substitutes BGE or a hash
+    encoder for that product path.
 
     ``disable_user_profile`` runs the profile-free follow-up policy, which is
     the control arm for measuring what ``user_profile`` preference tags are

@@ -1,8 +1,9 @@
 """Small in-memory BM25 index for the product-text retrieval path.
 
-This is a third retrieval signal. It does not replace structured or semantic
-matching, and it intentionally reuses the semantic path's lexical cleanup so
-the three paths see the same conversational query terms.
+This is the main textual retrieval signal. It does not replace structured
+matching or BGE canonical expansion. It intentionally reuses the semantic
+path's lexical cleanup so the textual and canonical paths see the same useful
+conversation terms.
 """
 
 from __future__ import annotations
@@ -170,8 +171,9 @@ class BM25QueryCompiler:
 
     Each returned group represents one information need such as ``feature`` or
     ``use_case``. Canonical values already present in the active state are
-    included once. Evidence-derived user surfaces are optional expansions and
-    capped per slot.
+    included once. Evidence-derived user surfaces are optional BGE expansions
+    and capped per slot. The retriever uses these expanded groups for Buying;
+    Browsing uses its raw current-goal query as the lexical RRF arm.
 
     The compiler only creates query text. SQLite still owns tokenization, FTS
     matching, BM25 scoring, and result ordering. Score normalization/fusion is
@@ -359,14 +361,25 @@ class BM25Index:
         )
         self.connection.commit()
 
+    @staticmethod
+    def query_phrases(query_text: str) -> tuple[str, ...]:
+        """Return the normalized 1/2/3-gram phrases used by ``search``."""
+
+        return _query_ngrams(query_text)
+
+    @classmethod
+    def query_expression(cls, query_text: str) -> str:
+        """Return the exact FTS5 expression sent for a query."""
+
+        return _match_expression(cls.query_phrases(query_text))
+
     def search(
         self,
         query_text: str,
         *,
         allowed_asins: Collection[str] | None = None,
     ) -> dict[str, float]:
-        phrases = _query_ngrams(query_text)
-        expression = _match_expression(phrases)
+        expression = self.query_expression(query_text)
         if not expression:
             return {}
 

@@ -99,9 +99,11 @@ class Agent:
         embeddings_path: str | Path | None = None,
         metadata_path: str | Path | None = None,
         query_encoder: object | None = None,
+        product_query_encoder: object | None = None,
         use_user_profile: bool = True,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
+        product_embedding_artifact_dir: str | Path | None = None,
         retriever: ProductRetriever | None = None,
         router: object | None = None,
         turn_interpreter: object | None = None,
@@ -112,8 +114,10 @@ class Agent:
             embeddings_path=embeddings_path,
             metadata_path=metadata_path,
             query_encoder=query_encoder,
+            product_query_encoder=product_query_encoder,
             layer2_artifact_dir=layer2_artifact_dir,
             layer2_weights=layer2_weights,
+            product_embedding_artifact_dir=product_embedding_artifact_dir,
         )
         self.sessions = SessionManager()
         # Keep the old private attribute available to lightweight integrations
@@ -447,7 +451,7 @@ class Agent:
 
         candidates = self.retriever.retrieve(
             state.mode or "BROWSING",
-            state.query_text,
+            state.retrieval_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
             limit=CLARIFICATION_CANDIDATE_LIMIT,
@@ -543,7 +547,7 @@ class Agent:
         try:
             relaxed = self.retriever.retrieve(
                 state.mode or "BROWSING",
-                state.query_text,
+                state.retrieval_query_text,
                 state.constraints,
                 limit=max(int(limit) * 4, 50),
                 apply_budget=False,

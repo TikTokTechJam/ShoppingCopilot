@@ -9,9 +9,10 @@ from unittest.mock import PropertyMock, patch
 from starter.agent import Agent
 from starter.retrieval import (
     DENSE_SCORE_WEIGHT,
-    MODE_SCORE_WEIGHTS,
+    RATING_DEFAULT_WEIGHT,
     STRUCTURED_FIELD_WEIGHTS,
     ProductRetriever,
+    normalized_rating,
 )
 from starter.routing.constraints import ShoppingConstraints
 
@@ -220,6 +221,51 @@ class ProductRetrieverTests(unittest.TestCase):
 
             self.assertEqual([item.parent_asin for item in ranked], ["B"])
 
+    def test_buying_bm25_changes_order_when_dense_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            facts = root / "facts.jsonl"
+            write_jsonl(
+                catalog,
+                [
+                    {
+                        "parent_asin": "A",
+                        "title": "Plain walking shoes",
+                        "categories": ["shoes"],
+                    },
+                    {
+                        "parent_asin": "B",
+                        "title": "Waterproof black rain boots",
+                        "categories": ["shoes"],
+                    },
+                ],
+            )
+            write_jsonl(
+                facts,
+                [
+                    {"parent_asin": "A", "facts": {"category": ["shoes"]}},
+                    {"parent_asin": "B", "facts": {"category": ["shoes"]}},
+                ],
+            )
+            retriever = ProductRetriever(
+                catalog,
+                facts_path=facts,
+                embeddings_path=root / "missing.npy",
+                metadata_path=root / "missing.json",
+            )
+
+            ranked = retriever.retrieve(
+                "BUYING",
+                "waterproof rain boots",
+                ShoppingConstraints(category=("shoes",)),
+                limit=2,
+            )
+
+            self.assertEqual([item.parent_asin for item in ranked], ["B", "A"])
+            self.assertGreater(ranked[0].bm25_score, ranked[1].bm25_score)
+            self.assertEqual(ranked[0].score, ranked[0].ranking_score)
+
     def test_without_budget_unknown_price_remains_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             retriever = self.make_retriever(Path(directory))
@@ -354,11 +400,11 @@ class ProductRetrieverTests(unittest.TestCase):
             self.assertEqual(browsing[0].parent_asin, "B")
             self.assertEqual(buying[0].parent_asin, "A")
             for candidate in browsing:
-                expected = (
-                    MODE_SCORE_WEIGHTS["BROWSING"]["structured"] * candidate.constraint_score
-                    + MODE_SCORE_WEIGHTS["BROWSING"]["dense"] * candidate.dense_score
+                expected = candidate.fusion_score + RATING_DEFAULT_WEIGHT * normalized_rating(
+                    candidate.rating
                 )
                 self.assertAlmostEqual(candidate.score, expected)
+                self.assertEqual(candidate.score, candidate.ranking_score)
 
     def test_browsing_dense_can_surface_zero_structured_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -383,6 +429,36 @@ class ProductRetrieverTests(unittest.TestCase):
 
             self.assertEqual(ranked[0].parent_asin, "B")
             self.assertEqual(ranked[0].constraint_score, 0.0)
+
+    def test_browsing_rrf_uses_bm25_as_a_real_rank_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            retriever = self.make_retriever(Path(directory))
+            dense_scores = {"A": 0.90, "B": 0.70, "C": 0.80, "X": 0.60, "D": 0.50}
+            bm25_scores = {"A": 0.10, "B": 0.90, "C": 0.20, "X": 0.30, "D": 0.40}
+            with patch.object(
+                retriever,
+                "_dense_scores",
+                return_value=dense_scores,
+            ), patch.object(
+                retriever,
+                "_raw_bm25_scores",
+                return_value=bm25_scores,
+            ), patch.object(
+                type(retriever),
+                "dense_available",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                ranked = retriever.retrieve(
+                    "BROWSING",
+                    "semantic query",
+                    ShoppingConstraints(),
+                    limit=5,
+                )
+
+            self.assertEqual(ranked[0].parent_asin, "B")
+            self.assertGreater(ranked[0].fusion_score, ranked[1].fusion_score)
+            self.assertEqual(ranked[0].score, ranked[0].ranking_score)
 
     def test_dense_ranking_preserves_budget_and_recommendation_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
