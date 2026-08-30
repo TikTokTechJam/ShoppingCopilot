@@ -11,7 +11,6 @@ from __future__ import annotations
 import heapq
 import json
 import math
-import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -25,15 +24,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
-from starter.bm25 import (
-    BM25Index,
-    DEFAULT_BM25F_ARTIFACT_DIR,
-    DEFAULT_BM25F_DB_NAME,
-    PythonBM25FIndex,
-    SQLiteBM25FIndex,
-    _catalog_sha256,
-    default_extension_path,
-)
+from starter.bm25 import BM25Index
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -354,8 +345,6 @@ class ProductRetriever:
         query_encoder: QueryEncoder | None = None,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
-        bm25f_artifact_dir: str | Path | None = None,
-        bm25f_extension_path: str | Path | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.query_encoder = query_encoder
@@ -369,71 +358,20 @@ class ProductRetriever:
         self.rating_lookup: dict[str, float | None] = {}
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
-        self.bm25_index: BM25Index | PythonBM25FIndex | SQLiteBM25FIndex | None = None
+        self.bm25_index: BM25Index | None = None
         self.bm25_state = "loading"
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
-        self.bm25_backend: str | None = None
         try:
-            requested_backend = os.environ.get(
-                "SHOPPING_BM25F_BACKEND", "auto"
-            ).casefold()
-            if requested_backend not in {"auto", "sqlite", "python"}:
-                raise ValueError(
-                    "SHOPPING_BM25F_BACKEND must be auto, sqlite, or python"
-                )
-            artifact_dir = (
-                Path(bm25f_artifact_dir)
-                if bm25f_artifact_dir is not None
-                else DEFAULT_BM25F_ARTIFACT_DIR
+            self.bm25_index = BM25Index(
+                self.product_by_asin,
+                self._catalog_order,
             )
-            db_path = artifact_dir / DEFAULT_BM25F_DB_NAME
-            if requested_backend == "python":
-                self.bm25_index = PythonBM25FIndex(
-                    self.product_by_asin,
-                    self._catalog_order,
-                )
-                self.bm25_state = "reference_python"
-                self.bm25_error = "Python BM25F reference selected by environment"
-            elif db_path.is_file():
-                self.bm25_index = SQLiteBM25FIndex(
-                    db_path,
-                    extension_path=bm25f_extension_path or default_extension_path(),
-                    expected_catalog_sha256=_catalog_sha256(self.catalog_path),
-                    expected_catalog_rows=len(self._catalog_order),
-                )
-            else:
-                self.bm25_index = PythonBM25FIndex(
-                    self.product_by_asin,
-                    self._catalog_order,
-                )
-                self.bm25_state = "fallback_python"
-                self.bm25_error = (
-                    f"Native BM25F artifact not found at {db_path}; "
-                    "using Python BM25F reference"
-                )
-            if self.bm25_state == "loading":
-                self.bm25_state = "ready"
+            self.bm25_state = "ready"
             self.bm25_build_seconds = self.bm25_index.build_seconds
-            self.bm25_backend = getattr(self.bm25_index, "backend", None)
-            if self.bm25_state in {"fallback_python", "reference_python"}:
-                print(f"[retrieval] {self.bm25_error}", flush=True)
-        except Exception as exc:
-            # A missing/incompatible native artifact must not prevent the
-            # Agent from starting. The explicit reference implementation is
-            # the safe fallback; it is slower but preserves lexical service.
-            try:
-                self.bm25_index = PythonBM25FIndex(
-                    self.product_by_asin,
-                    self._catalog_order,
-                )
-                self.bm25_state = "fallback_python"
-                self.bm25_backend = self.bm25_index.backend
-                self.bm25_build_seconds = self.bm25_index.build_seconds
-                self.bm25_error = f"Native BM25F unavailable: {exc}"
-            except Exception as fallback_exc:
-                self.bm25_state = "unavailable"
-                self.bm25_error = f"BM25F unavailable: {fallback_exc}"
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            self.bm25_state = "unavailable"
+            self.bm25_error = f"BM25 index unavailable: {exc}"
             print(f"[retrieval] {self.bm25_error}", flush=True)
         self.embedding_matrix: Any = None
         self.embedding_asins: tuple[str, ...] = ()
@@ -851,8 +789,6 @@ class ProductRetriever:
         self,
         query_text: str,
         eligible_asins: Collection[str],
-        *,
-        top_k: int | None = None,
     ) -> dict[str, float]:
         if self.bm25_index is None:
             return {}
@@ -860,7 +796,6 @@ class ProductRetriever:
             return self.bm25_index.search(
                 query_text,
                 allowed_asins=eligible_asins,
-                top_k=top_k,
             )
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
@@ -996,7 +931,7 @@ class ProductRetriever:
         dense_scores = semantic_scores
         if not dense_scores and self.dense_available:
             dense_scores = self._dense_scores(query_text)
-        bm25_scores = self._bm25_scores(query_text, eligible_set, top_k=limit)
+        bm25_scores = self._bm25_scores(query_text, eligible_set)
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
