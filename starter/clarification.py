@@ -18,9 +18,9 @@ abstain floor from a magic constant into a bet size and makes the old
 from __future__ import annotations
 
 import math
-from collections import Counter
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable
 
+from starter.candidate_stats import CandidatePoolAnalyzer, CandidatePoolStats
 from starter.followup import MAX_TURNS
 from starter.followup import utility as session_utility
 from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
@@ -158,48 +158,6 @@ def _answer_probability(
     odds = bounded / (1.0 - bounded) * ratio
     return odds / (1.0 + odds)
 
-def _candidate_values(candidate: object, attribute: str) -> tuple[str, ...]:
-    attributes = getattr(candidate, "attributes", {})
-    if not isinstance(attributes, Mapping):
-        return ()
-    values = attributes.get(attribute, ())
-    if isinstance(values, str):
-        values = (values,)
-    if not isinstance(values, (list, tuple, set, frozenset)):
-        return ()
-    result: list[str] = []
-    for value in values:
-        text = str(value).strip()
-        if text and text not in result:
-            result.append(text)
-    return tuple(result)
-
-
-def _candidate_price(candidate: object) -> float | None:
-    value = getattr(candidate, "price", None)
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        price = float(value)
-    except (TypeError, ValueError):
-        return None
-    return price if math.isfinite(price) and price >= 0.0 else None
-
-
-def _price_band(price: float) -> str:
-    """Return a coarse, user-meaningful budget band for question utility."""
-
-    if price < 25.0:
-        return "under_25"
-    if price < 50.0:
-        return "25_to_50"
-    if price < 100.0:
-        return "50_to_100"
-    if price < 200.0:
-        return "100_to_200"
-    return "200_plus"
-
-
 def _known(constraints: ShoppingConstraints, attribute: str) -> bool:
     if attribute == "budget":
         return (
@@ -216,34 +174,25 @@ def _utility(
     mode: str,
     profile_factor: Callable[[str], float] | None = None,
     turn: int | None = None,
+    candidate_stats: CandidatePoolStats | None = None,
 ) -> float:
     """Expected score gain from asking about ``attribute`` on ``turn``."""
-    if len(candidates) < 2:
+    stats = candidate_stats or CandidatePoolAnalyzer().analyze(candidates)
+    if stats.candidate_count < 2:
         return float("-inf")
 
-    counts: Counter[str] = Counter()
-    covered = 0
-    for candidate in candidates:
-        price = _candidate_price(candidate) if attribute == "budget" else None
-        values = (
-            (_price_band(price),)
-            if price is not None
-            else _candidate_values(candidate, attribute)
-        )
-        if not values:
-            continue
-        covered += 1
-        share = 1.0 / len(values)
-        for value in values:
-            counts[value] += share
-
-    coverage = covered / len(candidates)
+    facet = stats.facets.get(attribute)
+    if facet is None:
+        return float("-inf")
+    counts = facet.counts
+    coverage = facet.coverage
     if coverage < 0.20 or len(counts) < 2:
         return float("-inf")
 
-    total = sum(counts.values())
-    probabilities = [value / total for value in counts.values()]
-    gini = 1.0 - sum(probability * probability for probability in probabilities)
+    # ``expected_reduction`` is the existing Gini split term, now supplied by
+    # the shared candidate-pool analyzer instead of being recomputed per
+    # attribute inside this policy.
+    gini = facet.expected_reduction
     if gini < 0.10:
         return float("-inf")
 
@@ -263,6 +212,14 @@ def _utility(
 class ClarificationPolicy:
     """Choose at most one useful, not-yet-asked supported attribute."""
 
+    def __init__(self, candidate_analyzer: CandidatePoolAnalyzer | None = None) -> None:
+        self.candidate_analyzer = candidate_analyzer or CandidatePoolAnalyzer()
+
+    def analyze(self, candidates: Iterable[object]) -> CandidatePoolStats:
+        """Analyze a retrieved candidate pool for selection and question text."""
+
+        return self.candidate_analyzer.analyze(candidates)
+
     def choose(
         self,
         candidates: Iterable[object],
@@ -272,8 +229,10 @@ class ClarificationPolicy:
         mode: str = "BROWSING",
         profile_factor: Callable[[str], float] | None = None,
         turn: int | None = None,
+        candidate_stats: CandidatePoolStats | None = None,
     ) -> str | None:
         pool = tuple(candidates)
+        stats = candidate_stats or self.candidate_analyzer.analyze(pool)
         asked = set(asked_attributes)
         available = [
             attribute
@@ -285,7 +244,14 @@ class ClarificationPolicy:
 
         scored = [
             (
-                self._score(attribute, pool, mode, profile_factor, turn),
+                self._score(
+                    attribute,
+                    pool,
+                    mode,
+                    profile_factor,
+                    turn,
+                    candidate_stats=stats,
+                ),
                 -SUPPORTED_ATTRIBUTES.index(attribute),
                 attribute,
             )
@@ -307,13 +273,60 @@ class ClarificationPolicy:
         mode: str,
         profile_factor: Callable[[str], float] | None = None,
         turn: int | None = None,
+        candidate_stats: CandidatePoolStats | None = None,
     ) -> float:
-        return _utility(attribute, candidates, mode, profile_factor, turn)
+        return _utility(
+            attribute,
+            candidates,
+            mode,
+            profile_factor,
+            turn,
+            candidate_stats=candidate_stats,
+        )
 
     @staticmethod
-    def question(attribute: str | None) -> str:
+    def question(
+        attribute: str | None,
+        candidate_stats: CandidatePoolStats | None = None,
+    ) -> str:
         if attribute is None:
             return "Here are the closest matches I found."
+        if candidate_stats is not None:
+            facet = candidate_stats.facets.get(attribute)
+            if facet is not None and facet.coverage >= 0.20:
+                values = facet.top_values(3)
+                if len(values) >= 2:
+                    if attribute == "budget":
+                        labels = {
+                            "under_25": "under $25",
+                            "25_to_50": "$25 to $50",
+                            "50_to_100": "$50 to $100",
+                            "100_to_200": "$100 to $200",
+                            "200_plus": "$200 or more",
+                        }
+                        options = tuple(labels.get(value, value) for value in values)
+                        option_text = (
+                            options[0]
+                            if len(options) == 1
+                            else ", ".join(options[:-1]) + f", or {options[-1]}"
+                        )
+                        return f"Would you prefer {option_text}?"
+                    noun = {
+                        "category": "type of item",
+                        "use_case": "use case",
+                    }.get(attribute, attribute)
+                    if attribute == "use_case":
+                        prefix = "Is this mainly for"
+                    elif attribute == "feature":
+                        prefix = "Would you prefer"
+                    else:
+                        prefix = "Do you prefer"
+                    option_text = (
+                        values[0]
+                        if len(values) == 1
+                        else ", ".join(values[:-1]) + f", or another {noun}"
+                    )
+                    return f"{prefix} {option_text}?"
         return ATTRIBUTE_QUESTIONS.get(attribute, "Which preference matters most for this item?")
 
 
@@ -325,6 +338,7 @@ def choose_attribute(
     mode: str = "BROWSING",
     profile_factor: Callable[[str], float] | None = None,
     turn: int | None = None,
+    candidate_stats: CandidatePoolStats | None = None,
 ) -> str | None:
     """Functional convenience wrapper for the default deterministic policy."""
 
@@ -335,6 +349,7 @@ def choose_attribute(
         mode=mode,
         profile_factor=profile_factor,
         turn=turn,
+        candidate_stats=candidate_stats,
     )
 
 
@@ -343,6 +358,8 @@ __all__ = [
     "ASK_UTILITY_FLOOR",
     "PRIOR_CEILING",
     "ATTRIBUTE_QUESTIONS",
+    "CandidatePoolAnalyzer",
+    "CandidatePoolStats",
     "ClarificationPolicy",
     "NORMAL_CLARIFICATION_ATTRIBUTES",
     "SUPPORTED_ATTRIBUTES",
