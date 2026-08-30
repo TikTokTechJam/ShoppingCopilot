@@ -163,10 +163,11 @@ def _read_facts(path: Path, *, input_format: str = "auto") -> _ReadResult:
             normalized_record: dict[str, list[tuple[str, str]]] = {}
             malformed = False
             for attribute in ATTRIBUTE_FIELDS:
-                # V5 aggregation intentionally omits style. It remains part of
-                # the seven-field dictionary contract, but contributes no values.
                 if record_format == "v5":
-                    raw_values = [] if attribute == "style" else facts.get(attribute, [])
+                    # Keep compatibility with older V5 aggregates that were
+                    # written before style was included, while using style
+                    # whenever the aggregate contains it.
+                    raw_values = facts.get(attribute, [])
                 else:
                     raw_values = facts.get(attribute)
                 if not isinstance(raw_values, list):

@@ -57,6 +57,137 @@ class AggregateV5AnnotationTests(unittest.TestCase):
             self.assertEqual(records[0]["facts"]["brand"], ["new balance"])
             self.assertEqual(set(records[0]["facts"]), set(V5_ATTRIBUTES))
 
+    def test_style_falls_back_to_v4_when_v5_style_file_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            input_dir = root / "v5"
+            input_dir.mkdir()
+            fallback = root / "v4_annotations.jsonl"
+            output = root / "annotations.jsonl"
+            _write_jsonl(
+                catalog,
+                [
+                    {"parent_asin": "A", "price": 12.99},
+                    {"parent_asin": "B", "price": 20.00},
+                ],
+            )
+            for attribute in V5_ATTRIBUTES:
+                if attribute == "style":
+                    continue
+                _write_jsonl(
+                    input_dir / f"{attribute}.jsonl",
+                    [
+                        {"parent_asin": "A", attribute: []},
+                        {"parent_asin": "B", attribute: []},
+                    ],
+                )
+            _write_jsonl(
+                fallback,
+                [
+                    {
+                        "parent_asin": "B",
+                        "price": 20.00,
+                        "facts": {
+                            "category": [],
+                            "brand": [],
+                            "color": [],
+                            "material": [],
+                            "style": ["High_Waisted"],
+                            "feature": [],
+                            "use_case": [],
+                        },
+                        "annotation": {
+                            "status": "success",
+                            "model": "test-model",
+                            "prompt_version": "test-v1",
+                        },
+                    },
+                    {
+                        "parent_asin": "A",
+                        "price": 12.99,
+                        "facts": {
+                            "category": [],
+                            "brand": [],
+                            "color": [],
+                            "material": [],
+                            "style": [],
+                            "feature": [],
+                            "use_case": [],
+                        },
+                        "annotation": {
+                            "status": "success",
+                            "model": "test-model",
+                            "prompt_version": "test-v1",
+                        },
+                    },
+                ],
+            )
+
+            summary = aggregate_v5_annotations(
+                catalog,
+                input_dir,
+                output,
+                style_fallback_path=fallback,
+            )
+            records = [
+                json.loads(line)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(summary["style_source"], "v4_fallback")
+            self.assertEqual(records[0]["facts"]["style"], [])
+            self.assertEqual(records[1]["facts"]["style"], ["high waisted"])
+
+    def test_explicit_v5_style_file_takes_precedence_over_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.jsonl"
+            input_dir = root / "v5"
+            input_dir.mkdir()
+            fallback = root / "v4_annotations.jsonl"
+            output = root / "annotations.jsonl"
+            _write_jsonl(catalog, [{"parent_asin": "A", "price": 12.99}])
+            for attribute in V5_ATTRIBUTES:
+                values = [{"parent_asin": "A", attribute: []}]
+                if attribute == "style":
+                    values = [{"parent_asin": "A", "style": ["relaxed fit"]}]
+                _write_jsonl(input_dir / f"{attribute}.jsonl", values)
+            _write_jsonl(
+                fallback,
+                [
+                    {
+                        "parent_asin": "A",
+                        "price": 12.99,
+                        "facts": {
+                            "category": [],
+                            "brand": [],
+                            "color": [],
+                            "material": [],
+                            "style": ["High_Waisted"],
+                            "feature": [],
+                            "use_case": [],
+                        },
+                        "annotation": {
+                            "status": "success",
+                            "model": "test-model",
+                            "prompt_version": "test-v1",
+                        },
+                    }
+                ],
+            )
+
+            summary = aggregate_v5_annotations(
+                catalog,
+                input_dir,
+                output,
+                style_fallback_path=fallback,
+            )
+            record = json.loads(output.read_text(encoding="utf-8"))
+
+            self.assertEqual(summary["style_source"], "v5")
+            self.assertEqual(record["facts"]["style"], ["relaxed fit"])
+
     def test_duplicate_and_external_asins_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
