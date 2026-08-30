@@ -11,6 +11,7 @@ from __future__ import annotations
 import heapq
 import json
 import math
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -24,7 +25,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
-from starter.bm25 import BM25Index
+from starter.bm25 import BM25Index, BM25QueryCompiler
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -88,6 +89,20 @@ NEUTRAL_NORMALIZED_RATING = 0.5
 CRITICAL_USER_RATING_THRESHOLD = 3.5
 RATING_BOOST_WEIGHT = 0.15
 RATING_DEFAULT_WEIGHT = 0.02
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Read a small boolean runtime switch without making configuration mandatory."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def normalized_rating(rating: float | None) -> float:
@@ -359,6 +374,14 @@ class ProductRetriever:
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
         self.bm25_index: BM25Index | None = None
+        self.bm25_query_compiler = BM25QueryCompiler()
+        # The per-slot BM25 path is the default. Keeping an explicit raw-query
+        # switch makes before/after lexical comparisons possible without
+        # changing the BM25 index itself.
+        self.use_slot_bm25_groups = _env_flag(
+            "SHOPPING_BM25_SLOT_GROUPS",
+            default=True,
+        )
         self.bm25_state = "loading"
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
@@ -789,14 +812,62 @@ class ProductRetriever:
         self,
         query_text: str,
         eligible_asins: Collection[str],
+        constraints: object | None = None,
+        semantic_constraints: object | None = None,
     ) -> dict[str, float]:
         if self.bm25_index is None:
             return {}
         try:
-            return self.bm25_index.search(
-                query_text,
-                allowed_asins=eligible_asins,
+            if not self.use_slot_bm25_groups:
+                return self.bm25_index.search(
+                    query_text,
+                    allowed_asins=eligible_asins,
+                )
+
+            groups = self.bm25_query_compiler.compile_groups(
+                constraints,
+                semantic_constraints,
             )
+            if not groups:
+                return {}
+
+            # Each slot is normalized independently before fusion. SQLite's
+            # raw BM25 scores are only comparable within the same query; a
+            # per-group peak normalization gives every active slot one equal
+            # contribution and prevents a slot with many lexical realizations
+            # from dominating the final lexical signal.
+            normalized_by_group: list[dict[str, float]] = []
+            for lexical_query in groups.values():
+                scores = self.bm25_index.search(
+                    lexical_query,
+                    allowed_asins=eligible_asins,
+                )
+                if not scores:
+                    normalized_by_group.append({})
+                    continue
+                peak = max(
+                    (float(score) for score in scores.values() if math.isfinite(float(score))),
+                    default=0.0,
+                )
+                if peak <= 0.0:
+                    normalized_by_group.append({})
+                    continue
+                normalized_by_group.append(
+                    {
+                        str(asin): min(1.0, max(0.0, float(score) / peak))
+                        for asin, score in scores.items()
+                        if math.isfinite(float(score)) and float(score) > 0.0
+                    }
+                )
+
+            group_count = len(normalized_by_group)
+            if group_count == 0:
+                return {}
+            fused: dict[str, float] = {}
+            for group_scores in normalized_by_group:
+                for asin, score in group_scores.items():
+                    fused[asin] = fused.get(asin, 0.0) + score / group_count
+            return fused
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
 
@@ -931,7 +1002,12 @@ class ProductRetriever:
         dense_scores = semantic_scores
         if not dense_scores and self.dense_available:
             dense_scores = self._dense_scores(query_text)
-        bm25_scores = self._bm25_scores(query_text, eligible_set)
+        bm25_scores = self._bm25_scores(
+            query_text,
+            eligible_set,
+            constraints,
+            semantic_constraints,
+        )
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}

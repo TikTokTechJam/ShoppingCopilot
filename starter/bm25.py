@@ -12,7 +12,7 @@ import time
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
-from dictionary.registry import semantic_query_tokens
+from dictionary.registry import normalize_text, semantic_query_tokens
 
 
 # One weight is required for every FTS column, including the UNINDEXED ASIN.
@@ -20,6 +20,23 @@ from dictionary.registry import semantic_query_tokens
 BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
 MAX_QUERY_NGRAM = 3
+
+# The compiler supplies each active slot with a deliberately small number of
+# semantic surface forms.  The retriever searches those slot groups separately
+# so one slot cannot dominate the combined BM25 signal merely because it has
+# many BGE candidates.
+BM25_EXPANSIONS_PER_FIELD = 3
+BM25_EXPANSION_MIN_SIMILARITY = 0.82
+BM25_EXPANSION_MAX_SCORE_GAP = 0.08
+BM25_QUERY_FIELDS = (
+    "category",
+    "brand",
+    "color",
+    "material",
+    "feature",
+    "use_case",
+    "style",
+)
 
 
 def _text(value: object) -> str:
@@ -67,6 +84,199 @@ def _match_expression(phrases: Iterable[str]) -> str:
         if str(phrase).strip()
     )
     return " OR ".join(escaped)
+
+
+def _field_values(source: object | None, field_name: str) -> tuple[str, ...]:
+    """Read a tuple-like constraint field without coupling BM25 to state types."""
+
+    if source is None:
+        return ()
+    value = getattr(source, field_name, None)
+    if value is None and isinstance(source, Mapping):
+        value = source.get(field_name)
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values = value
+    else:
+        values = (value,)
+    result: list[str] = []
+    for item in values:
+        text = str(item).strip()
+        if text and text not in result:
+            result.append(text)
+    return tuple(result)
+
+
+def _evidence_items(source: object | None) -> tuple[object, ...]:
+    if source is None:
+        return ()
+    value = getattr(source, "evidence", None)
+    if value is None and isinstance(source, Mapping):
+        value = source.get("evidence")
+    return tuple(value) if isinstance(value, (list, tuple)) else ()
+
+
+def _evidence_value(item: object) -> str:
+    """Return the canonical value represented by a canonical-id evidence item."""
+
+    canonical_id = getattr(item, "canonical_id", None)
+    if isinstance(item, Mapping):
+        canonical_id = item.get("canonical_id", canonical_id)
+    if not isinstance(canonical_id, str):
+        return ""
+    _, separator, value = canonical_id.partition(":")
+    return (value if separator else canonical_id).replace("_", " ").strip()
+
+
+def _evidence_field(item: object) -> str:
+    value = getattr(item, "attribute", None)
+    if isinstance(item, Mapping):
+        value = item.get("attribute", value)
+    return str(value or "").strip()
+
+
+def _evidence_raw_text(item: object) -> str:
+    value = getattr(item, "raw_text", None)
+    if isinstance(item, Mapping):
+        value = item.get("raw_text", value)
+    return str(value or "").strip()
+
+
+def _evidence_score(item: object) -> float:
+    value = getattr(item, "confidence", None)
+    if isinstance(item, Mapping):
+        value = item.get("confidence", value)
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return score if score == score else 0.0
+
+
+def _is_semantic_evidence(item: object) -> bool:
+    layer = getattr(item, "layer", None)
+    method = getattr(item, "match_method", None)
+    if isinstance(item, Mapping):
+        layer = item.get("layer", layer)
+        method = item.get("match_method", method)
+    return str(layer or "").casefold() == "layer2" or str(method or "").startswith(
+        "semantic_"
+    )
+
+
+class BM25QueryCompiler:
+    """Compile active slot state into bounded lexical BM25 query groups.
+
+    Each returned group represents one information need such as ``feature`` or
+    ``use_case``. Canonical values already present in the active state are
+    included once. Evidence-derived user surfaces are optional expansions and
+    capped per slot.
+
+    The compiler only creates query text. SQLite still owns tokenization, FTS
+    matching, BM25 scoring, and result ordering. Score normalization/fusion is
+    deliberately left to the retriever because it needs the per-group result
+    distributions.
+    """
+
+    def __init__(
+        self,
+        *,
+        expansions_per_field: int = BM25_EXPANSIONS_PER_FIELD,
+        min_expansion_similarity: float = BM25_EXPANSION_MIN_SIMILARITY,
+        max_expansion_score_gap: float = BM25_EXPANSION_MAX_SCORE_GAP,
+    ) -> None:
+        self.expansions_per_field = max(0, int(expansions_per_field))
+        self.min_expansion_similarity = float(min_expansion_similarity)
+        self.max_expansion_score_gap = max(0.0, float(max_expansion_score_gap))
+
+    @staticmethod
+    def _add_term(
+        terms: list[str],
+        seen: set[str],
+        value: str,
+    ) -> None:
+        text = str(value).strip()
+        if not text:
+            return
+        # Use the same semantic normalization as the normal BM25 query path
+        # for de-duplication, while retaining the readable surface in the
+        # compiled query.  BM25Index will apply the final tokenizer cleanup.
+        key = " ".join(semantic_query_tokens(text))
+        if not key or key in seen:
+            return
+        seen.add(key)
+        terms.append(text)
+
+    def compile_groups(
+        self,
+        constraints: object | None,
+        semantic_constraints: object | None = None,
+    ) -> dict[str, str]:
+        """Return one combined lexical query for each active normal slot."""
+
+        semantic_evidence = _evidence_items(semantic_constraints)
+        # Some callers retain the evidence on the combined constraints object;
+        # include it as a fallback without duplicating the semantic view.
+        if not semantic_evidence:
+            semantic_evidence = tuple(
+                item for item in _evidence_items(constraints) if _is_semantic_evidence(item)
+            )
+
+        groups: dict[str, str] = {}
+        for field_name in BM25_QUERY_FIELDS:
+            terms: list[str] = []
+            seen: set[str] = set()
+            for value in _field_values(constraints, field_name):
+                self._add_term(terms, seen, value)
+
+            expansions = [
+                item
+                for item in semantic_evidence
+                if _evidence_field(item) == field_name
+                and _is_semantic_evidence(item)
+                and _evidence_raw_text(item)
+            ]
+            expansions.sort(
+                key=lambda item: (-_evidence_score(item), _evidence_raw_text(item))
+            )
+            if expansions:
+                best_score = _evidence_score(expansions[0])
+                added = 0
+                for item in expansions:
+                    score = _evidence_score(item)
+                    if score < self.min_expansion_similarity:
+                        continue
+                    if best_score - score > self.max_expansion_score_gap:
+                        continue
+                    before = len(terms)
+                    # The canonical value and the user-facing surface are two
+                    # lexical realizations of one accepted semantic slot
+                    # value. They consume one expansion budget together.
+                    self._add_term(terms, seen, _evidence_value(item))
+                    self._add_term(terms, seen, _evidence_raw_text(item))
+                    if len(terms) == before:
+                        continue
+                    added += 1
+                    if added >= self.expansions_per_field:
+                        break
+
+            # A manually constructed/legacy semantic state may not carry
+            # evidence. In that case its active values are still useful, but
+            # there is no confidence ordering from which to cap them.
+            evidenced_values = {
+                normalize_text(_evidence_value(item))
+                for item in semantic_evidence
+                if _evidence_field(item) == field_name
+            }
+            for value in _field_values(semantic_constraints, field_name):
+                if not semantic_evidence or normalize_text(value) not in evidenced_values:
+                    self._add_term(terms, seen, value)
+
+            if terms:
+                groups[field_name] = " ".join(terms)
+
+        return groups
 
 
 class BM25Index:
@@ -180,4 +390,11 @@ class BM25Index:
         return scores
 
 
-__all__ = ["BM25_FIELD_WEIGHTS", "BM25Index"]
+__all__ = [
+    "BM25_EXPANSIONS_PER_FIELD",
+    "BM25_EXPANSION_MIN_SIMILARITY",
+    "BM25_EXPANSION_MAX_SCORE_GAP",
+    "BM25_FIELD_WEIGHTS",
+    "BM25Index",
+    "BM25QueryCompiler",
+]
