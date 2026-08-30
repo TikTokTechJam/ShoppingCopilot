@@ -386,13 +386,18 @@ class SessionPool:
 
     def by_id(self, session_id: str) -> dict[str, Any] | None:
         wanted = str(session_id).strip()
+        if not wanted:
+            return None
         aliases = {wanted}
-        if wanted.startswith("manual400:"):
-            aliases.add(wanted.split(":", 1)[1])
-        if wanted.startswith("manual400_"):
-            aliases.add(wanted)
+        wanted_folded = wanted.casefold()
+        for prefix in ("manual400:", "public:"):
+            if wanted_folded.startswith(prefix):
+                aliases.add(wanted[len(prefix):])
+                break
+        alias_keys = {value.casefold() for value in aliases}
         for session in self.sessions:
-            if str(session.get("sample_id", "")).strip() in aliases:
+            sample_id = str(session.get("sample_id", "")).strip()
+            if sample_id.casefold() in alias_keys:
                 return dict(session)
         return None
 
