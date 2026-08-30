@@ -63,7 +63,7 @@ DEFAULT_LAYER2_ARTIFACT_PATHS = (
 STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "category": 0.70,
     "price": 1.50,
-    "brand": 3.00,
+    "brand": 7.00,
     "size": 0.80,
     "color": 1.00,
     "material": 1.20,
