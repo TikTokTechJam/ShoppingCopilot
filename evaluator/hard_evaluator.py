@@ -202,6 +202,21 @@ def validate_sessions(
     return rows
 
 
+def select_sessions(
+    sessions: Iterable[Mapping[str, Any]],
+    *,
+    override_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Select the benchmark rows to execute after full-set validation."""
+
+    rows = [dict(row) for row in sessions]
+    if not override_only:
+        return rows
+    return [
+        row for row in rows if str(row.get("scenario_type", "")) == "intent_override"
+    ]
+
+
 def validate_agent_response(response: Any) -> dict[str, Any]:
     if not isinstance(response, dict):
         raise TypeError("Agent response must be an object")
@@ -331,8 +346,7 @@ def simulate_customer_reply(
     if not isinstance(ask_attribute, str) or ask_attribute not in ALLOWED_ATTRIBUTES:
         return "I don't have an additional preference there."
 
-    # `other` is intentionally NOT a wildcard in this benchmark.
-    if ask_attribute in {"other", "category"}:
+    if ask_attribute == "category":
         return "I don't have a specific additional preference there."
 
     # Boundary behavior: only sessions explicitly marked boundary_first reject
@@ -353,7 +367,7 @@ def simulate_customer_reply(
     for fact in session["hidden_facts"]:
         fid = fact_id(fact)
         if (
-            str(fact["attribute"]) == ask_attribute
+            (ask_attribute == "other" or str(fact["attribute"]) == ask_attribute)
             and fid is not None
             and fid not in disclosed
             and fid not in stale
@@ -746,6 +760,7 @@ def evaluate(
     scenario_metrics = {
         scenario: add_score_fields(metric_summary(grouped[scenario]))
         for scenario in SCENARIO_COUNTS
+        if grouped.get(scenario)
     }
 
     return {
@@ -866,6 +881,20 @@ def _debug_state_snapshot(agent: Any, session_id: str) -> dict[str, Any]:
         "constraints": _debug_constraints(state),
         "semantic_constraints": _debug_semantic_constraints(state),
         "mode": getattr(state, "mode", None),
+        "clarification_cycle": int(getattr(state, "clarification_cycle", 1)),
+        "attribute_call_count": {
+            str(field_name): int(count)
+            for field_name, count in sorted(
+                getattr(state, "attribute_call_count", {}).items()
+            )
+        },
+        "no_preference_attributes": sorted(
+            str(value)
+            for value in getattr(state, "no_preference_attributes", set())
+        ),
+        "clarification_stopped": bool(
+            getattr(state, "clarification_stopped", False)
+        ),
         "override_kind": getattr(state, "last_override_kind", None),
         "override_delta": _debug_constraints(
             getattr(state, "last_override_delta", None)
@@ -948,18 +977,22 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
 
     structured = sort_by(eligible, "constraint_score")
     dense = sort_by(eligible, "dense_score")
+    bm25 = sort_by(eligible, "bm25_score")
     hybrid = sort_by(eligible, "score")
     global_structured = sort_by(global_ranking, "constraint_score")
     global_dense = sort_by(global_ranking, "dense_score")
+    global_bm25 = sort_by(global_ranking, "bm25_score")
     global_hybrid = sort_by(global_ranking, "score")
     return {
         "eligible": eligible,
         "global": global_ranking,
         "structured": structured,
         "dense": dense,
+        "bm25": bm25,
         "hybrid": hybrid,
         "global_structured": global_structured,
         "global_dense": global_dense,
+        "global_bm25": global_bm25,
         "global_hybrid": global_hybrid,
         "target_eligible": next(
             (candidate for candidate in eligible if candidate.parent_asin == target),
@@ -1157,7 +1190,12 @@ class InteractiveDebugPrinter:
         print(
             "Score weights: "
             f"structured={score_weights['structured']:.2f}, "
-            f"dense={score_weights['dense']:.2f}"
+            f"dense={score_weights['dense']:.2f}, "
+            f"bm25={score_weights.get('bm25', 0.0):.2f}"
+        )
+        print(
+            "BM25: "
+            f"{'AVAILABLE' if bool(getattr(retriever, 'bm25_available', False)) else 'UNAVAILABLE'}"
         )
         print()
         snapshot = _debug_state_snapshot(agent, session_id)
@@ -1187,6 +1225,7 @@ class InteractiveDebugPrinter:
         global_ranking = ranking["global"]
         structured_ranking = ranking["structured"]
         dense_ranking = ranking["dense"]
+        bm25_ranking = ranking["bm25"]
         hybrid_ranking = ranking["hybrid"]
         target_eligible = ranking["target_eligible"]
         target_global = ranking["target_global"]
@@ -1215,12 +1254,14 @@ class InteractiveDebugPrinter:
         if target_candidate is not None:
             print(f"Structured score: {target_candidate.constraint_score:.4f}")
             print(f"Dense score: {target_candidate.dense_score:.4f}")
+            print(f"BM25 score: {target_candidate.bm25_score:.4f}")
             print(f"Final score: {target_candidate.score:.4f}")
         else:
             print("Target score: N/A")
         print("Target ranks (eligible products):")
         print(f"  Structured rank: {_debug_rank(structured_ranking, target) or 'MISS'}")
         print(f"  Dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
+        print(f"  BM25 rank: {_debug_rank(bm25_ranking, target) or 'MISS'}")
         print(f"  Hybrid rank: {_debug_rank(hybrid_ranking, target) or 'MISS'}")
         top10_rank = ranked.index(target) + 1 if target in ranked else None
         print(f"Top10 rank: {top10_rank if top10_rank is not None else 'MISS'}")
@@ -1236,7 +1277,8 @@ class InteractiveDebugPrinter:
             print(
                 f"{index}. {asin} score={candidate.score:.4f} "
                 f"structured={candidate.constraint_score:.4f} "
-                f"dense={candidate.dense_score:.4f}"
+                f"dense={candidate.dense_score:.4f} "
+                f"bm25={candidate.bm25_score:.4f}"
             )
             print(f"   matched={list(candidate.matched_constraints)}")
 
@@ -1298,8 +1340,13 @@ def debug_evaluate(
     debug_sessions: int | None = None,
     strict: bool = True,
     input_fn: Any | None = None,
+    validate: bool = True,
 ) -> dict[str, Any]:
-    rows = validate_sessions(sessions, catalog_ids)
+    rows = (
+        validate_sessions(sessions, catalog_ids)
+        if validate
+        else [dict(row) for row in sessions]
+    )
     selected = debug_session_order(rows, seed=seed, limit=debug_sessions)
     seed_label = str(seed) if seed is not None else "random"
     print(
@@ -1361,6 +1408,11 @@ def main() -> None:
         help="Treat malformed Agent responses as empty instead of failing.",
     )
     parser.add_argument(
+        "--override-only",
+        action="store_true",
+        help="Evaluate only the 60 intent_override sessions.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Interactively inspect randomly ordered benchmark sessions.",
@@ -1380,6 +1432,20 @@ def main() -> None:
     sessions = load_jsonl(args.sessions)
     catalog_ids = load_catalog_ids(args.catalog)
 
+    try:
+        validated_sessions = validate_sessions(sessions, catalog_ids)
+    except ValueError as exc:
+        parser.error(str(exc))
+    selected_sessions = select_sessions(
+        validated_sessions,
+        override_only=args.override_only,
+    )
+    if args.override_only:
+        print(
+            f"Override-only mode: evaluating {len(selected_sessions)} "
+            "intent_override sessions."
+        )
+
     if not args.debug and (args.seed is not None or args.debug_sessions is not None):
         parser.error("--seed and --debug-sessions require --debug")
     if args.debug_sessions is not None and args.debug_sessions <= 0:
@@ -1397,11 +1463,12 @@ def main() -> None:
         try:
             debug_evaluate(
                 agent=agent,
-                sessions=sessions,
+                sessions=selected_sessions,
                 catalog_ids=catalog_ids,
                 seed=args.seed,
                 debug_sessions=args.debug_sessions,
                 strict=not args.non_strict,
+                validate=False,
             )
         except (KeyboardInterrupt, EOFError):
             print("\nInteractive debug mode stopped.")
@@ -1409,9 +1476,10 @@ def main() -> None:
 
     result = evaluate(
         agent=agent,
-        sessions=sessions,
+        sessions=selected_sessions,
         catalog_ids=catalog_ids,
         strict=not args.non_strict,
+        validate=False,
         progress=not args.no_progress,
     )
 

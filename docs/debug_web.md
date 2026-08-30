@@ -1,10 +1,25 @@
-# Local Manual400 debug page
+# Local Manual400 and interactive debug page
 
 `evaluator.debug_web` is a localhost-only viewer around the same
 `Manual400SessionRunner` used by `evaluator.hard_evaluator`. It loads the
 catalog and Agent once, then lets you step through one evaluator session turn
 by turn. The current semantic path is the local BGE canonical-attribute
 dictionary; whole-product Jina retrieval is not part of this flow.
+
+For a developer-controlled conversation against a product you select from the
+catalog, start interactive mode:
+
+```powershell
+python -m evaluator.debug_web --interactive
+```
+
+The terminal starts a target picker. Enter a catalog ASIN directly, or use
+`search <words>` to search product titles and select one of the numbered
+results. Enter the initial shopper message and then each reply yourself. The
+browser page at <http://127.0.0.1:8765> polls the same live Agent state after
+each reply, including structured, semantic, BM25, hybrid, and target-rank
+diagnostics. Type `q` at a prompt to stop, `restart` to restart the current
+target, or `target <ASIN>` while replying to switch targets.
 
 PowerShell:
 

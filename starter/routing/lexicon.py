@@ -248,6 +248,16 @@ FILLER_MARKER = _compile(
     r"\bnot quite right\b",
 )
 
+# The hard/local evaluators can supply this sentence when the Agent has no
+# useful standard clarification question. It is conversational control text,
+# not a user shopping request, so the Agent must not extract its words as
+# product facts.
+GENERIC_CLARIFICATION_REPLY = re.compile(
+    r"^\s*those\s+options\s+are\s+not\s+quite\s+right\s+yet\.\s*"
+    r"(?:you\s+can\s+)?ask\s+me\s+about\s+one\s+specific\s+attribute\.?\s*$",
+    re.IGNORECASE,
+)
+
 # Messages made only of these carry no shopping content, so the BUYING prior
 # must not apply to them.
 CONVERSATIONAL_FILLER = frozenset(

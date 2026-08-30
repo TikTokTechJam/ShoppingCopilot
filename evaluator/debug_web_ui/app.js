@@ -80,7 +80,9 @@ function renderBanner(data) {
   const session = data.session;
   if (!session) {
     $("session-banner").className = "panel empty";
-    $("session-banner").textContent = "Choose a session to begin.";
+    $("session-banner").textContent = data.interactive_mode
+      ? "Interactive mode is active. Choose a target and enter replies in the terminal."
+      : "Choose a session to begin.";
     return;
   }
   const target = session.target || {};
@@ -98,9 +100,17 @@ function renderState(data) {
   const layer2 = data.layer2 || {};
   const benchmark = data.benchmark || {};
   const metrics = benchmark.metrics || {};
+  const interactiveHint = data.interactive_mode
+    ? '<div class="muted interactive-hint">Console input is active; this page updates after each reply.</div>'
+    : "";
   $("state").innerHTML = `
+    ${interactiveHint}
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
+    <div class="kv"><span>Clarification cycle</span><b>${esc(state.clarification_cycle ?? 1)}</b></div>
+    <div class="kv"><span>Ask counts</span><b><code>${esc(json(state.attribute_call_count || {}))}</code></b></div>
+    <div class="kv"><span>No preference</span><b>${esc((state.no_preference_attributes || []).join(", ") || "—")}</b></div>
+    <div class="kv"><span>Clarification stopped</span><b>${state.clarification_stopped ? "YES" : "NO"}</b></div>
     <h3>Structured constraints</h3>
     <div>${chips(state.constraints)}</div>
     <h3>Dense semantic constraints</h3>
@@ -111,6 +121,8 @@ function renderState(data) {
     <details><summary>show IDs</summary><pre>${json(state.excluded || [])}</pre></details>
     <h3>Layer 2</h3>
     <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
+    <h3>BM25 lexical search</h3>
+    <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
     <h3>Hard evaluator score</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
@@ -134,22 +146,24 @@ function renderDiagnostics(data) {
     <tr class="${item.target ? "target-row" : ""}">
       <td>${item.rank}</td><td><code>${esc(item.parent_asin)}</code></td>
       <td><span class="table-title" title="${esc(item.title || "")}">${esc(item.title || "")}</span></td><td>${score(item.structured_score)}</td>
-      <td>${score(item.dense_score)}</td><td>${score(item.final_score)}</td>
+      <td>${score(item.dense_score)}</td><td>${score(item.bm25_score)}</td><td>${score(item.final_score)}</td>
     </tr>`).join("");
   $("diagnostics").innerHTML = `
     <div class="status">${status}</div>
     <div class="rank-grid">
       <div><span>Structured</span><b>${r.structured_rank ?? rankFallback}</b></div>
       <div><span>Dense</span><b>${r.dense_rank ?? "N/A"}</b></div>
+      <div><span>BM25</span><b>${r.bm25_rank ?? "N/A"}</b></div>
       <div><span>Hybrid</span><b>${r.hybrid_rank ?? rankFallback}</b></div>
     </div>
     <div class="score-grid">
       <div><span>Structured</span><strong title="${esc(r.structured_score ?? "N/A")}">${score(r.structured_score)}</strong></div>
       <div><span>Dense semantic</span><strong title="${esc(r.dense_score ?? "N/A")}">${score(r.dense_score)}</strong></div>
+      <div><span>BM25 lexical</span><strong title="${esc(r.bm25_score ?? "N/A")}">${score(r.bm25_score)}</strong></div>
       <div><span>Final</span><strong title="${esc(r.final_score ?? "N/A")}">${score(r.final_score)}</strong></div>
     </div>
     <h3>Top 10 (reranker order)</h3>
-    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=6>none</td></tr>"}</tbody></table></div>
+    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Dense</th><th>BM25</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=7>none</td></tr>"}</tbody></table></div>
     <h3>Override</h3>
     <div class="${override.detected ? "override" : "muted"}">${override.detected ? `INTENT OVERRIDE: ${esc(override.kind)}` : "No override"}</div>`;
 }
@@ -181,15 +195,29 @@ function renderConversation(data) {
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated dense semantic constraints</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Query text</h4><details><summary>show query</summary><p class="query">${esc(state.query_text || "")}</p></details>
-      <div class="turn-meta">Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
+      <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");
+}
+
+let interactivePoll = null;
+
+function updateInteractivePolling(data) {
+  if (data.interactive_mode && interactivePoll === null) {
+    interactivePoll = setInterval(() => loadState(() => api("/api/state")), 1000);
+  } else if (!data.interactive_mode && interactivePoll !== null) {
+    clearInterval(interactivePoll);
+    interactivePoll = null;
+  }
 }
 
 function render(data) {
   renderBanner(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
-  const active = Boolean(data.session) && !data.done;
+  const active = !data.interactive_mode && Boolean(data.session) && !data.done;
   $("next").disabled = !active;
   $("run-end").disabled = !active;
+  $("random").disabled = Boolean(data.interactive_mode);
+  $("load").disabled = Boolean(data.interactive_mode);
+  updateInteractivePolling(data);
 }
 
 async function loadState(request) {
@@ -202,5 +230,16 @@ $("load").onclick = () => loadState(() => api("/api/session/load", "POST", {sess
 $("next").onclick = () => loadState(() => api("/api/session/next", "POST"));
 $("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"));
 
-// Select a session on first page load, but do not execute an Agent turn yet.
-loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}));
+async function initialLoad() {
+  try {
+    const data = await api("/api/state");
+    render(data);
+    if (!data.interactive_mode && !data.session) {
+      await loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}));
+    }
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+initialLoad();

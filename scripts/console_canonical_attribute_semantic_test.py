@@ -21,7 +21,7 @@ from dictionary.semantic import (
 )
 
 
-DEFAULT_DICTIONARY = Path("data/derived/dictionary")
+DEFAULT_DICTIONARY = Path("data/derived/annotations/v5/dictionary")
 TOP_K = 10
 ATTRIBUTE_OPTIONS = tuple(SEMANTIC_ATTRIBUTES)
 

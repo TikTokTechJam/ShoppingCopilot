@@ -203,19 +203,23 @@ class SessionSidecarTests(unittest.TestCase):
         self.assertEqual(state.belief_weights, {})
         self.assertEqual(state.evolution_trace, [])
 
-    def test_reset_preference_keeps_clarification_weights_drops_initial(self) -> None:
+    def test_reset_preference_drops_belief_for_the_overridden_field_only(self) -> None:
         manager = SessionManager()
         state = manager.reset("s", {})
-        state.constraints = ShoppingConstraints(color=("black", "navy"))
-        state.constraint_provenance = {
-            "color": {"black": "initial", "navy": "clarification"}
+        state.constraints = ShoppingConstraints(
+            category=("boots",), color=("black", "navy")
+        )
+        state.belief_weights = {
+            "color": {"black": 1.24, "navy": 1.12},
+            "category": {"boots": 1.30},
         }
-        state.belief_weights = {"color": {"black": 1.24, "navy": 1.12}}
         state.evolution_trace = [{"turn": 1, "pool_size": 3, "shown": ()}]
 
-        manager.reset_preference("s")
+        # color is an independent root, so reset_preference removes every color
+        # value; category is untouched.
+        manager.reset_preference("s", overridden_fields=["color"])
 
-        self.assertEqual(state.belief_weights, {"color": {"navy": 1.12}})
+        self.assertEqual(state.belief_weights, {"category": {"boots": 1.30}})
         self.assertEqual(state.evolution_trace, [])
 
 
@@ -233,6 +237,23 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 class _FixedRouter:
     def classify(self, _message: str) -> SimpleNamespace:
         return SimpleNamespace(intent="BUYING")
+
+
+def _patch_extract(mapping: dict[str, ShoppingConstraints]):
+    """Patch the extractor by message text, tolerant of repeat calls per turn.
+
+    `Agent.respond` may call the extractor twice on a turn (once broad, once
+    scoped to the asked attribute), so a message-keyed lookup is more robust
+    than a call-count iterator.
+    """
+
+    def side_effect(message: str, **_kwargs) -> ShoppingConstraints:
+        return mapping[message]
+
+    return patch(
+        "starter.agent.constraint_module.extract_constraints",
+        side_effect=side_effect,
+    )
 
 
 TARGET = "P25"
@@ -289,28 +310,29 @@ def _target_rank(response: dict, target: str) -> int | None:
 class AgentEvolutionTests(unittest.TestCase):
     def test_enabled_reweights_after_repeated_constraint(self) -> None:
         target = TARGET
-        turn1 = ShoppingConstraints(
-            category=("jacket",), style=("quilted",), feature=("waterproof",)
-        )
-        turn2 = ShoppingConstraints(feature=("waterproof",))
+        mapping = {
+            "a quilted waterproof jacket": ShoppingConstraints(
+                category=("jacket",), style=("quilted",), feature=("waterproof",)
+            ),
+            # Turn 2 restates only the feature -- so only that field is
+            # reinforced and the target gains a relative edge over the
+            # equally-scored quilted items.
+            "waterproof is what matters": ShoppingConstraints(
+                feature=("waterproof",)
+            ),
+        }
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             off = _make_agent(root, enable_evolution=False)
             off.reset("s", {})
-            with patch(
-                "starter.agent.constraint_module.extract_constraints",
-                side_effect=iter([turn1, turn2]),
-            ):
+            with _patch_extract(mapping):
                 off.respond("s", "a quilted waterproof jacket", 1, 10)
                 off_turn2 = off.respond("s", "waterproof is what matters", 2, 10)
 
             on = _make_agent(root, enable_evolution=True)
             on.reset("s", {})
-            with patch(
-                "starter.agent.constraint_module.extract_constraints",
-                side_effect=iter([turn1, turn2]),
-            ):
+            with _patch_extract(mapping):
                 on.respond("s", "a quilted waterproof jacket", 1, 10)
                 on_turn2 = on.respond("s", "waterproof is what matters", 2, 10)
 
@@ -320,12 +342,14 @@ class AgentEvolutionTests(unittest.TestCase):
     def test_no_reinforcement_script_is_identical_on_and_off(self) -> None:
         # Each turn introduces a brand-new value, so nothing is ever reinforced
         # and field_weights stays None -- the loop must be a no-op.
-        deltas = [
-            ShoppingConstraints(category=("jacket",)),
-            ShoppingConstraints(color=("black",)),
-            ShoppingConstraints(material=("nylon",)),
-        ]
-        messages = ["a jacket", "black one", "nylon please"]
+        mapping = {
+            "a jacket": ShoppingConstraints(category=("jacket",)),
+            "black one": ShoppingConstraints(category=("jacket",), color=("black",)),
+            "nylon please": ShoppingConstraints(
+                category=("jacket",), color=("black",), material=("nylon",)
+            ),
+        }
+        messages = list(mapping)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -333,10 +357,7 @@ class AgentEvolutionTests(unittest.TestCase):
             for flag in (False, True):
                 agent = _make_agent(root, enable_evolution=flag)
                 agent.reset("s", {})
-                with patch(
-                    "starter.agent.constraint_module.extract_constraints",
-                    side_effect=iter(list(deltas)),
-                ):
+                with _patch_extract(mapping):
                     responses[flag] = [
                         agent.respond("s", message, turn, 10)
                         for turn, message in enumerate(messages, 1)
@@ -364,18 +385,14 @@ class AgentEvolutionTests(unittest.TestCase):
             "category", "material", "color", "size", "style", "brand",
             "budget", "feature", "use_case", "other", None,
         }
-        deltas = [
-            ShoppingConstraints(category=("jacket",), feature=("waterproof",)),
-            ShoppingConstraints(feature=("waterproof",)),
-            ShoppingConstraints(feature=("waterproof",)),
-        ]
+        delta = ShoppingConstraints(category=("jacket",), feature=("waterproof",))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             agent = _make_agent(root, enable_evolution=True)
             agent.reset("s", {})
             with patch(
                 "starter.agent.constraint_module.extract_constraints",
-                side_effect=iter(list(deltas)),
+                return_value=delta,
             ):
                 for turn in (1, 2, 3):
                     response = agent.respond("s", "waterproof jacket", turn, 10)
@@ -395,11 +412,7 @@ class AgentEvolutionTests(unittest.TestCase):
                         )
 
     def test_telemetry_is_deterministic_and_counters_are_monotonic(self) -> None:
-        deltas = [
-            ShoppingConstraints(category=("jacket",), feature=("waterproof",)),
-            ShoppingConstraints(feature=("waterproof",)),
-            ShoppingConstraints(feature=("waterproof",)),
-        ]
+        delta = ShoppingConstraints(category=("jacket",), feature=("waterproof",))
 
         def run(root: Path) -> tuple[dict, list[int]]:
             agent = _make_agent(root, enable_evolution=True)
@@ -407,7 +420,7 @@ class AgentEvolutionTests(unittest.TestCase):
             seen: list[int] = []
             with patch(
                 "starter.agent.constraint_module.extract_constraints",
-                side_effect=iter(list(deltas)),
+                return_value=delta,
             ):
                 for turn in (1, 2, 3):
                     agent.respond("s", "waterproof jacket", turn, 10)

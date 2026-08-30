@@ -15,6 +15,7 @@ from evaluator.hard_evaluator import (
     metric_summary,
     normalize_recommendations,
     parse_fact_id,
+    select_sessions,
     simulate_customer_reply,
     validate_agent_response,
     validate_sessions,
@@ -65,6 +66,17 @@ class HardEvaluatorTests(unittest.TestCase):
         self.assertEqual(len({row["target_asin"] for row in self.sessions}), 400)
         self.assertTrue(all(row["target_asin"] in self.catalog_ids for row in self.sessions))
 
+    def test_override_only_selection_keeps_only_intent_override_sessions(self) -> None:
+        selected = select_sessions(self.sessions, override_only=True)
+        self.assertEqual(len(selected), SCENARIO_COUNTS["intent_override"])
+        self.assertTrue(
+            all(row["scenario_type"] == "intent_override" for row in selected)
+        )
+        self.assertEqual(
+            select_sessions(self.sessions, override_only=False),
+            self.sessions,
+        )
+
     def test_fact_ids_are_attribute_scoped(self) -> None:
         fact = self.sessions[0]["hidden_facts"][0]
         self.assertEqual(fact_id(fact), (fact["attribute"], fact["canonical"]))
@@ -91,6 +103,27 @@ class HardEvaluatorTests(unittest.TestCase):
         )
         self.assertIn(material["display"].lower(), first.lower())
         self.assertNotIn(material["display"].lower(), second.lower())
+
+    def test_simulator_other_reveals_any_undisclosed_hidden_fact(self) -> None:
+        session = next(
+            row for row in self.sessions
+            if len(row["hidden_facts"]) >= 2
+        )
+        state = {
+            "disclosed": set(),
+            "active_constraints": set(),
+            "stale_constraints": set(),
+            "no_preference_attributes": set(),
+            "boundary_used": False,
+        }
+
+        first = simulate_customer_reply(session, "other", state, random.Random(1))
+        second = simulate_customer_reply(session, "other", state, random.Random(2))
+        displays = {str(fact["display"]).lower() for fact in session["hidden_facts"]}
+
+        self.assertTrue(any(display in first.lower() for display in displays))
+        self.assertTrue(any(display in second.lower() for display in displays))
+        self.assertEqual(len(state["disclosed"]), 2)
 
     def test_response_contract_rejects_unknown_fields_and_bad_usage(self) -> None:
         valid = {

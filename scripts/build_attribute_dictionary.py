@@ -26,6 +26,7 @@ from dictionary.semantic import (
 
 SCHEMA_VERSION = "canonical-attribute-dictionary/v2"
 DEFAULT_INPUT = "data/derived/annotations/v5/annotations.jsonl"
+DEFAULT_OUTPUT = "data/derived/annotations/v5/dictionary"
 
 
 @dataclass(frozen=True)
@@ -333,7 +334,7 @@ def _write_npy(path: Path, matrix: Any) -> None:
 
 def build_attribute_dictionary(
     input_path: str | Path = DEFAULT_INPUT,
-    output_dir: str | Path = "data/derived/dictionary",
+    output_dir: str | Path = DEFAULT_OUTPUT,
     *,
     facts_path: str | Path | None = None,
     embedding_model: str | None = None,
@@ -524,7 +525,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-dir",
-        default="data/derived/dictionary",
+        default=DEFAULT_OUTPUT,
         help="Derived dictionary artifact directory",
     )
     embedding = parser.add_mutually_exclusive_group()

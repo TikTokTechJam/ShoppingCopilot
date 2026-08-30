@@ -34,7 +34,7 @@ mv catalog.jsonl data/catalog.jsonl
 
 Verify the downloaded file using the published `SHA256SUMS` file.
 
-## Run the Starter
+## Run the Starter and Public Local Benchmark
 
 Python 3.10 or later is recommended. The starter uses only the Python standard library.
 
@@ -42,8 +42,16 @@ Python 3.10 or later is recommended. The starter uses only the Python standard l
 python3 -m evaluator.local_evaluator
 ```
 
-Edit `starter/agent.py` to implement your system. Do not edit the evaluator or public labels when reporting your local score.
-The command writes per-session results and aggregate metrics to `results.json`.
+The local command runs the 200-session public benchmark in
+`data/public_set.jsonl` and writes detailed results and aggregate metrics to
+`results.json`. It uses the same `build_evaluator_agent` resource factory as
+the hard evaluator, so both evaluators load the same catalog, V5 facts, local
+BGE model, canonical attribute dictionary, and attribute embedding artifacts.
+Only the benchmark dataset, conversation simulator, and evaluator wrapper
+are different.
+
+Edit `starter/agent.py` to implement your system. Do not edit the evaluator or
+benchmark labels when reporting your local score.
 
 The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
 MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
@@ -122,6 +130,15 @@ Run the hard evaluator with:
 ```bash
 python -m evaluator.hard_evaluator
 ```
+
+To evaluate only the Intent Override scenario, use:
+
+```bash
+python -m evaluator.hard_evaluator --override-only --output results_override.json
+```
+
+The evaluator still validates the complete fixed 400-session benchmark before
+selecting its 60 override sessions.
 
 For a local turn-by-turn view of the same Manual400 Agent flow, run
 `python -m evaluator.debug_web` and open <http://127.0.0.1:8765>. See

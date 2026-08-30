@@ -42,6 +42,8 @@ CATEGORICAL_FIELDS: tuple[str, ...] = (
     "feature",
     "use_case",
 )
+STRUCTURED_CANONICAL_FIELDS: tuple[str, ...] = ("brand",)
+STRUCTURED_RUNTIME_FIELDS: tuple[str, ...] = ("size",)
 
 _PLAIN_NUMBER = r"\d[\d,]*(?:\.\d+)?"
 _NUMBER = rf"\$?\s?({_PLAIN_NUMBER})"
@@ -274,6 +276,11 @@ from dictionary.registry import DEFAULT_MIN_SIMILARITY as _DEFAULT_MIN_SIMILARIT
 from dictionary.registry import LookupMatch as _LookupMatch
 from dictionary.registry import SEMANTIC_ATTRIBUTES as _SEMANTIC_ATTRIBUTES
 from dictionary.registry import normalize_text as _normalize_dictionary_text
+from dictionary.registry import (
+    SEMANTIC_QUERY_STOPWORDS as _SEMANTIC_QUERY_STOPWORDS,
+)
+from dictionary.registry import semantic_query_ngrams as _semantic_query_ngrams
+from dictionary.registry import semantic_query_tokens as _semantic_query_tokens
 
 
 @_dataclass(frozen=True)
@@ -354,7 +361,13 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
         ]
 
     def structured_only(self) -> "CanonicalShoppingConstraints":
-        """Return only the Layer 1 view of this extraction."""
+        """Return Layer 1's brand-only canonical view.
+
+        Price and size remain structured runtime controls. The other canonical
+        attributes are intentionally left to the independent Layer 2 semantic
+        view so an exact dictionary match cannot create a second structured
+        claim for the same user utterance.
+        """
 
         semantic_ids = {
             item.canonical_id for item in self.semantic_constraints.evidence
@@ -363,17 +376,21 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
             item.canonical_id
             for item in self.evidence
             if item.layer != "layer2"
+            and item.attribute
+            in (*STRUCTURED_CANONICAL_FIELDS, *STRUCTURED_RUNTIME_FIELDS, "price")
         }
         values: dict[str, tuple[str, ...]] = {}
         for field_name in CATEGORICAL_FIELDS:
-            if self.evidence:
+            if field_name in STRUCTURED_RUNTIME_FIELDS:
+                values[field_name] = tuple(getattr(self, field_name))
+            elif field_name in STRUCTURED_CANONICAL_FIELDS and self.evidence:
                 values[field_name] = tuple(
                     value
                     for value in getattr(self, field_name)
                     if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
                     in structured_ids
                 )
-            else:
+            elif field_name in STRUCTURED_CANONICAL_FIELDS:
                 # Preserve compatibility for manually constructed constraint
                 # objects that have no provenance attached.
                 values[field_name] = tuple(
@@ -382,12 +399,22 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
                     if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
                     not in semantic_ids
                 )
+            else:
+                values[field_name] = ()
+        allowed_evidence_attributes = {
+            *STRUCTURED_CANONICAL_FIELDS,
+            *STRUCTURED_RUNTIME_FIELDS,
+            "price",
+        }
         return CanonicalShoppingConstraints(
             price_min=self.price_min,
             price_max=self.price_max,
             unmapped=self.unmapped,
             evidence=tuple(
-                item for item in self.evidence if item.layer != "layer2"
+                item
+                for item in self.evidence
+                if item.layer != "layer2"
+                and item.attribute in allowed_evidence_attributes
             ),
             **values,
         )
@@ -444,22 +471,16 @@ COMMON_BRAND_COLLISION_TERMS = frozenset(
 )
 
 
-_RESIDUAL_STOPWORDS = frozenset(
-    {
-        "a", "an", "and", "are", "as", "at", "be", "but", "by", "do", "for",
-        "from", "i", "in", "is", "it", "me", "my", "of", "on", "or", "please",
-        "some", "that", "the", "this", "to", "want", "with", "would", "you",
-        "looking", "need", "like", "something", "show", "find", "under", "below",
-        "less", "than", "more", "over", "between", "around", "about", "within",
-    }
-)
+# Backward-compatible local name used by the extraction path. The actual
+# policy is owned by dictionary.registry so semantic filtering cannot diverge
+# between query text construction and registry n-gram matching.
+_RESIDUAL_STOPWORDS = _SEMANTIC_QUERY_STOPWORDS
 
 
 @lru_cache(maxsize=1)
 def _load_default_dictionary() -> _AttributeDictionary | None:
     directories = (
         _Path("data/derived/annotations/v5/dictionary"),
-        _Path("data/derived/dictionary"),
     )
     for directory in directories:
         if not (directory / "canonical_values.json").exists():
@@ -516,7 +537,7 @@ def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
     if dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
 
     alternatives = tuple(
@@ -689,9 +710,19 @@ def _context_attributes(
 
     found: list[str] = []
     candidate_attributes = {candidate.attribute for candidate in candidates}
+    material_from_context = directly_before(("made", "from"))
     for attribute in _DICTIONARY_ATTRIBUTES:
         before_patterns = _EXPLICIT_CONTEXT_BEFORE.get(attribute, ())
         after_patterns = _EXPLICIT_CONTEXT_AFTER.get(attribute, ())
+
+        # ``from`` can introduce a brand (``from Nike``), but in the longer
+        # phrase ``made from polyester`` it is part of the material cue. The
+        # specific two-token cue must win so the same value is not rejected as
+        # having both brand and material context.
+        if attribute == "brand" and material_from_context:
+            before_patterns = tuple(
+                pattern for pattern in before_patterns if pattern != ("from",)
+            )
 
         if any(directly_before(pattern) for pattern in before_patterns):
             if (
@@ -725,8 +756,21 @@ def _resolve_dictionary_match(
     text: str,
     match: _SpanMatch,
     dictionary: _AttributeDictionary,
+    allowed_attribute: str | None = None,
 ) -> _CanonicalValue | None:
     candidates = dictionary.get_candidates(match.raw_text)
+    if allowed_attribute is not None:
+        # A surface such as "amber" is a valid category, brand, colour and
+        # material at once. When the shopper is answering a question about one
+        # attribute, the other readings are not candidates at all, so the
+        # ambiguity never has to be broken by frequency.
+        candidates = tuple(
+            candidate
+            for candidate in candidates
+            if candidate.attribute == allowed_attribute
+        )
+        if not candidates:
+            return None
     context_attributes = _context_attributes(text, match, candidates)
     if context_attributes:
         contextual_candidates = tuple(
@@ -769,27 +813,19 @@ def _resolve_dictionary_match(
 def _semantic_text(text: str) -> str:
     """Build the independent Layer 2 input without Layer 1 span claims."""
 
-    tokens = [
-        token
-        for token in _normalize_dictionary_text(text).split()
-        if token not in _RESIDUAL_STOPWORDS
-    ]
-    return " ".join(tokens)
+    return " ".join(_semantic_query_tokens(text))
+
+
+def _semantic_tokens(text: str) -> tuple[str, ...]:
+    """Return contraction-aware tokens for semantic attribute matching."""
+
+    return _semantic_query_tokens(text)
 
 
 def _semantic_ngrams(phrase: str, *, max_ngram: int = 3) -> tuple[str, ...]:
     """Return deterministic stopword-filtered 1-, 2-, and 3-gram phrases."""
 
-    tokens = [
-        token
-        for token in _normalize_dictionary_text(phrase).split()
-        if token not in _RESIDUAL_STOPWORDS
-    ]
-    phrases: list[str] = []
-    for width in range(1, max_ngram + 1):
-        for start in range(0, len(tokens) - width + 1):
-            phrases.append(" ".join(tokens[start : start + width]))
-    return tuple(dict.fromkeys(phrases))
+    return _semantic_query_ngrams(phrase, max_ngram=max_ngram)
 
 
 def _semantic_items_from_result(
@@ -842,8 +878,15 @@ def _extract_dictionary_constraints(
     *,
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
+    asked_attribute: str | None = None,
 ) -> CanonicalShoppingConstraints:
     text = _normalise_known_phrases(message or "")
+    # Only dictionary attributes can be narrowed. "budget", "size" and "other"
+    # are structured or non-dictionary asks, and price/size parsing below stays
+    # unscoped either way so a budget answer is still read.
+    scoped_attribute = (
+        asked_attribute if asked_attribute in _DICTIONARY_ATTRIBUTES else None
+    )
     values: dict[str, list[str]] = {name: [] for name in CATEGORICAL_FIELDS}
     semantic_values: dict[str, list[str]] = {
         name: [] for name in _SEMANTIC_ATTRIBUTES
@@ -887,9 +930,13 @@ def _extract_dictionary_constraints(
         ):
             continue
         structured_claimed.append((match.start, match.end))
-        entry = _resolve_dictionary_match(text, match, dictionary)
+        entry = _resolve_dictionary_match(
+            text, match, dictionary, allowed_attribute=scoped_attribute
+        )
         if entry is None:
             unmapped.add(match.raw_text.strip().lower())
+            continue
+        if scoped_attribute is not None and entry.attribute != scoped_attribute:
             continue
         if entry.value not in values[entry.attribute]:
             values[entry.attribute].append(entry.value)
@@ -906,6 +953,7 @@ def _extract_dictionary_constraints(
             semantic_matches = _semantic_items_from_result(
                 dictionary.semantic_match_ngrams(
                     semantic_text,
+                    allowed_attribute=scoped_attribute,
                     stopwords=_RESIDUAL_STOPWORDS,
                     max_ngram=3,
                     min_similarity=semantic_threshold,
@@ -925,6 +973,8 @@ def _extract_dictionary_constraints(
         for item in accepted:
             entry = dictionary.get(item.canonical_id)
             if entry is None or entry.attribute not in _SEMANTIC_ATTRIBUTES:
+                continue
+            if scoped_attribute is not None and entry.attribute != scoped_attribute:
                 continue
             if entry.value not in values[entry.attribute]:
                 values[entry.attribute].append(entry.value)
@@ -972,6 +1022,7 @@ def extract_constraints(
     dictionary: _AttributeDictionary | None = None,
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
+    asked_attribute: str | None = None,
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
@@ -980,17 +1031,22 @@ def extract_constraints(
     deterministic 1/2/3-gram phrases for the Layer 2 semantic matcher; Layer 1
     exact-match claims do not remove text from that path.
     The generated dictionary is required for categorical extraction.
+
+    ``asked_attribute`` narrows both the exact and the semantic pass to the
+    attribute the shopper was asked about, so an answer is read as an answer
+    to that question rather than as free text over all seven attributes.
     """
     text = _normalise_known_phrases(message or "")
     active_dictionary = dictionary if dictionary is not None else _load_default_dictionary()
     if active_dictionary is None:
         raise RuntimeError(
             "generated attribute dictionary is required at "
-            "data/derived/annotations/v5/dictionary or data/derived/dictionary"
+            "data/derived/annotations/v5/dictionary"
         )
     return _extract_dictionary_constraints(
         text,
         active_dictionary,
         semantic_matcher=semantic_matcher,
         semantic_threshold=semantic_threshold,
+        asked_attribute=asked_attribute,
     )

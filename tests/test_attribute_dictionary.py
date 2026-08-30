@@ -177,6 +177,20 @@ class AttributeDictionaryTests(unittest.TestCase):
         self.assertNotIn("air max", constraints.brand)
         self.assertEqual(extract_constraints("credit", dictionary=dictionary).color, ())
 
+    def test_material_context_wins_over_generic_from_brand_context(self) -> None:
+        _, output, _ = self._build()
+        dictionary = AttributeDictionary.load(output)
+
+        material = extract_constraints(
+            "I'd prefer something made from stainless steel",
+            dictionary=dictionary,
+        )
+        self.assertEqual(material.material, ("stainless steel",))
+        self.assertEqual(material.brand, ())
+
+        brand = extract_constraints("something from New Balance", dictionary=dictionary)
+        self.assertEqual(brand.brand, ("new balance",))
+
     def test_exact_only_artifacts_validate_and_are_deterministic(self) -> None:
         root, output_one, summary = self._build()
         output_two = root / "dictionary-two"

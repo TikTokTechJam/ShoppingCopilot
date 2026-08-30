@@ -5,21 +5,64 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from starter.clarification import ClarificationPolicy
+from starter.clarification import (
+    ClarificationPolicy,
+    NORMAL_CLARIFICATION_ATTRIBUTES,
+)
 from starter.evolution import PHASE_A_CONFIG, EvolutionLoop, constraint_pairs
 from starter.followup import fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
-from starter.retrieval import ProductRetriever
+from starter.retrieval import ProductRetriever, is_critical_user, normalized_rating
 from starter.routing import constraints as constraint_module
-from starter.routing.constraints import ShoppingConstraints
+from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
 from starter.routing.intent_router import LexicalIntentRouter, TwoPhaseIntentRouter
 from starter.session import (
     OverrideKind,
     SessionManager,
     correction_fields,
     detect_override_kind,
+    is_generic_clarification_reply,
     is_no_preference_reply,
 )
+
+
+def _user_prior_rating(profile: Mapping[str, Any] | None) -> float | None:
+    """Read ``average_prior_rating`` off the session profile, if usable.
+
+    A cold-start shopper has no rating history; ``None`` takes the default
+    weight rather than raising.
+    """
+
+    if not isinstance(profile, Mapping):
+        return None
+    try:
+        rating = float(profile.get("average_prior_rating"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return rating if rating == rating else None
+
+
+def _scoping_could_change(
+    delta: ShoppingConstraints,
+    asked_attribute: str,
+) -> bool:
+    """Whether re-reading a message scoped to ``asked_attribute`` can differ.
+
+    The unscoped read already resolved every surface it could. Narrowing only
+    changes the outcome when it has something to remove or to re-resolve: a
+    value that landed on another attribute, or a surface left unmapped because
+    the ambiguity between attributes could not be broken. When the reading is
+    already entirely within the asked attribute and nothing was left over, the
+    scoped pass would return the same constraints, so it is skipped.
+    """
+
+    if getattr(delta, "unmapped", ()):
+        return True
+    return any(
+        getattr(delta, field_name, ())
+        for field_name in CATEGORICAL_FIELDS
+        if field_name != asked_attribute
+    )
 
 
 class Agent:
@@ -70,10 +113,16 @@ class Agent:
         self.last_diagnostics: dict[str, object] = {}
 
     @staticmethod
-    def _extract(message: str) -> ShoppingConstraints:
+    def _extract(
+        message: str,
+        asked_attribute: str | None = None,
+    ) -> ShoppingConstraints:
         """Extract constraints from the required generated dictionary."""
 
-        return constraint_module.extract_constraints(message)
+        return constraint_module.extract_constraints(
+            message,
+            asked_attribute=asked_attribute,
+        )
 
     def _route(self, message: str) -> str:
         try:
@@ -109,19 +158,19 @@ class Agent:
         state = self.sessions.get(session_id)
         message = user_message or ""
         pending_attribute = state.last_asked
+        pending_other = pending_attribute == "other"
         no_preference_reply = is_no_preference_reply(message, pending_attribute)
-        # A no-preference answer is clarification metadata, not a product
-        # constraint. Skip the extractor so its words cannot become facts.
+        generic_clarification_reply = is_generic_clarification_reply(message)
+        skip_constraint_extraction = (
+            no_preference_reply or generic_clarification_reply
+        )
+        # No-preference answers and evaluator clarification filler are
+        # conversation metadata, not product constraints. Skip the extractor
+        # so words such as "you" and "one" cannot become accidental facts.
         delta = (
             ShoppingConstraints()
-            if no_preference_reply
+            if skip_constraint_extraction
             else self._extract(message)
-        )
-        semantic_delta = getattr(delta, "semantic_constraints", None)
-        structured_delta = (
-            delta.structured_only()
-            if hasattr(delta, "structured_only")
-            else delta
         )
         had_messages = bool(state.messages)
         override_kind = OverrideKind.NONE
@@ -129,10 +178,52 @@ class Agent:
         if state.mode is not None:
             override_kind = detect_override_kind(message, state.constraints, delta)
 
+        if (
+            no_preference_reply
+            and pending_attribute in NORMAL_CLARIFICATION_ATTRIBUTES
+        ):
+            state.no_preference_attributes.add(pending_attribute)
+
+        if (
+            not skip_constraint_extraction
+            and override_kind is OverrideKind.NONE
+            and pending_attribute
+            and _scoping_could_change(delta, pending_attribute)
+        ):
+            # This message is an answer to our own question, so it is read as
+            # being about that attribute alone. An override is a change of goal
+            # rather than an answer and keeps the full reading above. A
+            # no-preference reply produced no delta at all, so there is nothing
+            # to narrow.
+            delta = self._extract(message, asked_attribute=pending_attribute)
+
+        semantic_delta = getattr(delta, "semantic_constraints", None)
+        structured_delta = (
+            delta.structured_only()
+            if hasattr(delta, "structured_only")
+            else delta
+        )
+        has_new_information = bool(delta.populated_fields())
+        other_cycle_has_information = pending_other and has_new_information
+
+        # Compute the replacement scope against the pre-override state.  The
+        # old flow reset preference state first, which made it impossible to
+        # identify the dependency branch that needed pruning.
+        replacements = correction_fields(
+            message,
+            state.constraints,
+            delta,
+            current_semantic=getattr(state, "semantic_constraints", None),
+            delta_semantic=semantic_delta,
+        )
+
         if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)
         elif override_kind is OverrideKind.PREFERENCE:
-            state = self.sessions.reset_preference(session_id)
+            state = self.sessions.reset_preference(
+                session_id,
+                overridden_fields=replacements,
+            )
         else:
             self.sessions.promote_last_recommendations(session_id)
 
@@ -144,13 +235,6 @@ class Agent:
         if state.mode is None:
             state.mode = self._route(message)
 
-        replacements = correction_fields(
-            message,
-            state.constraints,
-            delta,
-            current_semantic=getattr(state, "semantic_constraints", None),
-            delta_semantic=semantic_delta,
-        )
         if override_kind is OverrideKind.FULL_GOAL:
             source = "initial"
         elif override_kind is OverrideKind.PREFERENCE:
@@ -174,9 +258,30 @@ class Agent:
         self.sessions.record_message(
             session_id,
             message,
-            include_in_query=not no_preference_reply,
+            include_in_query=not skip_constraint_extraction,
         )
         state.turn = int(turn)
+
+        # ``other`` is a boundary between clarification cycles.  It is not a
+        # field answer and therefore does not consume an ordinary attribute
+        # slot.  A useful answer starts a new cycle after the current delta has
+        # been applied; a non-answer stops clarification instead of reopening
+        # the same questions indefinitely.
+        if other_cycle_has_information and override_kind is not OverrideKind.FULL_GOAL:
+            state = self.sessions.reset_clarification_cycle(session_id)
+        other_cycle_stopped = (
+            pending_other
+            and not other_cycle_has_information
+            and override_kind is OverrideKind.NONE
+        )
+        if other_cycle_stopped:
+            state.clarification_stopped = True
+        # The rating tie-breaker is profile-derived, so the ablation arm must
+        # not see it: with no prior rating the weight falls back to the default
+        # and no critical-shopper boost applies.
+        user_prior_rating = (
+            _user_prior_rating(state.profile) if self.use_user_profile else None
+        )
 
         # OBSERVE (part 2) + DISTILL + ACT. `field_weights` stays None -- the
         # byte-identical retrieval path -- until the belief has moved.
@@ -189,7 +294,7 @@ class Agent:
                 structured_delta=structured_delta,
                 prev_pairs=evolution_pre_pairs,
                 new_pairs=constraint_pairs(state.constraints) - evolution_pre_pairs,
-                no_preference=no_preference_reply,
+                no_preference=skip_constraint_extraction,
                 override_kind=(
                     override_kind.value
                     if override_kind is not OverrideKind.NONE
@@ -218,6 +323,7 @@ class Agent:
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
             field_weights=field_weights,
+            user_prior_rating=user_prior_rating,
         )
 
         try:
@@ -238,7 +344,7 @@ class Agent:
             # backfill is lazy, so a full pool costs nothing.
             ranked = fill_to_top_k(
                 ranked,
-                self._relaxed_backfill(state, requested_k),
+                self._relaxed_backfill(state, requested_k, user_prior_rating),
                 requested_k,
                 valid_asins=valid_asins,
             )
@@ -267,14 +373,33 @@ class Agent:
         # No turn cutoff is needed here any more: a question asked on the final
         # turn has zero horizon in the Section 12b utility, so the policy
         # abstains on its own arithmetic rather than on a literal.
-        ask_attribute = self.clarification.choose(
-            candidates,
-            state.constraints,
-            state.asked_attributes,
-            mode=state.mode or "BROWSING",
-            profile_factor=affinity.factor if affinity is not None else None,
-            turn=state.turn,
-        )
+        if state.clarification_stopped:
+            ask_attribute = None
+        else:
+            # Counts are the source of truth for the current cycle. The
+            # lifetime asked_attributes set remains available for legacy
+            # consumers/debugging, but it must not block a field after a
+            # legitimate cycle reset.
+            clarification_asked = {
+                field_name
+                for field_name in NORMAL_CLARIFICATION_ATTRIBUTES
+                if state.attribute_call_count.get(field_name, 0) > 0
+            }
+            clarification_asked.update(state.no_preference_attributes)
+            ask_attribute = self.clarification.choose(
+                candidates,
+                state.constraints,
+                clarification_asked,
+                mode=state.mode or "BROWSING",
+                profile_factor=affinity.factor if affinity is not None else None,
+                turn=state.turn,
+            )
+            if ask_attribute is None:
+                # No useful normal field remains in this cycle. ``other`` is
+                # the boundary marker and may be used again after a useful
+                # answer starts a new cycle. If its next answer is empty, the
+                # stopped flag above prevents another question.
+                ask_attribute = "other"
         self.sessions.mark_asked(session_id, ask_attribute)
         self.sessions.set_recommendations(
             session_id,
@@ -288,7 +413,12 @@ class Agent:
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         }
 
-    def _relaxed_backfill(self, state: Any, limit: int) -> list[str]:
+    def _relaxed_backfill(
+        self,
+        state: Any,
+        limit: int,
+        user_prior_rating: float | None = None,
+    ) -> list[str]:
         """Candidates for padding a short list, weakest evidence relaxed first.
 
         Section 10.2 ordering: drop the budget filter and the previously-shown
@@ -301,9 +431,17 @@ class Agent:
                 state.constraints,
                 limit=max(int(limit) * 4, 50),
                 apply_budget=False,
+                user_prior_rating=user_prior_rating,
             )
         except Exception:
             return []
+        if is_critical_user(user_prior_rating):
+            # Task 2: a critical shopper's padding is ordered by rating alone.
+            # Python's sort is stable, so equal ratings keep retrieval order.
+            relaxed = sorted(
+                relaxed,
+                key=lambda candidate: -normalized_rating(candidate.rating),
+            )
         return [candidate.parent_asin for candidate in relaxed]
 
 
