@@ -299,12 +299,74 @@ class ConstraintExtractionTest(unittest.TestCase):
             constraints = extract_constraints(message)
             self.assertIsNone(constraints.price_max, message)
             self.assertIsNone(constraints.price_min, message)
+            self.assertEqual(len(constraints.size), 1, message)
+            self.assertTrue(
+                constraints.size[0].startswith("platform height 0.5 "), message
+            )
+            size_evidence = [
+                item for item in constraints.evidence if item.attribute == "size"
+            ]
+            self.assertEqual(len(size_evidence), 1, message)
+            self.assertTrue(
+                size_evidence[0].canonical_id.startswith("size:footwear:"),
+                message,
+            )
 
             fired = {
                 signal.name
                 for signal in LexicalIntentRouter().classify(message).signals
             }
             self.assertNotIn("budget", fired, message)
+            self.assertIn("size", fired, message)
+
+    def test_type_specific_measurements_are_appended_to_size(self) -> None:
+        cases = {
+            "waist 32 inches and inseam 30 inches": (
+                "waist 32 inch",
+                "inseam 30 inch",
+            ),
+            "heel height 3 inches and platform height 0.5 inches": (
+                "heel height 3 inch",
+                "platform height 0.5 inch",
+            ),
+            "package dimensions 10 x 8 x 3 inches": (
+                "package dimensions 10 x 8 x 3 inch",
+            ),
+            "I need a ring size 7": ("ring size 7",),
+            "shoe sizes run from 6 to 12": ("6-12",),
+        }
+        expected_profiles = {
+            "waist 32 inches and inseam 30 inches": "size:apparel:",
+            "heel height 3 inches and platform height 0.5 inches": "size:footwear:",
+            "package dimensions 10 x 8 x 3 inches": "size:dimension:",
+            "I need a ring size 7": "size:jewelry:",
+            "shoe sizes run from 6 to 12": "size:footwear:",
+        }
+
+        for message, expected in cases.items():
+            constraints = extract_constraints(message)
+            self.assertEqual(constraints.size, expected, message)
+            size_evidence = [
+                item for item in constraints.evidence if item.attribute == "size"
+            ]
+            self.assertEqual(len(size_evidence), len(expected), message)
+            self.assertTrue(
+                all(
+                    item.canonical_id.startswith(expected_profiles[message])
+                    for item in size_evidence
+                ),
+                message,
+            )
+
+    def test_a_direct_answer_to_the_size_question_is_extracted(self) -> None:
+        self.assertEqual(
+            extract_constraints("10", asked_attribute="size").size,
+            ("10",),
+        )
+        self.assertEqual(
+            extract_constraints("XL", asked_attribute="size").size,
+            ("xl",),
+        )
 
     def test_measurements_quantities_and_specs_are_not_prices(self) -> None:
         messages = (

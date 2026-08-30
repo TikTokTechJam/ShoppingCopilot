@@ -178,10 +178,225 @@ PRICE_EXPRESSION = re.compile(
     re.IGNORECASE,
 )
 
-# Numeric sizes are values, not vocabulary entries, so they are matched
-# separately. Anchored on the word "size" so a bare number is never mistaken
-# for one.
-SIZE_NUMERIC = re.compile(r"\bsizes?\s*[:\-]?\s*(\d+(?:\.\d)?)\b", re.IGNORECASE)
+# Sizes and product measurements are structured values rather than dictionary
+# entries.  A plain number still needs the word ``size`` (unless it is a direct
+# answer to a size question), while named measurements use vocabularies tied
+# to the product family that actually owns the metric.  That keeps apparel
+# measurements such as waist/inseam distinct from footwear heel/platform/shaft
+# measurements even though both are stored in the runtime ``size`` field.
+_MEASUREMENT_NUMBER = (
+    r"(?:\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|"
+    r"\d[\d,]*(?:\.\d+)?|\.\d+)"
+)
+_MEASUREMENT_NUMBER_END = r"(?!\d|[.,]\d|\s*/\s*\d)"
+_MEASUREMENT_UNIT = (
+    r"(?:in(?:ch(?:es)?)?\b\.?|centimeters?\b|centimetres?\b|cm\b|"
+    r"millimeters?\b|millimetres?\b|mm\b|feet\b|foot\b|ft\b|"
+    r"meters?\b|metres?\b|m\b|yards?\b|yds?\b|"
+    r"[\x22\x27\u2018\u2019\u201c\u201d\u2032\u2033])"
+)
+_MEASUREMENT_APPROX = (
+    r"(?:about|around|roughly|approximately|approximate|approx\.?|"
+    r"estimated(?:\s+at)?|close\s+to|~)"
+)
+_MEASUREMENT_LINK = (
+    r"(?:is|are|was|were|at|of|measures?|measured|measuring|runs?|"
+    r"comes?\s+to)"
+)
+
+SIZE_NUMERIC = re.compile(
+    rf"\bsizes?\s*(?:(?:is|are)\s*)?[:\-]?\s*"
+    rf"({_MEASUREMENT_NUMBER}){_MEASUREMENT_NUMBER_END}",
+    re.IGNORECASE,
+)
+SIZE_RANGE = re.compile(
+    rf"\b(?:(?P<family>shoe|footwear|apparel|clothing|dress|ring)\s+)?"
+    rf"sizes?\s*(?:(?:is|are|run|runs|range|ranges|vary|varies)\s*)?"
+    rf"(?:from|between)?\s*(?P<low>{_MEASUREMENT_NUMBER})"
+    rf"{_MEASUREMENT_NUMBER_END}\s*(?:-|\u2013|to|and)\s*"
+    rf"(?P<high>{_MEASUREMENT_NUMBER}){_MEASUREMENT_NUMBER_END}",
+    re.IGNORECASE,
+)
+SIZE_LABEL = re.compile(
+    r"\bsizes?\s*(?:(?:is|are)\s*)?[:\-]?\s*"
+    r"(?P<label>xxxxl|xxxl|xxl|xl|xs|4xl|3xl|2xl|"
+    r"extra[-\s]+small|extra[-\s]+large|small|medium|large|one[-\s]+size)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _SizeMetricSpec:
+    profile: str
+    label: str
+    surface: str
+    unit_required: bool = False
+
+
+@dataclass(frozen=True)
+class _StructuredSizeMatch:
+    value: str
+    profile: str
+    metric: str
+    start: int
+    end: int
+    raw_text: str
+
+    @property
+    def canonical_id(self) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "_", self.value.casefold()).strip("_")
+        return f"size:{self.profile}:{slug}"
+
+
+_SIZE_METRICS: tuple[_SizeMetricSpec, ...] = (
+    # Footwear measurements.
+    _SizeMetricSpec("footwear", "heel height", r"heel(?:\s+height)?"),
+    _SizeMetricSpec("footwear", "platform height", r"platform(?:\s+height)?"),
+    _SizeMetricSpec("footwear", "shaft height", r"shaft(?:\s+height)?"),
+    _SizeMetricSpec("footwear", "boot opening", r"boot\s+opening"),
+    _SizeMetricSpec("footwear", "calf circumference", r"calf\s+circumference"),
+    _SizeMetricSpec("footwear", "foot length", r"foot\s+length"),
+    # Apparel measurements.
+    _SizeMetricSpec(
+        "apparel", "waist", r"waist(?:\s+(?:measurement|circumference))?"
+    ),
+    _SizeMetricSpec(
+        "apparel", "hip", r"hips?(?:\s+(?:measurement|circumference))?"
+    ),
+    _SizeMetricSpec("apparel", "inseam", r"inseam"),
+    _SizeMetricSpec("apparel", "outseam", r"outseam"),
+    _SizeMetricSpec("apparel", "rise", r"(?:front\s+|back\s+)?rise"),
+    _SizeMetricSpec(
+        "apparel", "bust", r"bust(?:\s+(?:measurement|circumference))?"
+    ),
+    _SizeMetricSpec(
+        "apparel", "chest", r"chest(?:\s+(?:measurement|circumference))?"
+    ),
+    _SizeMetricSpec("apparel", "sleeve length", r"sleeve(?:\s+length)?"),
+    _SizeMetricSpec("apparel", "shoulder width", r"shoulder(?:\s+width)?"),
+    _SizeMetricSpec(
+        "apparel",
+        "garment length",
+        r"(?:garment|dress|skirt|shirt|top|jacket|coat)\s+length",
+    ),
+    # Jewelry/accessory measurements.
+    _SizeMetricSpec("jewelry", "ring size", r"ring\s+size"),
+    _SizeMetricSpec("jewelry", "inner diameter", r"inner\s+diameter"),
+    _SizeMetricSpec(
+        "jewelry", "necklace length", r"(?:necklace|chain)\s+length"
+    ),
+    _SizeMetricSpec("jewelry", "bracelet length", r"bracelet\s+length"),
+    _SizeMetricSpec("jewelry", "wrist circumference", r"wrist\s+circumference"),
+    # Generic dimensions are only accepted with an explicit unit.  Product
+    # nouns in the surrounding message can still specialize their profile.
+    _SizeMetricSpec("dimension", "length", r"length", unit_required=True),
+    _SizeMetricSpec("dimension", "width", r"width", unit_required=True),
+    _SizeMetricSpec("dimension", "height", r"height", unit_required=True),
+    _SizeMetricSpec("dimension", "depth", r"depth", unit_required=True),
+    _SizeMetricSpec("dimension", "diameter", r"diameter", unit_required=True),
+    _SizeMetricSpec(
+        "dimension", "circumference", r"circumference", unit_required=True
+    ),
+)
+
+
+def _metric_after_pattern(spec: _SizeMetricSpec) -> re.Pattern[str]:
+    unit = (
+        rf"\s*(?P<unit>{_MEASUREMENT_UNIT})"
+        if spec.unit_required
+        else rf"(?:\s*(?P<unit>{_MEASUREMENT_UNIT}))?"
+    )
+    return re.compile(
+        rf"\b(?P<metric>{spec.surface})\b\s*"
+        rf"(?:(?:{_MEASUREMENT_LINK})\s*)?"
+        rf"(?:(?:{_MEASUREMENT_APPROX})\s*)?"
+        rf"(?P<value>{_MEASUREMENT_NUMBER}){_MEASUREMENT_NUMBER_END}"
+        rf"{unit}",
+        re.IGNORECASE,
+    )
+
+
+def _metric_range_pattern(spec: _SizeMetricSpec) -> re.Pattern[str]:
+    unit = (
+        rf"\s*(?P<unit>{_MEASUREMENT_UNIT})"
+        if spec.unit_required
+        else rf"(?:\s*(?P<unit>{_MEASUREMENT_UNIT}))?"
+    )
+    return re.compile(
+        rf"\b(?P<metric>{spec.surface})\b\s*"
+        rf"(?:(?:{_MEASUREMENT_LINK})\s*)?"
+        rf"(?:between|from)\s*(?P<low>{_MEASUREMENT_NUMBER})"
+        rf"{_MEASUREMENT_NUMBER_END}\s*(?:-|\u2013|and|to)\s*"
+        rf"(?P<high>{_MEASUREMENT_NUMBER}){_MEASUREMENT_NUMBER_END}"
+        rf"{unit}",
+        re.IGNORECASE,
+    )
+
+
+def _metric_before_pattern(spec: _SizeMetricSpec) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?P<value>{_MEASUREMENT_NUMBER}){_MEASUREMENT_NUMBER_END}\s*"
+        rf"(?P<unit>{_MEASUREMENT_UNIT})\s*[- ]?\s*"
+        rf"(?P<metric>{spec.surface})\b",
+        re.IGNORECASE,
+    )
+
+
+_SIZE_METRIC_AFTER = tuple(
+    (spec, _metric_after_pattern(spec)) for spec in _SIZE_METRICS
+)
+_SIZE_METRIC_RANGES = tuple(
+    (spec, _metric_range_pattern(spec)) for spec in _SIZE_METRICS
+)
+_SIZE_METRIC_BEFORE = tuple(
+    (spec, _metric_before_pattern(spec)) for spec in _SIZE_METRICS
+)
+
+DIMENSIONS = re.compile(
+    rf"\b(?P<label>(?:(?:package|product|item|overall)\s+)?dimensions?)\b\s*"
+    rf"(?:(?:{_MEASUREMENT_LINK})\s*)?"
+    rf"(?:(?:{_MEASUREMENT_APPROX})\s*)?"
+    rf"(?P<values>{_MEASUREMENT_NUMBER}\s*[x\u00d7]\s*"
+    rf"{_MEASUREMENT_NUMBER}(?:\s*[x\u00d7]\s*{_MEASUREMENT_NUMBER})?)"
+    rf"\s*(?P<unit>{_MEASUREMENT_UNIT})",
+    re.IGNORECASE,
+)
+
+_BARE_SIZE = re.compile(
+    rf"\s*(?P<value>{_MEASUREMENT_NUMBER}){_MEASUREMENT_NUMBER_END}\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_BARE_SIZE_LABEL = re.compile(
+    r"\s*(?P<label>xxxxl|xxxl|xxl|xl|xs|4xl|3xl|2xl|"
+    r"extra[-\s]+small|extra[-\s]+large|small|medium|large|one[-\s]+size)"
+    r"\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _without_named_groups(pattern: str) -> str:
+    """Make extraction regexes safe to combine into an intent-only regex."""
+
+    return re.sub(r"\(\?P<[^>]+>", "(?:", pattern)
+
+
+# Inspectable union used by the intent ledger. Extraction below remains the
+# source of truth for normalization, typing, overlap handling, and evidence.
+SIZE_EXPRESSION = re.compile(
+    "|".join(
+        _without_named_groups(pattern)
+        for pattern in (
+            SIZE_RANGE.pattern,
+            SIZE_NUMERIC.pattern,
+            SIZE_LABEL.pattern,
+            DIMENSIONS.pattern,
+            *(pattern.pattern for _, pattern in _SIZE_METRIC_RANGES),
+            *(pattern.pattern for _, pattern in _SIZE_METRIC_AFTER),
+            *(pattern.pattern for _, pattern in _SIZE_METRIC_BEFORE),
+        )
+    ),
+    re.IGNORECASE,
+)
 
 # Words that look like a commitment but name no value. Recorded as unmapped so
 # a later component can ask about them, never counted as a constraint.
@@ -337,6 +552,244 @@ def _extract_prices(text: str) -> tuple[float | None, float | None]:
             price_max = _number(raw_value)
 
     return price_min, price_max
+
+
+_SIZE_PROFILE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "footwear",
+        re.compile(
+            r"\b(?:footwear|shoes?|boots?|sneakers?|sandals?|heels?|pumps?|"
+            r"loafers?|slippers?|flats?|trainers?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "apparel",
+        re.compile(
+            r"\b(?:apparel|clothes?|clothing|shirts?|pants?|trousers?|jeans?|"
+            r"shorts?|dresses?|skirts?|jackets?|coats?|hoodies?|sweaters?|"
+            r"blouses?|tops?|leggings?|suits?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "jewelry",
+        re.compile(
+            r"\b(?:jewelry|jewellery|rings?|necklaces?|chains?|bracelets?|"
+            r"bangles?|watches?|anklets?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _infer_size_profile(text: str, fallback: str = "generic") -> str:
+    for profile, pattern in _SIZE_PROFILE_PATTERNS:
+        if pattern.search(text):
+            return profile
+    return fallback
+
+
+def _normalise_measurement_number(raw: str) -> str:
+    value = re.sub(r"\s+", " ", raw.strip().replace(",", ""))
+    if value.startswith("."):
+        value = f"0{value}"
+    if "." in value and "/" not in value:
+        value = value.rstrip("0").rstrip(".")
+    return value
+
+
+def _normalise_measurement_unit(raw: str | None) -> str:
+    if not raw:
+        return ""
+    value = raw.strip().casefold().rstrip(".")
+    if value in {'"', "\u201c", "\u201d", "\u2033"}:
+        return "inch"
+    if value in {"'", "\u2018", "\u2019", "\u2032"}:
+        return "foot"
+    if value in {"in", "inch", "inches"}:
+        return "inch"
+    if value in {"cm", "centimeter", "centimeters", "centimetre", "centimetres"}:
+        return "cm"
+    if value in {"mm", "millimeter", "millimeters", "millimetre", "millimetres"}:
+        return "mm"
+    if value in {"ft", "foot", "feet"}:
+        return "foot"
+    if value in {"m", "meter", "meters", "metre", "metres"}:
+        return "m"
+    if value in {"yd", "yds", "yard", "yards"}:
+        return "yard"
+    return value
+
+
+def _normalise_size_label(raw: str) -> str:
+    value = re.sub(r"[-\s]+", " ", raw.strip().casefold())
+    return {"extra small": "xs", "extra large": "xl"}.get(value, value)
+
+
+def _structured_size_match(
+    match: re.Match[str],
+    *,
+    value: str,
+    profile: str,
+    metric: str,
+) -> _StructuredSizeMatch:
+    return _StructuredSizeMatch(
+        value=value,
+        profile=profile,
+        metric=metric,
+        start=match.start(),
+        end=match.end(),
+        raw_text=match.group(0),
+    )
+
+
+def iter_size_expression_matches(text: str, *, allow_bare: bool = False):
+    """Yield normalized, type-aware size values from one shopper message.
+
+    Longer matches win over overlapping generic matches, so ``heel height
+    3 inches`` becomes one footwear measurement rather than both a heel value
+    and a generic height value.
+    """
+
+    candidates: list[_StructuredSizeMatch] = []
+
+    for match in SIZE_RANGE.finditer(text):
+        family = (match.group("family") or "").casefold()
+        profile = {
+            "shoe": "footwear",
+            "footwear": "footwear",
+            "apparel": "apparel",
+            "clothing": "apparel",
+            "dress": "apparel",
+            "ring": "jewelry",
+        }.get(family, _infer_size_profile(text))
+        low = _normalise_measurement_number(match.group("low"))
+        high = _normalise_measurement_number(match.group("high"))
+        candidates.append(
+            _structured_size_match(
+                match,
+                value=f"{low}-{high}",
+                profile=profile,
+                metric="size range",
+            )
+        )
+
+    for match in SIZE_NUMERIC.finditer(text):
+        value = _normalise_measurement_number(match.group(1))
+        candidates.append(
+            _structured_size_match(
+                match,
+                value=value,
+                profile=_infer_size_profile(text),
+                metric="size",
+            )
+        )
+
+    for match in SIZE_LABEL.finditer(text):
+        label = _normalise_size_label(match.group("label"))
+        candidates.append(
+            _structured_size_match(
+                match,
+                value=label,
+                profile=_infer_size_profile(text, "apparel"),
+                metric="size",
+            )
+        )
+
+    for match in DIMENSIONS.finditer(text):
+        numbers = [
+            _normalise_measurement_number(raw)
+            for raw in re.findall(_MEASUREMENT_NUMBER, match.group("values"))
+        ]
+        unit = _normalise_measurement_unit(match.group("unit"))
+        label = re.sub(r"\s+", " ", match.group("label").casefold())
+        candidates.append(
+            _structured_size_match(
+                match,
+                value=f"{label} {' x '.join(numbers)} {unit}",
+                profile=_infer_size_profile(text, "dimension"),
+                metric=label,
+            )
+        )
+
+    for spec, pattern in _SIZE_METRIC_RANGES:
+        for match in pattern.finditer(text):
+            unit = _normalise_measurement_unit(match.group("unit"))
+            if spec.unit_required and not unit:
+                continue
+            low = _normalise_measurement_number(match.group("low"))
+            high = _normalise_measurement_number(match.group("high"))
+            suffix = f" {unit}" if unit else ""
+            profile = (
+                _infer_size_profile(text, spec.profile)
+                if spec.profile == "dimension"
+                else spec.profile
+            )
+            candidates.append(
+                _structured_size_match(
+                    match,
+                    value=f"{spec.label} {low}-{high}{suffix}",
+                    profile=profile,
+                    metric=spec.label,
+                )
+            )
+
+    for spec, pattern in (*_SIZE_METRIC_AFTER, *_SIZE_METRIC_BEFORE):
+        for match in pattern.finditer(text):
+            unit = _normalise_measurement_unit(match.group("unit"))
+            if spec.unit_required and not unit:
+                continue
+            number = _normalise_measurement_number(match.group("value"))
+            suffix = f" {unit}" if unit else ""
+            profile = (
+                _infer_size_profile(text, spec.profile)
+                if spec.profile == "dimension"
+                else spec.profile
+            )
+            candidates.append(
+                _structured_size_match(
+                    match,
+                    value=f"{spec.label} {number}{suffix}",
+                    profile=profile,
+                    metric=spec.label,
+                )
+            )
+
+    if allow_bare:
+        bare = _BARE_SIZE.fullmatch(text)
+        if bare is not None:
+            candidates.append(
+                _structured_size_match(
+                    bare,
+                    value=_normalise_measurement_number(bare.group("value")),
+                    profile="generic",
+                    metric="size",
+                )
+            )
+        bare_label = _BARE_SIZE_LABEL.fullmatch(text)
+        if bare_label is not None:
+            candidates.append(
+                _structured_size_match(
+                    bare_label,
+                    value=_normalise_size_label(bare_label.group("label")),
+                    profile="apparel",
+                    metric="size",
+                )
+            )
+
+    claimed: list[tuple[int, int]] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (item.start, -(item.end - item.start), item.value),
+    ):
+        if any(
+            candidate.start < end and candidate.end > start
+            for start, end in claimed
+        ):
+            continue
+        claimed.append((candidate.start, candidate.end))
+        yield candidate
 
 
 _KNOWN_PHRASE_REWRITES: tuple[tuple[str, str], ...] = (
@@ -1027,19 +1480,24 @@ def _extract_dictionary_constraints(
         if price_max is not None:
             evidence.append(ConstraintEvidence("price_max", "price", "", "structured", 1.0))
 
-    for match in SIZE_NUMERIC.finditer(text):
+    for match in iter_size_expression_matches(
+        text, allow_bare=asked_attribute == "size"
+    ):
         if any(
-            match.start() < end and match.end() > start
+            match.start < end and match.end > start
             for start, end in structured_claimed
         ):
             continue
-        structured_claimed.append((match.start(), match.end()))
-        value = match.group(1)
-        if value not in values["size"]:
-            values["size"].append(value)
+        structured_claimed.append((match.start, match.end))
+        if match.value not in values["size"]:
+            values["size"].append(match.value)
             evidence.append(
                 ConstraintEvidence(
-                    f"size:{value}", "size", match.group(0), "structured", 1.0
+                    match.canonical_id,
+                    "size",
+                    match.raw_text,
+                    "structured",
+                    1.0,
                 )
             )
 
