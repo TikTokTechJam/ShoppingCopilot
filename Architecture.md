@@ -1,3 +1,58 @@
+## Dependency-Aware Selective Dialogue State Override
+
+We maintain shopping preferences as structured dialogue state and update only the slots affected by the latest user turn.
+
+This follows **SOM-DST** (Kim et al., ACL 2020), where dialogue slots are updated using operations such as `CARRYOVER`, `UPDATE`, and `DELETE` rather than rebuilding the full state each turn.
+
+```text
+Current state:
+category = shirt
+use_case = sunny weather
+color = black
+
+User:
+"Actually I need it for rainy weather."
+
+Result:
+category → CARRYOVER
+color    → CARRYOVER
+use_case → UPDATE sunny → rainy
+```
+
+We additionally track constraint provenance and dependencies:
+
+```text
+use_case: sunny weather
+    └── feature: UV protection [inferred]
+
+category: shirt [explicit]
+color: black [explicit]
+```
+
+When `sunny weather` is overridden, dependent inferred constraints are invalidated while unrelated explicit preferences are preserved.
+
+This is inspired by **Truth Maintenance Systems** (Doyle, 1979), where beliefs are stored together with the dependencies that support them, allowing selective belief revision instead of global reset.
+
+```text
+User override
+      ↓
+Identify affected slot
+      ↓
+Dependency graph
+      ↓
+Remove invalid inferred descendants
+      ↓
+Preserve independent constraints
+      ↓
+Updated active state
+```
+
+We call this mechanism **Dependency-Aware Selective Dialogue State Override**.
+
+References:
+- Kim et al., *Efficient Dialogue State Tracking by Selectively Overwriting Memory*, ACL 2020.
+- Doyle, *A Truth Maintenance System*, Artificial Intelligence, 1979.
+
 
 ## LLM Slot-Filling Turn Interpreter
 
