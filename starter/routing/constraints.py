@@ -46,11 +46,36 @@ STRUCTURED_CANONICAL_FIELDS: tuple[str, ...] = ("brand",)
 STRUCTURED_RUNTIME_FIELDS: tuple[str, ...] = ("size",)
 
 _PLAIN_NUMBER = r"\d[\d,]*(?:\.\d+)?"
-_NUMBER = rf"\$?\s?({_PLAIN_NUMBER})"
+# Do not let a failed match on a decimal or thousands-formatted value backtrack
+# into a shorter number (for example, reading ``0.5"`` as the price ``0``).
+_NUMBER_END = r"(?!\d|[.,]\d|\s*[:/]\s*\d)"
+_CURRENCY_SYMBOL = r"[$\u00a3\u00a5\u20ac]"
+_CURRENCY_WORD = (
+    r"(?:dollars?|usd|bucks|euros?|eur|gbp|pounds?\s+sterling|cad|aud|sgd|"
+    r"jpy|yen)"
+)
+_CURRENCY_TOKEN = rf"(?:{_CURRENCY_SYMBOL}|\b{_CURRENCY_WORD}\b)"
+_NUMBER = rf"(?:{_CURRENCY_TOKEN}\s*)?({_PLAIN_NUMBER}){_NUMBER_END}"
+_RANGE_NUMBER = (
+    rf"(?:{_CURRENCY_TOKEN}\s*)?({_PLAIN_NUMBER}){_NUMBER_END}"
+    rf"(?:\s*{_CURRENCY_TOKEN})?"
+)
+_NON_PRICE_UNIT = (
+    r"(?:(?:years?|yrs?|year[-\s]?old|months?|weeks?|days?|hours?|hrs?|"
+    r"minutes?|mins?|seconds?|secs?|inches?|inch|feet|foot|ft|yards?|yds?|"
+    r"centimeters?|cm|millimeters?|mm|meters?|metres?|kilometers?|kilometres?|"
+    r"km|kilograms?|kg|pounds?|lbs?|ounces?|oz|grams?|milligrams?|mg|liters?|"
+    r"litres?|milliliters?|millilitres?|ml|gallons?|gal|quarts?|qt|pints?|"
+    r"watts?|volts?|mah|kilohertz|megahertz|gigahertz|khz|mhz|ghz|bytes?|"
+    r"kilobytes?|megabytes?|gigabytes?|terabytes?|kb|mb|gb|tb|pixels?|"
+    r"megapixels?|mp|dpi|ppi|degrees?|percent|percentage|stars?|points?|"
+    r"counts?|ct|packs?|pieces?|pcs?|pairs?|sets?|units?)\b|"
+    r"[\x22\x25\x27\u00b0\u00d7\u201c\u201d\u2032\u2033])"
+)
 _NON_PRICE_TAIL = (
-    r"(?!\s*(?:years?|yrs?|year[-\s]?old|inches?|inch|centimeters?|cm|"
-    r"millimeters?|mm|kilograms?|kg|pounds?|lbs?)\b)"
+    rf"(?!\s*{_NON_PRICE_UNIT})"
     rf"(?!\s*(?:to|and|-)\s*{_PLAIN_NUMBER}\s*(?:years?|yrs?|year[-\s]?old)\b)"
+    r"(?!\s+(?:\d+\s*/\s*\d+|[x\u00d7-]\s*\d))"
 )
 
 PRICE_MAX = re.compile(
@@ -62,20 +87,80 @@ PRICE_MIN = re.compile(
     re.IGNORECASE,
 )
 PRICE_RANGE = re.compile(
-    rf"(?<!size )(?<!sizes )(?<!sizing )(?:between\s+)?{_NUMBER}\s*(?:-|–|to|and)\s*{_NUMBER}\s*(?:dollars|usd|bucks)?{_NON_PRICE_TAIL}",
+    rf"(?<!size )(?<!sizes )(?<!sizing )(?:between\s+)?{_RANGE_NUMBER}\s*(?:-|–|to|and)\s*{_RANGE_NUMBER}{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
+_APPROXIMATE_LEAD = (
+    r"(?:around|about|roughly|approximately|approximate|approx\.?|"
+    r"estimated(?:\s+at)?|close\s+to|~)"
+)
+_OPTIONAL_PRICE_LABEL = (
+    r"(?:(?:price|budget|cost)\s*(?:is|was|of|at|:)?\s*)?"
+)
 PRICE_AROUND = re.compile(
-    rf"(?:around|about|approximately|roughly)\s*{_NUMBER}{_NON_PRICE_TAIL}",
+    rf"{_APPROXIMATE_LEAD}\s*{_OPTIONAL_PRICE_LABEL}{_NUMBER}{_NON_PRICE_TAIL}",
     re.IGNORECASE,
 )
 PRICE_DIRECT = re.compile(
-    rf"(?:\$\s?({_PLAIN_NUMBER})|({_PLAIN_NUMBER})\s*(?:dollars?|usd|bucks)\b)",
+    rf"(?:{_CURRENCY_TOKEN}\s*({_PLAIN_NUMBER}){_NUMBER_END}|"
+    rf"({_PLAIN_NUMBER}){_NUMBER_END}\s*{_CURRENCY_TOKEN})",
     re.IGNORECASE,
 )
-_EXPLICIT_PRICE_MARKER = re.compile(
-    r"\$|\bdollars?\b|\busd\b|\bbucks\b|\bprice\b|\bbudget\b|\bcost\b",
+_CURRENCY_MARKER = re.compile(
+    _CURRENCY_TOKEN,
     re.IGNORECASE,
+)
+_PRICE_CONTEXT_BEFORE = re.compile(
+    r"\b(?:price|budget|cost|costs|costing)\b"
+    r"(?:\s+(?:is|was|of|at|should\s+be|needs?\s+to\s+be|set\s+at))?\s*$",
+    re.IGNORECASE,
+)
+_NON_PRICE_CONTEXT_BEFORE = re.compile(
+    r"\b(?:age|aged|battery\s+life|bust|capacity|chest|circumference|count|"
+    r"depth|diameter|dimensions?|display|duration|heel(?:\s+height)?|height|"
+    r"hip|inseam|length|measurement|measures?|neck|platform(?:\s+height)?|"
+    r"quantity|rated|rating|runtime|run\s+time|screen(?:\s+size)?|"
+    r"shaft(?:\s+height)?|shoulder|size|sizes|sizing|sleeve|speed|temperature|"
+    r"thickness|time|waist|weight|weighs?|width|contains?|includes?|holds?|"
+    r"lasts?|comes?\s+with)\b"
+    r"(?:\s+(?:is|are|was|were|of|at|from|runs?|measures?|weighs?|"
+    r"measured|ranges?|var(?:y|ies|ied|ying)|between|should\s+be|"
+    r"comes?\s+(?:to|in|with)))*\s*$",
+    re.IGNORECASE,
+)
+_PRICE_CONTINUATION_WORDS = frozenset(
+    {
+        "after",
+        "all",
+        "and",
+        "before",
+        "but",
+        "delivered",
+        "depending",
+        "each",
+        "excluding",
+        "for",
+        "ideally",
+        "if",
+        "including",
+        "is",
+        "max",
+        "maximum",
+        "min",
+        "minimum",
+        "on",
+        "or",
+        "out",
+        "per",
+        "please",
+        "preferably",
+        "shipped",
+        "tax",
+        "total",
+        "when",
+        "with",
+        "without",
+    }
 )
 
 # Any expression that states a price at all. The ledger uses this as its
@@ -158,63 +243,98 @@ class ShoppingConstraints:
         return len(self.populated_fields(exclude=exclude))
 
 
-def _extract_prices(text: str) -> tuple[float | None, float | None]:
-    def number(raw: str) -> float:
-        return float(raw.replace(",", ""))
+def _number(raw: str) -> float:
+    return float(raw.replace(",", ""))
 
-    def allowed(match: re.Match[str]) -> bool:
-        window_start = max(0, match.start() - 24)
-        window_end = min(len(text), match.end() + 24)
-        window = text[window_start:window_end]
-        explicit_price = bool(_EXPLICIT_PRICE_MARKER.search(window))
-        before = text[window_start:match.start()]
-        after = text[match.end():window_end]
-        if not explicit_price and re.search(
-            r"\b(?:size|sizes|sizing)\s*(?:is|:)?\s*$|\b(?:waist|inseam|length|width|height|diameter)\s*$",
-            before,
-            re.IGNORECASE,
-        ):
-            return False
-        if not explicit_price and re.match(
-            r"\s*(?:years?|yrs?|year[-\s]?old|inches?|inch|centimeters?|cm|"
-            r"millimeters?|mm|kilograms?|kg|pounds?|lbs?)\b",
-            after,
-            re.IGNORECASE,
-        ):
-            return False
-        if not explicit_price:
-            raw_values = [
-                group
-                for group in match.groups()
-                if group is not None
-            ]
-            if any(1900 <= number(raw_value) <= 2099 for raw_value in raw_values):
-                return False
+
+def _price_match_allowed(text: str, match: re.Match[str]) -> bool:
+    """Reject numeric comparisons that are measurements, counts, or specs."""
+
+    window_start = max(0, match.start() - 64)
+    window_end = min(len(text), match.end() + 64)
+    before = text[window_start:match.start()]
+    after = text[match.end():window_end]
+    expression = match.group(0)
+    currency_after = _CURRENCY_MARKER.match(after.lstrip())
+    explicit_price = bool(
+        _CURRENCY_MARKER.search(expression)
+        or currency_after
+        or _PRICE_CONTEXT_BEFORE.search(before)
+    )
+
+    if explicit_price:
         return True
+    if _NON_PRICE_CONTEXT_BEFORE.search(before):
+        return False
+    if re.match(rf"\s*{_NON_PRICE_UNIT}", after, re.IGNORECASE):
+        return False
+    if re.match(r"\s*out\s+of\s+\d", after, re.IGNORECASE):
+        return False
 
-    match = PRICE_RANGE.search(text)
-    if match is not None and allowed(match):
-        low, high = sorted((number(match.group(1)), number(match.group(2))))
+    # A noun immediately after a bare number normally supplies its unit or
+    # quantity ("about 4 stars", "at least 2 pockets"). Price expressions may
+    # instead be followed by a small set of discourse/price continuations.
+    following_word = re.match(
+        r"\s*(?:[-,;]\s*)?([^\W\d_]+)", after, re.IGNORECASE
+    )
+    if (
+        following_word is not None
+        and following_word.group(1).casefold() not in _PRICE_CONTINUATION_WORDS
+    ):
+        return False
+
+    raw_values = [group for group in match.groups() if group is not None]
+    if any(1900 <= _number(raw_value) <= 2099 for raw_value in raw_values):
+        return False
+    return True
+
+
+def iter_price_expression_matches(text: str):
+    """Yield only price expressions that survive contextual validation."""
+
+    for match in PRICE_EXPRESSION.finditer(text):
+        if _price_match_allowed(text, match):
+            yield match
+
+
+def first_price_expression_match(text: str) -> re.Match[str] | None:
+    """Return the first validated price expression for intent evidence."""
+
+    return next(iter_price_expression_matches(text), None)
+
+
+def _first_allowed_match(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+    return next(
+        (match for match in pattern.finditer(text) if _price_match_allowed(text, match)),
+        None,
+    )
+
+
+def _extract_prices(text: str) -> tuple[float | None, float | None]:
+
+    match = _first_allowed_match(PRICE_RANGE, text)
+    if match is not None:
+        low, high = sorted((_number(match.group(1)), _number(match.group(2))))
         return low, high
 
     price_min = price_max = None
-    match = PRICE_MAX.search(text)
-    if match is not None and allowed(match):
-        price_max = number(match.group(1))
-    match = PRICE_MIN.search(text)
-    if match is not None and allowed(match):
-        price_min = number(match.group(1))
+    match = _first_allowed_match(PRICE_MAX, text)
+    if match is not None:
+        price_max = _number(match.group(1))
+    match = _first_allowed_match(PRICE_MIN, text)
+    if match is not None:
+        price_min = _number(match.group(1))
 
     if price_min is None and price_max is None:
-        match = PRICE_AROUND.search(text)
-        if match is not None and allowed(match):
+        match = _first_allowed_match(PRICE_AROUND, text)
+        if match is not None:
             # "around $60" is a soft bound in both directions.
-            centre = number(match.group(1))
+            centre = _number(match.group(1))
             return centre * 0.8, centre * 1.2
-        match = PRICE_DIRECT.search(text)
-        if match is not None and allowed(match):
+        match = _first_allowed_match(PRICE_DIRECT, text)
+        if match is not None:
             raw_value = next(group for group in match.groups() if group is not None)
-            price_max = number(raw_value)
+            price_max = _number(raw_value)
 
     return price_min, price_max
 
@@ -900,7 +1020,7 @@ def _extract_dictionary_constraints(
     if price_min is not None or price_max is not None:
         structured_claimed.extend(
             (match.start(), match.end())
-            for match in PRICE_EXPRESSION.finditer(text)
+            for match in iter_price_expression_matches(text)
         )
         if price_min is not None:
             evidence.append(ConstraintEvidence("price_min", "price", "", "structured", 1.0))
