@@ -34,6 +34,7 @@ SEMANTIC_ATTRIBUTES = (
 
 NORMALIZATION_VERSION = "nfkc-casefold-apostrophe-removal-v2"
 DEFAULT_MIN_SIMILARITY = 0.80
+MIN_SEMANTIC_CANONICAL_COUNT = 10
 
 
 def normalize_text(value: str) -> str:
@@ -638,6 +639,11 @@ class AttributeDictionary:
         ``min_similarity`` is returned for each phrase/view; duplicate
         canonical IDs are reduced to their best score below.
 
+        Canonical values with fewer than ``MIN_SEMANTIC_CANONICAL_COUNT``
+        distinct products are ignored before the similarity threshold is
+        applied. This keeps high-similarity noise from rare annotations out of
+        the runtime semantic state.
+
         ``allowed_attribute`` restricts scoring to a single matrix, which is
         how an answer to a clarification question is read as being about the
         attribute that was asked. Brand, size and price have no semantic view,
@@ -773,6 +779,13 @@ class AttributeDictionary:
             return ()
         scores = np.asarray(matrix @ query).reshape(-1)
         order = np.argsort(-scores, kind="stable")
+        order = [
+            position
+            for position in order
+            if self._values[
+                str(rows[int(position)]["canonical_id"])
+            ].count >= MIN_SEMANTIC_CANONICAL_COUNT
+        ]
         if top_k is not None:
             order = order[:top_k]
         if len(order) == 0:
