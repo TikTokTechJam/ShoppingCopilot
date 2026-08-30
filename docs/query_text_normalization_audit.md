@@ -1,5 +1,12 @@
 # Query Text Normalization Audit
 
+> **Point-in-time audit:** repository paths, line numbers, commit state, and the
+> statement that `Architecture.md` was unchanged describe the original audit at
+> commit `b25dce3`. The current implementation guide is
+> [`../Architecture.md`](../Architecture.md). The normalization findings and
+> proposed regression cases below remain open unless a later change explicitly
+> closes them.
+
 ## Repository State
 
 - Repository: `/Users/vietanh/Desktop/TiktokJam/ShoppingCopilot`
@@ -520,7 +527,7 @@ Best fit: preserve raw text; use a Unicode-aware contraction/possessive policy; 
 - FAISS/BM25/product retrieval;
 - intent routing/override behavior;
 - phrase embedding generation;
-- `Architecture.md`.
+- unrelated runtime architecture solely to mask a normalization regression.
 
 ## Questions Requiring Design Decision
 

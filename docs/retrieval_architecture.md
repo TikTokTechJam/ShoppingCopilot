@@ -1,83 +1,88 @@
 # Retrieval architecture
 
-This document describes the active runtime path. Whole-product embedding
-retrieval is retired; the runtime uses the generated V5 canonical dictionary
-and its BGE semantic attribute matrices.
+This is the retrieval-specific companion to
+[`../Architecture.md`](../Architecture.md). It describes the evaluator factory's
+active path and the optional paths that remain available for experiments.
 
-## Runtime flow
-
-```text
-user message
-  -> intent routing
-  -> structured + exact canonical extraction
-  -> residual stopword-filtered 1/2/3-gram extraction
-  -> BGE-small semantic attribute matching
-  -> session constraints and evidence
-  -> structured scorer / reranker
-  -> hard filters and recommendation exclusions
-  -> deterministic Top10
-```
-
-The active semantic model is `BAAI/bge-small-en-v1.5` with 384-dimensional
-L2-normalized vectors. Each attribute has its own canonical-value matrix:
+## Active path
 
 ```text
-category, color, material, style, feature, use_case
+session query + constraints
+        |
+        +-> budget eligibility
+        +-> prior-recommendation exclusion
+        +-> exact brand/size/price points
+        +-> canonical semantic attribute points
+        +-> BM25 product-text scores
+        +-> catalog rating adjustment
+        -> deterministic Top K
 ```
 
-Brand remains exact-only and has no semantic matrix. The BGE model is loaded
-locally through `SHOPPING_ATTRIBUTE_EMBEDDING_MODEL` or the default local model
-directory. Runtime loading never downloads a model.
+`ProductRetriever` loads the full catalog, optional V5 facts, inverted
+attribute indexes, price/rating lookups, and an in-memory SQLite FTS5 BM25
+index. The raw catalog defines valid ASINs and stable tie order.
 
-## Matching and scoring
+The canonical semantic track covers category, color, material, style, feature,
+and use case. It matches user phrases to canonical BGE attribute values and
+then scores products through fact posting lists. It does not compare the query
+with whole-product vectors.
 
-Layer 1 still handles numeric and structured values, exact canonical matches,
-price bounds, size, and intent state. The semantic matcher removes configured
-stopwords, creates one-, two-, and three-token phrases, and searches only the
-selected attribute matrices. Matches at or above the configured threshold are
-stored as evidence with their cosine similarity.
+## Eligibility and soft evidence
 
-The existing product scorer uses those evidence similarities when calculating
-candidate points. It does not load or compare whole-product vectors. Missing
-semantic evidence is not treated as a hard contradiction.
+Budget and prior recommendation exclusions are the normal hard filters. Other
+attributes are positive soft evidence; a missing field does not remove a
+product. Backfill can relax budget and exclusion state rather than return fewer
+than the requested Top K.
 
-Price eligibility and recommendation exclusions remain hard. The same
-`ProductRetriever` and `Agent` serve Buying and Browsing; Browsing changes
-clarification and soft preference behavior, not the embedding model.
-
-## Artifacts
-
-The active artifacts are:
+The base score configured in `starter/retrieval.py` is:
 
 ```text
-data/derived/annotations/v5/dictionary/
-├── canonical_values.json
-├── normalized_lookup.json
-├── manifest.json
-└── attribute_embeddings/
-    ├── category_embeddings.npy
-    ├── color_embeddings.npy
-    ├── material_embeddings.npy
-    ├── style_embeddings.npy
-    ├── feature_embeddings.npy
-    ├── use_case_embeddings.npy
-    └── metadata.json
+structured + semantic_or_dense + 0.20 * BM25
 ```
 
-The retired `data/derived/product_embeddings_jina` artifact is not discovered
-or loaded by the evaluator. It may remain locally ignored for cleanup or
-historical comparison, but it is outside the active runtime.
+A rating term then breaks or adjusts close scores. Buying and Browsing use the
+same ranking weights in the current code.
 
-## Commands
+## Important branch behavior
 
-Run the interactive canonical semantic tool:
+BM25 is computed independently but currently enters the final score only when
+a semantic/dense score mapping is present. A structured-only query ranks by
+structured points and rating; a query with neither constraints nor dense
+evidence ranks by rating and catalog order. This is an implementation behavior
+worth ablating, not a requirement of the architecture.
 
-```bash
-python -m scripts.console_semantic_attribute_test
+## Optional product embedding paths
+
+`product_embeddings/` and `ProductRetriever` still support:
+
+- one whole-product embedding matrix; and
+- four-view Layer 2 matrices over categories, title, features, and description.
+
+These paths need matching artifacts and an explicitly compatible query encoder.
+`evaluator.agent_factory.build_evaluator_agent` supplies neither, so they are
+not active in normal local or hard evaluation.
+
+## Runtime artifacts
+
+The active semantic artifact is:
+
+```text
+data/derived/annotations/v5/dictionary/attribute_embeddings/
+|-- category_embeddings.npy
+|-- color_embeddings.npy
+|-- material_embeddings.npy
+|-- style_embeddings.npy
+|-- feature_embeddings.npy
+|-- use_case_embeddings.npy
+`-- metadata.json
 ```
 
-Run the evaluator without any product-embedding model configuration:
+The matching local model is `BAAI/bge-small-en-v1.5`. Runtime loading is local
+only. Brand remains exact-only.
 
-```bash
-python -m evaluator.hard_evaluator
-```
+## Proposed next step
+
+Make attribute postings, BM25, and optional dense retrieval independent
+candidate generators, union their candidates, and fuse ranks before final
+reranking. The rationale and experiment design are in
+[`approaches.md`](approaches.md).

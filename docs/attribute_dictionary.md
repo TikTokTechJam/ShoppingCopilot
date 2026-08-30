@@ -1,33 +1,45 @@
-# V4 canonical attribute dictionary
+# V5 canonical attribute dictionary
 
-The dictionary is a deterministic exact-lookup layer built from successful V4
-annotation records:
+The generated dictionary is the runtime vocabulary for categorical product
+facts. It is built deterministically from the aggregated V5 annotation JSONL;
+it is not a hand-maintained synonym list.
 
 ```text
-V4 annotations
-      ↓
-exact canonical dictionary
-      ↓
-runtime registry
-      ↓
-longest-first exact utterance matching
+V5 annotations.jsonl
+        |
+        +-> exact canonical registry
+        |       +-> canonical_values.json
+        |       +-> normalized_lookup.json
+        |       +-> manifest.json
+        |
+        +-> optional per-attribute BGE matrices
+                +-> attribute_embeddings/*.npy
+                +-> attribute_embeddings/metadata.json
 ```
 
-The input is the V4 annotation JSONL. Each record contains nested `facts` and
-an annotation status. Only records whose status is `success` contribute values;
-failed records are reported and do not block the build.
+## Field contract
 
-The dictionary has exactly seven fields:
+The dictionary has seven fields:
 
 ```text
 category, brand, color, material, style, feature, use_case
 ```
 
-`price` remains numeric/structured and `size` remains a structured runtime
-constraint. Neither is included in this dictionary. V4 `brand` values are
-lists, and each brand value becomes an independent dictionary entry.
+Price remains numeric and size remains a structured runtime value. Neither is
+a dictionary attribute.
 
-Canonical values remain lowercase natural text with spaces:
+The active semantic subset is:
+
+```text
+category, color, material, style, feature, use_case
+```
+
+Brand is exact-only and has no semantic matrix.
+
+## Canonical values
+
+Values are lowercase natural text with spaces. Canonical IDs are
+attribute-scoped machine identifiers:
 
 ```text
 value:         "moisture wicking"
@@ -35,111 +47,137 @@ canonical_id:  "feature:moisture_wicking"
 normalized:    "moisture wicking"
 ```
 
-Machine IDs are attribute-scoped and derived from the normalized surface. A
-normalized surface can map to more than one attribute. The runtime resolves
-those exact matches conservatively: directly attached directional context is preferred,
-then catalog-count dominance is accepted only when the leading attribute owns at
-least 75% of the candidate count and is at least 3 times the runner-up. Otherwise
-the surface remains unresolved rather than being assigned arbitrarily.
-
-Attribute context is directional and directly attached to the matched value.
-Supported forms include `brand VALUE`, `VALUE brand`, `from VALUE`, `made by
-VALUE`, `by VALUE`, `color/colour VALUE`, `VALUE color/colour`, `made of/from/
-with VALUE`, `VALUE material/fabric`, `style/fit VALUE`, `VALUE style/fit`,
-`feature(s) VALUE`, `VALUE feature`, and `for`, `good for`, `use for`, or `for
-use VALUE`. Proximity alone does not resolve ambiguity; the cue words do not
-consume or reserve other dictionary matches.
-
-A small brand-only collision guard suppresses confirmed query-language terms
-(currently `find`) when they appear as single-word brands without explicit
-brand context. Cues such as `brand`, `from`, `made by`, and `by` restore an
-intentional match. Multi-word brands and non-brand attributes are unaffected.
-
-Normalization is lexical only. It applies Unicode NFKC and case folding,
-converts separators to spaces, removes apostrophes inside words, collapses
-whitespace, and trims. For example:
+Lexical normalization applies Unicode NFKC and case folding, converts
+separators to spaces, removes apostrophes inside words, collapses whitespace,
+and trims:
 
 ```text
-New_Balance  → new balance
-New-Balance  → new balance
-V_Neck       → v neck
-Levi's       → levis
-O'Neill      → oneill
+New_Balance  -> new balance
+New-Balance  -> new balance
+V_Neck       -> v neck
+Levi's       -> levis
+O'Neill      -> oneill
 ```
 
-The readable canonical value may still be `levi's` or `o'neill`. The exact
-path does not add stemming, synonym aliases, or plural conversion.
+The display value can still preserve a readable apostrophe. Normalization does
+not stem, singularize, or invent synonyms.
 
-Optional semantic attribute matching uses a separate local-only
-`BAAI/bge-small-en-v1.5` encoder for short canonical phrases. It generates
-384-dimensional L2-normalized vectors for the six descriptive attributes
-(`category`, `color`, `material`, `style`, `feature`, and `use_case`). Phrases are
-encoded directly without a retrieval instruction or prefix. This BGE artifact
-is the active semantic layer. Brand remains exact-only; whole-product vector
-retrieval is retired from the Agent path.
+## Exact lookup and ambiguity
 
-## Artifacts
+Runtime exact matching is token-based, longest-first, and non-overlapping. It
+does not use arbitrary substring matching.
 
-An exact-only build writes:
+A normalized surface may exist in more than one attribute. The runtime resolves
+an ambiguous exact match only when:
+
+1. directly attached directional context identifies the field; or
+2. the leading catalog count owns at least 75% of the candidate count and is at
+   least three times the runner-up.
+
+Otherwise the surface remains unresolved. Supported direct contexts include
+forms such as `brand VALUE`, `VALUE brand`, `made by VALUE`, `color VALUE`,
+`VALUE material`, `style VALUE`, `VALUE feature`, and `for VALUE`.
+
+A small guard suppresses confirmed single-word brand/query collisions such as
+`find` unless explicit brand context is present. Multi-word brands and
+non-brand fields are unaffected.
+
+## Semantic matching
+
+The active semantic model is `BAAI/bge-small-en-v1.5` with 384-dimensional,
+L2-normalized vectors. Canonical phrases are encoded without a query or
+document prefix. Each semantic attribute has its own matrix so an
+attribute-scoped clarification answer searches only the relevant space.
+
+The model must be available locally. Runtime loading never downloads it and
+rejects an incompatible model family or vector dimension.
+
+Semantic matches retain their cosine similarity and evidence phrase. The
+default minimum similarity is `0.80`; rare canonical values can be excluded
+from semantic matching by the registry's count guard. Exact registry loading
+does not require embedding files.
+
+## Artifact layout
+
+The current generated layout is:
 
 ```text
 data/derived/annotations/v5/dictionary/
-├── canonical_values.json
-├── normalized_lookup.json
-└── manifest.json
+|-- canonical_values.json
+|-- normalized_lookup.json
+|-- manifest.json
+`-- attribute_embeddings/
+    |-- category_embeddings.npy
+    |-- color_embeddings.npy
+    |-- material_embeddings.npy
+    |-- style_embeddings.npy
+    |-- feature_embeddings.npy
+    |-- use_case_embeddings.npy
+    `-- metadata.json
 ```
 
-`canonical_values.json` stores deterministic entries with the canonical ID,
-attribute, natural value, normalized surface, and distinct-product count.
-`normalized_lookup.json` stores attribute-scoped lookup lists and preserves
-one-to-many ambiguity. `manifest.json` records source provenance, V4 coverage,
-normalization version, counts, and whether BGE attribute embeddings were
-generated. When embeddings are enabled, the manifest records the exact BGE
-model, dimension, L2 normalization, and the absence of a query prefix. The
-runtime rejects other attribute model families or dimensions rather than
-mixing them with the BGE matrix.
+`canonical_values.json` records canonical IDs, attributes, natural values,
+normalized surfaces, and distinct-product counts. `normalized_lookup.json`
+preserves one-to-many surfaces. The manifests record source provenance,
+normalization, field counts, model identity, dimension, and normalization.
 
-No embedding files are required for the exact-only flow. The optional semantic
-artifact consists of `attribute_embeddings.npy` and
-`embedding_metadata.json`; it contains canonical values only and never product
-embeddings.
+An older builder mode can create a single `attribute_embeddings.npy` plus
+`embedding_metadata.json` in the dictionary root. The loader retains
+compatibility with that format, but new active builds should use the separate
+per-attribute matrices produced by `scripts.build_v5_attribute_embeddings`.
 
-## Build and validate
+## Build
 
-Use the actual V4 annotation output directly:
+The default input is
+`data/derived/annotations/v5/annotations.jsonl`. Build the exact registry first:
 
 ```powershell
 python -m scripts.build_attribute_dictionary `
   --input data/derived/annotations/v5/annotations.jsonl `
+  --input-format v5 `
   --output-dir data/derived/annotations/v5/dictionary `
   --no-embeddings
-
-python -m scripts.validate_attribute_dictionary `
-  --directory data/derived/annotations/v5/dictionary
 ```
 
-The build command defaults to `data/derived/annotations/v5/annotations.jsonl`,
-the current annotation output in this repository. Use `--input` to point it
-at another annotation JSONL location, such as a generated release under
-`data/derived/annotations/v5/annotations.jsonl`. The optional embedding command
-requires the dependencies in `requirements-embeddings.txt`; it is intentionally
-not run as part of normal repository checks.
-
-For the BGE semantic attribute artifact, download the model once and build only
-the canonical attribute vectors:
+Then optionally download the pinned model and build the separate semantic
+matrices:
 
 ```powershell
+python -m pip install -r requirements-embeddings.txt
 python -m scripts.setup_bge_attribute_model
+python -m scripts.build_v5_attribute_embeddings `
+  --dictionary-dir data/derived/annotations/v5/dictionary `
+  --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings `
+  --model models/bge-small-en-v1.5
+```
 
-python -m scripts.build_attribute_dictionary `
-  --input data/derived/annotations/v5/annotations.jsonl `
-  --output-dir data/derived/annotations/v5/dictionary `
-  --embedding-model models/bge-small-en-v1.5
+Validate after either an exact-only or semantic build:
 
+```powershell
 python -m scripts.validate_attribute_dictionary `
   --directory data/derived/annotations/v5/dictionary
 ```
 
-The runtime requires the generated registry. Missing or incomplete dictionary
-artifacts are configuration errors; categorical extraction cannot proceed
-without these artifacts.
+The build must be rerun whenever the annotation aggregate, normalization
+policy, semantic-field set, or embedding model changes. Keep the aggregate and
+dictionary manifests with every benchmark result even when the large matrices
+remain outside Git.
+
+## Runtime loading
+
+`starter.routing.constraints` looks only at:
+
+```text
+data/derived/annotations/v5/dictionary
+```
+
+The exact files are required. Missing or invalid files are a configuration
+error because the agent intentionally has no hidden fallback vocabulary. If
+semantic files or the local BGE model are unavailable, exact lookup remains
+available but semantic matching is disabled.
+
+Under the current agent split, only exact brand plus structured size and price
+enter the structured scorer. The other six descriptive fields need semantic
+state to affect ranking. This behavior is documented in
+[`../Architecture.md`](../Architecture.md), not implied by the dictionary file
+format itself.
