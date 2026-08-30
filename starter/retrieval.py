@@ -370,7 +370,10 @@ class ProductRetriever:
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
         try:
-            self.bm25_index = BM25Index(self.product_by_asin, self._catalog_order)
+            self.bm25_index = BM25Index(
+                self.product_by_asin,
+                self._catalog_order,
+            )
             self.bm25_state = "ready"
             self.bm25_build_seconds = self.bm25_index.build_seconds
         except (OSError, RuntimeError, sqlite3.Error) as exc:

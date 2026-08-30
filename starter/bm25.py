@@ -19,6 +19,7 @@ from dictionary.registry import semantic_query_tokens
 # The ASIN weight is zero so identifiers never influence lexical relevance.
 BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
+MAX_QUERY_NGRAM = 3
 
 
 def _text(value: object) -> str:
@@ -39,11 +40,31 @@ def _query_terms(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(semantic_query_tokens(text)))[:MAX_QUERY_TERMS]
 
 
-def _match_expression(terms: Iterable[str]) -> str:
+def _query_ngrams(text: str, *, max_ngram: int = MAX_QUERY_NGRAM) -> tuple[str, ...]:
+    """Return cleaned contiguous 1-, 2-, and 3-word phrases for BM25.
+
+    The phrases deliberately overlap.  For example, ``black rain boots``
+    produces the unigrams, ``black rain`` and ``rain boots``, and
+    ``black rain boots``.  The existing semantic tokenizer removes
+    conversational stopwords before the phrase windows are built.
+    """
+
+    terms = _query_terms(text)
+    if not terms:
+        return ()
+    width_limit = max(1, min(int(max_ngram), MAX_QUERY_NGRAM))
+    phrases: list[str] = []
+    for width in range(1, width_limit + 1):
+        for start in range(0, len(terms) - width + 1):
+            phrases.append(" ".join(terms[start : start + width]))
+    return tuple(dict.fromkeys(phrases))
+
+
+def _match_expression(phrases: Iterable[str]) -> str:
     escaped = (
-        f'"{str(term).replace(chr(34), chr(34) * 2)}"'
-        for term in terms
-        if str(term).strip()
+        f'"{str(phrase).replace(chr(34), chr(34) * 2)}"'
+        for phrase in phrases
+        if str(phrase).strip()
     )
     return " OR ".join(escaped)
 
@@ -134,8 +155,8 @@ class BM25Index:
         *,
         allowed_asins: Collection[str] | None = None,
     ) -> dict[str, float]:
-        terms = _query_terms(query_text)
-        expression = _match_expression(terms)
+        phrases = _query_ngrams(query_text)
+        expression = _match_expression(phrases)
         if not expression:
             return {}
 

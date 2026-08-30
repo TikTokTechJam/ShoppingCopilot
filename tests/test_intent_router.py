@@ -245,15 +245,38 @@ class ConstraintExtractionTest(unittest.TestCase):
         self.assertIn("dark blue", constraints.color)
 
     def test_normalises_price_bounds(self) -> None:
-        self.assertEqual(extract_constraints("less than 80 bucks").price_max, 80)
-        self.assertEqual(extract_constraints("under $100").price_max, 100)
-        self.assertEqual(extract_constraints("under 100").price_max, 100)
-        self.assertEqual(extract_constraints("at least $30").price_min, 30)
-        self.assertEqual(extract_constraints("over 50").price_min, 50)
-        both = extract_constraints("between $50 and $100")
-        self.assertEqual((both.price_min, both.price_max), (50, 100))
-        both = extract_constraints("between 30 and 60")
-        self.assertEqual((both.price_min, both.price_max), (30, 60))
+        cases = {
+            "less than 80 bucks": (None, 80),
+            "under $100": (None, 100),
+            "under 100": (None, 100),
+            "at least $30": (30, None),
+            "over 50": (50, None),
+            "between $50 and $100": (50, 100),
+            "between 30 and 60": (30, 60),
+            "around $60": (48, 72),
+            "budget around 50": (40, 60),
+            "price is approximately 50": (40, 60),
+            "approximately $100": (80, 120),
+            "approx $100": (80, 120),
+            "approx. $100": (80, 120),
+            "approximate price is 100": (80, 120),
+            "estimated price: \u20ac100": (80, 120),
+            "close to 100 dollars": (80, 120),
+            "~$100": (80, 120),
+            "costs under 25": (None, 25),
+            "under \u00a380": (None, 80),
+            "between 30 and 60 EUR": (30, 60),
+            "between 30 USD and 60 USD": (30, 60),
+            "under USD 100": (None, 100),
+            "\u20ac75": (None, 75),
+            "shoes under 50 for work": (None, 50),
+            "size between 8 and 10, budget between 50 and 100": (50, 100),
+        }
+        for message, expected in cases.items():
+            constraints = extract_constraints(message)
+            self.assertEqual(
+                (constraints.price_min, constraints.price_max), expected, message
+            )
 
     def test_a_size_number_is_not_a_price(self) -> None:
         constraints = extract_constraints("I need a running shoe in size 10.")
@@ -269,6 +292,121 @@ class ConstraintExtractionTest(unittest.TestCase):
             constraints = extract_constraints(message)
             self.assertIsNone(constraints.price_max, message)
             self.assertIsNone(constraints.price_min, message)
+
+    def test_a_symbolic_measurement_is_not_a_price(self) -> None:
+        for marker in ('"', "'", "\u201d", "\u2032", "\u2033"):
+            message = f"Manmade sole; Platform measures approximately 0.5{marker}."
+            constraints = extract_constraints(message)
+            self.assertIsNone(constraints.price_max, message)
+            self.assertIsNone(constraints.price_min, message)
+            self.assertEqual(len(constraints.size), 1, message)
+            self.assertTrue(
+                constraints.size[0].startswith("platform height 0.5 "), message
+            )
+            size_evidence = [
+                item for item in constraints.evidence if item.attribute == "size"
+            ]
+            self.assertEqual(len(size_evidence), 1, message)
+            self.assertTrue(
+                size_evidence[0].canonical_id.startswith("size:footwear:"),
+                message,
+            )
+
+            fired = {
+                signal.name
+                for signal in LexicalIntentRouter().classify(message).signals
+            }
+            self.assertNotIn("budget", fired, message)
+            self.assertIn("size", fired, message)
+
+    def test_type_specific_measurements_are_appended_to_size(self) -> None:
+        cases = {
+            "waist 32 inches and inseam 30 inches": (
+                "waist 32 inch",
+                "inseam 30 inch",
+            ),
+            "heel height 3 inches and platform height 0.5 inches": (
+                "heel height 3 inch",
+                "platform height 0.5 inch",
+            ),
+            "package dimensions 10 x 8 x 3 inches": (
+                "package dimensions 10 x 8 x 3 inch",
+            ),
+            "I need a ring size 7": ("ring size 7",),
+            "shoe sizes run from 6 to 12": ("6-12",),
+        }
+        expected_profiles = {
+            "waist 32 inches and inseam 30 inches": "size:apparel:",
+            "heel height 3 inches and platform height 0.5 inches": "size:footwear:",
+            "package dimensions 10 x 8 x 3 inches": "size:dimension:",
+            "I need a ring size 7": "size:jewelry:",
+            "shoe sizes run from 6 to 12": "size:footwear:",
+        }
+
+        for message, expected in cases.items():
+            constraints = extract_constraints(message)
+            self.assertEqual(constraints.size, expected, message)
+            size_evidence = [
+                item for item in constraints.evidence if item.attribute == "size"
+            ]
+            self.assertEqual(len(size_evidence), len(expected), message)
+            self.assertTrue(
+                all(
+                    item.canonical_id.startswith(expected_profiles[message])
+                    for item in size_evidence
+                ),
+                message,
+            )
+
+    def test_a_direct_answer_to_the_size_question_is_extracted(self) -> None:
+        self.assertEqual(
+            extract_constraints("10", asked_attribute="size").size,
+            ("10",),
+        )
+        self.assertEqual(
+            extract_constraints("XL", asked_attribute="size").size,
+            ("xl",),
+        )
+
+    def test_measurements_quantities_and_specs_are_not_prices(self) -> None:
+        messages = (
+            "heel height is about 3",
+            "screen size around 15.6",
+            "weighs under 5 pounds",
+            "battery life up to 12 hours",
+            "rated at about 4.5 stars",
+            "I give it about 4.5 out of 5",
+            "contains at least 2 pockets",
+            "comes with at least 2",
+            "between 2 and 4 pieces",
+            "approximately 50% cotton",
+            "runs at over 100 watts",
+            "capacity between 8 and 16 GB",
+            "from 2020 to 2024",
+            "about 3 1/2 inches",
+            "about 3/4 inch",
+            "dimensions between 10 and 20",
+            "shoe sizes run from 6 to 12",
+            "temperature ranges from 20 to 30",
+            "more than 100 reviews",
+            "below 4-star rating",
+            "up to 10x magnification",
+            "approx. 5 hours",
+            "approximate size 10",
+            "estimated heel height 3 inches",
+            "close to 4.5 stars",
+            "~3/4 inch",
+        )
+        for message in messages:
+            constraints = extract_constraints(message)
+            self.assertIsNone(constraints.price_max, message)
+            self.assertIsNone(constraints.price_min, message)
+
+            fired = {
+                signal.name
+                for signal in LexicalIntentRouter().classify(message).signals
+            }
+            self.assertNotIn("budget", fired, message)
 
     def test_does_not_invent_constraints(self) -> None:
         constraints = extract_constraints("I'm just having a look around today.")

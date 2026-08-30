@@ -10,9 +10,9 @@
     <main class="shell">
       <header class="page-header">
         <div>
-          <p class="eyebrow">LOCAL EVALUATOR TOOL</p>
+          <p id="eyebrow" class="eyebrow">LOCAL EVALUATOR TOOL</p>
           <h1>Shopping Copilot Debugger</h1>
-          <p class="muted">One real Agent turn at a time — Manual400 or interactive console mode.</p>
+          <p id="subtitle" class="muted">One real Agent turn at a time.</p>
         </div>
         <div class="controls">
           <select id="scenario" aria-label="Scenario filter">
@@ -23,12 +23,15 @@
             <option value="BOUNDARY">Boundary</option>
           </select>
           <button id="random">New Random Session</button>
+          <button id="find-miss" class="secondary">Find Next Miss</button>
           <input id="session-id" placeholder="manual400_0095" aria-label="Session ID" />
           <button id="load" class="secondary">Load</button>
+          <span id="action-status" class="muted action-status" role="status" aria-live="polite"></span>
         </div>
       </header>
 
       <div id="error" class="error hidden"></div>
+      <div id="miss-search-status" class="muted search-status"></div>
       <section id="session-banner" class="panel empty">Choose a session to begin.</section>
 
       <div class="grid">

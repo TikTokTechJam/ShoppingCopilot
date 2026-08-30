@@ -32,6 +32,9 @@ from starter.session import (
 )
 
 
+CLARIFICATION_CANDIDATE_LIMIT = 500
+
+
 def _user_prior_rating(profile: Mapping[str, Any] | None) -> float | None:
     """Read ``average_prior_rating`` off the session profile, if usable.
 
@@ -419,7 +422,7 @@ class Agent:
             state.query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
-            limit=100,
+            limit=CLARIFICATION_CANDIDATE_LIMIT,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
             field_weights=field_weights,
