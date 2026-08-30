@@ -94,6 +94,23 @@ function renderBanner(data) {
     <div class="banner-target">Target <code>${esc(target.parent_asin)}</code>${target.title ? `<span class="banner-target-title" title="${esc(target.title)}"> — ${esc(target.title)}</span>` : ""}</div>`;
 }
 
+function renderMissSearch(data) {
+  const search = data.miss_search;
+  const element = $("miss-search-status");
+  element.className = "muted search-status";
+  if (!search) {
+    element.textContent = "Find Next Miss runs unseen sessions and stops on the first non-hit case.";
+    return;
+  }
+  if (search.status === "found") {
+    element.className = "search-status found";
+    element.textContent = `${search.message} Searched ${search.searched} session${search.searched === 1 ? "" : "s"}; loaded ${search.sample_id}.`;
+    return;
+  }
+  element.className = "search-status exhausted";
+  element.textContent = `${search.message} Searched ${search.searched} session${search.searched === 1 ? "" : "s"} (${search.scenario}).`;
+}
+
 function renderState(data) {
   const state = data.state;
   if (!state) { $("state").innerHTML = "—"; return; }
@@ -211,11 +228,12 @@ function updateInteractivePolling(data) {
 }
 
 function render(data) {
-  renderBanner(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
+  renderBanner(data); renderMissSearch(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
   const active = !data.interactive_mode && Boolean(data.session) && !data.done;
   $("next").disabled = !active;
   $("run-end").disabled = !active;
   $("random").disabled = Boolean(data.interactive_mode);
+  $("find-miss").disabled = Boolean(data.interactive_mode);
   $("load").disabled = Boolean(data.interactive_mode);
   updateInteractivePolling(data);
 }
@@ -226,6 +244,7 @@ async function loadState(request) {
 }
 
 $("random").onclick = () => loadState(() => api("/api/session/random", "POST", {scenario: $("scenario").value}));
+$("find-miss").onclick = () => loadState(() => api("/api/session/find-next-miss", "POST", {scenario: $("scenario").value}));
 $("load").onclick = () => loadState(() => api("/api/session/load", "POST", {session_id: $("session-id").value}));
 $("next").onclick = () => loadState(() => api("/api/session/next", "POST"));
 $("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"));

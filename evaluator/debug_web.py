@@ -358,6 +358,24 @@ class SessionPool:
         self._positions[key] += 1
         return dict(self._orders[key][position])
 
+    def next_unseen(self, scenario: str = "ANY") -> dict[str, Any] | None:
+        """Return the next session without restarting an exhausted pass."""
+
+        key = scenario.upper()
+        if key not in self._orders:
+            order = self._matching(key)
+            if not order:
+                raise KeyError(f"no sessions found for scenario {scenario!r}")
+            self._rng.shuffle(order)
+            self._orders[key] = order
+            self._positions[key] = 0
+
+        position = self._positions[key]
+        if position >= len(self._orders[key]):
+            return None
+        self._positions[key] += 1
+        return dict(self._orders[key][position])
+
     def by_id(self, session_id: str) -> dict[str, Any] | None:
         wanted = str(session_id).strip()
         aliases = {wanted}
@@ -479,6 +497,7 @@ class DebugWebController:
         self.before_constraints: dict[str, Any] = {}
         self.before_semantic_constraints: dict[str, Any] = {}
         self.before_exclusions: list[str] = []
+        self.miss_search: dict[str, Any] | None = None
 
     @property
     def session(self) -> Mapping[str, Any] | None:
@@ -498,6 +517,7 @@ class DebugWebController:
         self.before_constraints = {}
         self.before_semantic_constraints = {}
         self.before_exclusions = []
+        self.miss_search = None
         return self.state_payload()
 
     def new_random(self, scenario: str = "ANY") -> dict[str, Any]:
@@ -512,6 +532,40 @@ class DebugWebController:
         if session is None:
             raise KeyError(f"session {session_id!r} was not found")
         return self._new_runner(session)
+
+    def find_next_miss(self, scenario: str = "ANY") -> dict[str, Any]:
+        """Run unseen sessions until the first non-hit session is found."""
+
+        if self.pool is None:
+            raise RuntimeError("miss search is unavailable in interactive mode")
+
+        requested_scenario = str(scenario or "ANY").upper()
+        searched = 0
+        while True:
+            session = self.pool.next_unseen(requested_scenario)
+            if session is None:
+                self.miss_search = {
+                    "status": "exhausted",
+                    "scenario": requested_scenario,
+                    "searched": searched,
+                    "message": "No non-hit session remains in this pass.",
+                }
+                return self.state_payload()
+
+            self._new_runner(session)
+            self.run_to_end()
+            searched += 1
+            result = self.runner.result() if self.runner is not None else {}
+            if not bool(result.get("hit")):
+                self.miss_search = {
+                    "status": "found",
+                    "scenario": requested_scenario,
+                    "searched": searched,
+                    "sample_id": str(session.get("sample_id", "")),
+                    "result": result,
+                    "message": "Stopped at the first non-hit session.",
+                }
+                return self.state_payload()
 
     def search_catalog(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Find catalog products for developer target selection only."""
@@ -626,6 +680,7 @@ class DebugWebController:
                 "layer2": _layer2_status(self.agent),
                 "bm25": _bm25_status(self.agent),
                 "benchmark": None,
+                "miss_search": self.miss_search,
                 "score_weights": MODE_SCORE_WEIGHTS,
                 "turns": self.turn_records,
             }
@@ -640,6 +695,7 @@ class DebugWebController:
                 "bm25": _bm25_status(self.agent),
                 "score_weights": MODE_SCORE_WEIGHTS,
                 "benchmark": None,
+                "miss_search": self.miss_search,
             }
         session = self.runner.session
         state = _state_payload(self.agent, self.runner.session_id)
@@ -661,6 +717,7 @@ class DebugWebController:
             "layer2": _layer2_status(self.agent),
             "bm25": _bm25_status(self.agent),
             "benchmark": self._benchmark_payload(),
+            "miss_search": self.miss_search,
             "score_weights": MODE_SCORE_WEIGHTS,
             "turns": self.turn_records,
         }
@@ -872,6 +929,9 @@ class DebugRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
             elif parsed.path == "/api/session/load":
                 result = self.app.load(str(body.get("session_id", "")))
+                self._send_json(result)
+            elif parsed.path == "/api/session/find-next-miss":
+                result = self.app.find_next_miss(str(body.get("scenario", "ANY")))
                 self._send_json(result)
             elif parsed.path == "/api/session/next":
                 self._send_json(self.app.next_turn())

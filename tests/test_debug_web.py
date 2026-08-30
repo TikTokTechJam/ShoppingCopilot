@@ -136,6 +136,12 @@ class DebugWebTests(unittest.TestCase):
         self.assertEqual(pool.by_id("manual400_0003")["sample_id"], "manual400_0003")
         self.assertIsNone(pool.by_id("missing"))
 
+    def test_next_unseen_finishes_without_restarting_the_pool(self) -> None:
+        pool = SessionPool(self.sessions, seed=3)
+        seen = [pool.next_unseen()["sample_id"] for _ in self.sessions]
+        self.assertEqual(len(set(seen)), len(self.sessions))
+        self.assertIsNone(pool.next_unseen())
+
     def test_runner_advances_exactly_one_turn_and_keeps_target_out_of_agent(self) -> None:
         agent = FakeAgent()
         runner = Manual400SessionRunner(
@@ -210,6 +216,38 @@ class DebugWebTests(unittest.TestCase):
             controller.load(selected)
             self.assertEqual(len(agent.reset_calls), 2)
             self.assertEqual(controller.state_payload()["turn"], 0)
+
+    def test_find_next_miss_leaves_the_failed_case_loaded(self) -> None:
+        agent = FakeAgent()
+        with patch(
+            "evaluator.debug_web._ranking_payload",
+            return_value={
+                "structured_rank": None,
+                "dense_rank": None,
+                "hybrid_rank": None,
+                "eligible": False,
+                "eligible_count": 0,
+                "global_count": 0,
+                "global_rank": None,
+                "global_rank_status": "AVAILABLE",
+                "structured_score": None,
+                "dense_score": None,
+                "final_score": None,
+                "top10": [],
+                "view_scores": None,
+            },
+        ):
+            controller = DebugWebController(agent, self.sessions, {"OTHER"}, seed=7)
+            state = controller.find_next_miss()
+
+        self.assertEqual(state["miss_search"]["status"], "found")
+        self.assertEqual(state["miss_search"]["searched"], 1)
+        self.assertTrue(state["done"])
+        self.assertEqual(len(state["turns"]), 10)
+        self.assertEqual(
+            state["session"]["session_id"],
+            state["miss_search"]["sample_id"],
+        )
 
     def test_static_debug_assets_exist(self) -> None:
         self.assertTrue((STATIC_DIR / "index.html").is_file())
