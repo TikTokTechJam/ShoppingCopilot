@@ -223,6 +223,10 @@ ATTRIBUTE_SIGNALS: dict[str, str] = {
 # tracker.  They indicate a possible change of direction; the session layer
 # separately decides whether the change is a full goal replacement or only a
 # preference correction.
+attributes_pattern = "|".join(
+    re.escape(attr) for attr in ATTRIBUTE_SIGNALS.keys()
+)
+
 OVERRIDE_MARKER_PATTERNS: tuple[str, ...] = (
     r"\bactually\b",
     r"\binstead\b",
@@ -234,6 +238,11 @@ OVERRIDE_MARKER_PATTERNS: tuple[str, ...] = (
     r"\b(?:ignore|disregard)\b(?:.{0,45}\b(?:earlier|previous|old|last|that)\b|\s+(?:that|it))",
     r"\bstart over\b",
     r"\bnew search\b",
+    r"\bnever mind\b",
+    rf"change\s+the\s+(?P<attribute>{attributes_pattern})\s+from\s+(?P<old_val>[\w\s]+?)\s+to\s+(?P<new_val>[\w\s]+)",
+    r"\bstop looking for\b",
+    r"\bi was wrong about\b",
+    r"\bcancel the search for\b"
 )
 
 OVERRIDE_MARKER = _compile(*OVERRIDE_MARKER_PATTERNS)
