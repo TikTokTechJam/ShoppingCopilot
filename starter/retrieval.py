@@ -1,10 +1,8 @@
-"""Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
+"""Dependency-light product retrieval for the Layer 1/2/3 MVP.
 
-The retriever consumes canonical product facts, optional direct Layer 2 field
-vectors, and a BM25 product-text index. It does not parse user language.
-Exact constraints are retained for slot compilation, hard filters, and
-diagnostics. Final ranking combines the BGE semantic signal and lexical BM25
-signal; the former structured point score is no longer part of fusion.
+Buying uses active slot state, structured budget/size eligibility, and
+slot-guided BM25 with BGE lexical expansions. Browsing retains the dense
+semantic signal alongside BM25. The retriever does not parse user language.
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
-from starter.bm25 import BM25Index, BM25QueryCompiler
+from starter.bm25 import BM25Index, BM25QueryCompiler, BM25_QUERY_FIELDS
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -40,6 +38,10 @@ DEFAULT_FACT_PATHS = (
     Path("data/derived/facts/facts.jsonl"),
     Path("data/facts.jsonl"),
 )
+DEFAULT_V5_ATTRIBUTE_PATHS = {
+    field_name: Path("data/derived/annotations/v5") / f"{field_name}.jsonl"
+    for field_name in BM25_QUERY_FIELDS
+}
 DEFAULT_EMBEDDING_PATHS = (
     Path("data/derived/product_embeddings/product_embeddings.npy"),
     Path("data/derived/product_embeddings.npy"),
@@ -75,12 +77,22 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    "BUYING": {"structured": 0.00, "dense": 1.00, "bm25": 0.20},
+    # Buying follows the slot-guided BM25 architecture: BGE supplies lexical
+    # alternatives to BM25, rather than adding a separate dense score to the
+    # final buying rank. Price and size are enforced before this score.
+    "BUYING": {"structured": 0.00, "dense": 0.00, "bm25": 1.00},
     "BROWSING": {"structured": 0.00, "dense": 1.00, "bm25": 0.20},
 }
 # Backward-compatible name for callers that inspect the Buying contribution.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["dense"]
 BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
+
+# BM25 itself still calculates the lexical score. This optional post-score
+# transform keeps score-shaping experiments in one place and makes raw-vs-
+# transformed benchmark comparisons reproducible. ``log1p`` is the default
+# because it is defined at zero and is numerically safer than ``log(score)``.
+BM25_SCORE_TRANSFORM_ENV = "SHOPPING_BM25_SCORE_TRANSFORM"
+BM25_SCORE_TRANSFORM_DEFAULT = "log1p"
 
 # Rating tie-breaker (INSTRUCTION.md section 1).  The structured matcher scores
 # most candidates identically -- 9.6 of every 10 returned candidates share one
@@ -105,6 +117,37 @@ def _env_flag(name: str, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _bm25_score_transform_name(value: str | None) -> str:
+    """Return the supported BM25 score transform name."""
+
+    normalized = (value or BM25_SCORE_TRANSFORM_DEFAULT).strip().casefold()
+    if normalized in {"raw", "none", "identity"}:
+        return "raw"
+    if normalized in {"log1p", "log", "ln1p"}:
+        return "log1p"
+    return BM25_SCORE_TRANSFORM_DEFAULT
+
+
+def _transform_bm25_scores(
+    scores: Mapping[str, float],
+    transform: str,
+) -> dict[str, float]:
+    """Apply the configured post-BM25 transform to finite positive scores."""
+
+    transformed: dict[str, float] = {}
+    for asin, raw_score in scores.items():
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score) or score <= 0.0:
+            continue
+        value = math.log1p(score) if transform == "log1p" else score
+        if math.isfinite(value) and value > 0.0:
+            transformed[str(asin)] = value
+    return transformed
 
 
 def normalized_rating(rating: float | None) -> float:
@@ -382,6 +425,9 @@ class ProductRetriever:
             "SHOPPING_BM25_SLOT_GROUPS",
             default=True,
         )
+        self.bm25_score_transform = _bm25_score_transform_name(
+            os.environ.get(BM25_SCORE_TRANSFORM_ENV)
+        )
         bm25_log_path = os.environ.get("SHOPPING_BM25_LOG_PATH", "").strip()
         self.bm25_log_path = Path(bm25_log_path) if bm25_log_path else None
         self.last_bm25_diagnostics: dict[str, Any] = {}
@@ -496,20 +542,37 @@ class ProductRetriever:
         self, facts_path: str | Path | None
     ) -> tuple[dict[str, Mapping[str, tuple[str, ...]]], dict[str, float | None]]:
         selected = Path(facts_path) if facts_path is not None else _first_existing(DEFAULT_FACT_PATHS)
-        if selected is None:
-            return {}, {}
         facts: dict[str, Mapping[str, tuple[str, ...]]] = {}
         prices: dict[str, float | None] = {}
-        for row in _read_jsonl(selected):
-            annotation = row.get("annotation")
-            if isinstance(annotation, Mapping) and str(annotation.get("status", "")).casefold() != "success":
-                continue
-            asin = str(row.get("parent_asin", "")).strip()
-            if not asin:
-                continue
-            facts[asin] = _record_facts(row)
-            if "price" in row:
-                prices[asin] = _price(row.get("price"))
+        if selected is not None:
+            for row in _read_jsonl(selected):
+                annotation = row.get("annotation")
+                if isinstance(annotation, Mapping) and str(annotation.get("status", "")).casefold() != "success":
+                    continue
+                asin = str(row.get("parent_asin", "")).strip()
+                if not asin:
+                    continue
+                facts[asin] = _record_facts(row)
+                if "price" in row:
+                    prices[asin] = _price(row.get("price"))
+
+        # The V5 repository convention is one JSONL artifact per annotation
+        # field plus the aggregated annotations.jsonl.  Use the real field
+        # files when the default V5 source is active, while retaining the
+        # aggregate as the fallback for older/custom fact artifacts and for
+        # annotated prices.
+        if facts_path is None:
+            for field_name, attribute_path in DEFAULT_V5_ATTRIBUTE_PATHS.items():
+                if not attribute_path.is_file():
+                    continue
+                for row in _read_jsonl(attribute_path):
+                    asin = str(row.get("parent_asin", "")).strip()
+                    if not asin or field_name not in row:
+                        continue
+                    values = _values(row.get(field_name))
+                    current = dict(facts.get(asin, {}))
+                    current[field_name] = values
+                    facts[asin] = current
         return facts, prices
 
     def _load_catalog(self) -> None:
@@ -752,13 +815,21 @@ class ProductRetriever:
 
     def _eligible_asins(self, constraints: object) -> list[str]:
         price_min, price_max = self._price_bounds(constraints)
-        if price_min is None and price_max is None:
-            return list(self._catalog_order)
-        return [
-            asin
-            for asin in self._catalog_order
-            if self._matches_price_bounds(asin, price_min, price_max)
-        ]
+        requested_sizes = set(self._constraint_values(constraints, "size"))
+        eligible: list[str] = []
+        for asin in self._catalog_order:
+            if (price_min is not None or price_max is not None) and not self._matches_price_bounds(
+                asin,
+                price_min,
+                price_max,
+            ):
+                continue
+            if requested_sizes:
+                product_sizes = set(self.product_by_asin[asin].facts.get("size", ()))
+                if not product_sizes.intersection(requested_sizes):
+                    continue
+            eligible.append(asin)
+        return eligible
 
     def _matches_price_bounds(
         self,
@@ -828,9 +899,13 @@ class ProductRetriever:
             return {}
         try:
             if not self.use_slot_bm25_groups:
-                scores = self.bm25_index.search(
+                raw_scores = self.bm25_index.search(
                     query_text,
                     allowed_asins=eligible_asins,
+                )
+                scores = _transform_bm25_scores(
+                    raw_scores,
+                    self.bm25_score_transform,
                 )
                 self._record_bm25_diagnostics(
                     query_text,
@@ -838,7 +913,9 @@ class ProductRetriever:
                     groups={
                         "raw": {
                             "query": query_text,
-                            "matched_count": len(scores),
+                            "matched_count": len(raw_scores),
+                            "score_transform": self.bm25_score_transform,
+                            "raw_top": self._top_score_rows(raw_scores),
                             "top": self._top_score_rows(scores),
                         }
                     },
@@ -846,7 +923,7 @@ class ProductRetriever:
                 )
                 return scores
 
-            groups = self.bm25_query_compiler.compile_groups(
+            groups = self.bm25_query_compiler.compile_group_specs(
                 constraints,
                 semantic_constraints,
             )
@@ -866,16 +943,25 @@ class ProductRetriever:
             # from dominating the final lexical signal.
             normalized_by_group: list[dict[str, float]] = []
             group_diagnostics: dict[str, dict[str, object]] = {}
-            for field_name, lexical_query in groups.items():
-                scores = self.bm25_index.search(
-                    lexical_query,
+            for field_name, group in groups.items():
+                raw_scores = self.bm25_index.search(
+                    group.phrases,
                     allowed_asins=eligible_asins,
+                    fields=group.fields,
+                )
+                scores = _transform_bm25_scores(
+                    raw_scores,
+                    self.bm25_score_transform,
                 )
                 if not scores:
                     normalized_by_group.append({})
                     group_diagnostics[field_name] = {
-                        "query": lexical_query,
-                        "matched_count": 0,
+                        "query": group.query_text,
+                        "phrases": list(group.phrases),
+                        "fields": list(group.fields),
+                        "matched_count": len(raw_scores),
+                        "score_transform": self.bm25_score_transform,
+                        "raw_top": self._top_score_rows(raw_scores),
                         "top": [],
                     }
                     continue
@@ -886,9 +972,13 @@ class ProductRetriever:
                 if peak <= 0.0:
                     normalized_by_group.append({})
                     group_diagnostics[field_name] = {
-                        "query": lexical_query,
-                        "matched_count": len(scores),
+                        "query": group.query_text,
+                        "phrases": list(group.phrases),
+                        "fields": list(group.fields),
+                        "matched_count": len(raw_scores),
                         "peak": peak,
+                        "score_transform": self.bm25_score_transform,
+                        "raw_top": self._top_score_rows(raw_scores),
                         "top": self._top_score_rows(scores),
                     }
                     continue
@@ -899,9 +989,13 @@ class ProductRetriever:
                 }
                 normalized_by_group.append(normalized)
                 group_diagnostics[field_name] = {
-                    "query": lexical_query,
-                    "matched_count": len(scores),
+                    "query": group.query_text,
+                    "phrases": list(group.phrases),
+                    "fields": list(group.fields),
+                    "matched_count": len(raw_scores),
                     "peak": peak,
+                    "score_transform": self.bm25_score_transform,
+                    "raw_top": self._top_score_rows(raw_scores),
                     "top": self._top_score_rows(scores),
                     "normalized_top": self._top_score_rows(normalized),
                 }
@@ -964,6 +1058,7 @@ class ProductRetriever:
         record: dict[str, object] = {
             "query": query_text,
             "mode": mode,
+            "score_transform": self.bm25_score_transform,
             "groups": {str(name): dict(value) for name, value in groups.items()},
             "aggregate_count": len(aggregate),
             "aggregate_top": self._top_score_rows(aggregate),
@@ -1103,13 +1198,20 @@ class ProductRetriever:
         price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
 
-        semantic_scores, semantic_labels = self._semantic_scores(
-            eligible_asins,
-            semantic_constraints,
-        )
-        dense_scores = semantic_scores
-        if not dense_scores and self.dense_available:
-            dense_scores = self._dense_scores(query_text)
+        if mode == "BUYING":
+            # BGE semantic evidence is consumed by BM25QueryCompiler as
+            # bounded lexical alternatives. Buying does not run a separate
+            # dense ranking signal.
+            dense_scores: dict[str, float] = {}
+            semantic_labels: dict[str, tuple[str, ...]] = {}
+        else:
+            semantic_scores, semantic_labels = self._semantic_scores(
+                eligible_asins,
+                semantic_constraints,
+            )
+            dense_scores = semantic_scores
+            if not dense_scores and self.dense_available:
+                dense_scores = self._dense_scores(query_text)
         bm25_scores = self._bm25_scores(
             query_text,
             eligible_set,

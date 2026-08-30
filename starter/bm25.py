@@ -1,22 +1,25 @@
-"""Small in-memory BM25 index for the product-text retrieval path.
+"""Slot-guided SQLite FTS5 BM25 retrieval.
 
-This is a third retrieval signal. It does not replace structured or semantic
-matching, and it intentionally reuses the semantic path's lexical cleanup so
-the three paths see the same conversational query terms.
+The BGE attribute matcher resolves a shopper's current turn into canonical
+slot values and semantic evidence.  This module compiles that state into one
+bounded lexical query per slot, then routes each query to the product fields
+where that slot is meaningful.  SQLite still owns tokenization, FTS matching,
+BM25 scoring, and result ordering; Python only builds the query groups.
 """
 
 from __future__ import annotations
 
 import sqlite3
 import time
+from dataclasses import dataclass
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
 from dictionary.registry import normalize_text, semantic_query_tokens
 
 
-# One weight is required for every FTS column, including the UNINDEXED ASIN.
-# The ASIN weight is zero so identifiers never influence lexical relevance.
+# These are the original raw-catalog columns and weights.  Keep this tuple
+# stable for callers that use the raw BM25 compatibility path.
 BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
 MAX_QUERY_NGRAM = 3
@@ -36,6 +39,51 @@ BM25_QUERY_FIELDS = (
     "feature",
     "use_case",
     "style",
+)
+
+# The V5 annotation field names are indexed directly as dedicated SQLite
+# columns.  They correspond to the actual V5 JSONL keys/files (``category``,
+# ``brand``, ...), not to fictional ``v5_*`` files.  The remaining names are
+# raw catalog columns.  A group is restricted to this route with an FTS5
+# column filter, so a category query cannot receive evidence from (for
+# example) description text unless the route explicitly allows it.
+BM25_SLOT_FIELD_PATHS: dict[str, tuple[str, ...]] = {
+    "category": ("category", "categories", "title"),
+    "brand": ("brand", "title", "store"),
+    "color": ("color", "title", "features"),
+    "material": ("material", "features", "details"),
+    "feature": ("feature", "features", "details", "description"),
+    "use_case": ("use_case", "features", "description", "categories"),
+    "style": ("style", "title", "features"),
+}
+
+BM25_ANNOTATION_COLUMNS = BM25_QUERY_FIELDS
+BM25_RAW_COLUMNS = (
+    "title",
+    "categories",
+    "features",
+    "details",
+    "store",
+    "description",
+)
+BM25_INDEX_COLUMNS = BM25_ANNOTATION_COLUMNS + BM25_RAW_COLUMNS
+
+# V5 annotation facts mirror the lexical importance of the corresponding raw
+# field.  These are BM25 field weights, not the removed structured score. The
+# raw-column weights themselves remain unchanged.
+BM25_ANNOTATION_FIELD_WEIGHTS = {
+    "category": 4.0,
+    "brand": 1.5,
+    "color": 2.5,
+    "material": 2.5,
+    "feature": 2.5,
+    "use_case": 2.5,
+    "style": 6.0,
+}
+BM25_INDEX_FIELD_WEIGHTS = (
+    0.0,
+    *(BM25_ANNOTATION_FIELD_WEIGHTS[column] for column in BM25_ANNOTATION_COLUMNS),
+    *BM25_FIELD_WEIGHTS[1:],
 )
 
 
@@ -77,13 +125,37 @@ def _query_ngrams(text: str, *, max_ngram: int = MAX_QUERY_NGRAM) -> tuple[str, 
     return tuple(dict.fromkeys(phrases))
 
 
-def _match_expression(phrases: Iterable[str]) -> str:
+def _phrase_ngrams(phrases: Iterable[str]) -> tuple[str, ...]:
+    """Expand each OR alternative without creating phrases across alternatives."""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        for candidate in _query_ngrams(str(phrase)):
+            if candidate not in seen:
+                seen.add(candidate)
+                result.append(candidate)
+    return tuple(result)
+
+
+def _match_expression(
+    phrases: Iterable[str],
+    *,
+    fields: Collection[str] | None = None,
+) -> str:
     escaped = (
         f'"{str(phrase).replace(chr(34), chr(34) * 2)}"'
         for phrase in phrases
         if str(phrase).strip()
     )
-    return " OR ".join(escaped)
+    expression = " OR ".join(escaped)
+    if not expression or not fields:
+        return expression
+    # Field names come only from BM25_SLOT_FIELD_PATHS/BM25_RAW_COLUMNS, never
+    # from user input. The column filter keeps every phrase, including a
+    # multi-word phrase, inside one selected FTS column.
+    field_expression = " ".join(str(field) for field in fields)
+    return f"{{{field_expression}}} : ({expression})"
 
 
 def _field_values(source: object | None, field_name: str) -> tuple[str, ...]:
@@ -165,6 +237,33 @@ def _is_semantic_evidence(item: object) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class BM25QueryGroup:
+    """One slot's lexical alternatives and its allowed product fields."""
+
+    field_name: str
+    phrases: tuple[str, ...]
+    fields: tuple[str, ...]
+
+    @property
+    def match_phrases(self) -> tuple[str, ...]:
+        """Return OR alternatives, including the existing bounded n-grams.
+
+        N-grams are generated independently for each alternative.  This keeps
+        an expansion such as ``rainy weather`` separate from the next
+        alternative instead of accidentally creating terms like
+        ``weather lightweight`` across two BGE surfaces.
+        """
+
+        return _phrase_ngrams(self.phrases)
+
+    @property
+    def query_text(self) -> str:
+        """Human-readable FTS5 expression used by diagnostics."""
+
+        return _match_expression(self.match_phrases, fields=self.fields)
+
+
 class BM25QueryCompiler:
     """Compile active slot state into bounded lexical BM25 query groups.
 
@@ -208,12 +307,12 @@ class BM25QueryCompiler:
         seen.add(key)
         terms.append(text)
 
-    def compile_groups(
+    def compile_group_specs(
         self,
         constraints: object | None,
         semantic_constraints: object | None = None,
-    ) -> dict[str, str]:
-        """Return one combined lexical query for each active normal slot."""
+    ) -> dict[str, BM25QueryGroup]:
+        """Return one field-routed lexical query group per active normal slot."""
 
         semantic_evidence = _evidence_items(semantic_constraints)
         # Some callers retain the evidence on the combined constraints object;
@@ -223,7 +322,7 @@ class BM25QueryCompiler:
                 item for item in _evidence_items(constraints) if _is_semantic_evidence(item)
             )
 
-        groups: dict[str, str] = {}
+        groups: dict[str, BM25QueryGroup] = {}
         for field_name in BM25_QUERY_FIELDS:
             terms: list[str] = []
             seen: set[str] = set()
@@ -274,9 +373,32 @@ class BM25QueryCompiler:
                     self._add_term(terms, seen, value)
 
             if terms:
-                groups[field_name] = " ".join(terms)
+                groups[field_name] = BM25QueryGroup(
+                    field_name=field_name,
+                    phrases=tuple(terms),
+                    fields=BM25_SLOT_FIELD_PATHS[field_name],
+                )
 
         return groups
+
+    def compile_groups(
+        self,
+        constraints: object | None,
+        semantic_constraints: object | None = None,
+    ) -> dict[str, str]:
+        """Return compiled FTS expressions for legacy callers/debuggers.
+
+        Retrieval uses :meth:`compile_group_specs` so it can pass the safe
+        field route and OR alternatives to SQLite separately.
+        """
+
+        return {
+            field_name: group.query_text
+            for field_name, group in self.compile_group_specs(
+                constraints,
+                semantic_constraints,
+            ).items()
+        }
 
 
 class BM25Index:
@@ -318,19 +440,34 @@ class BM25Index:
         cursor = self.connection.cursor()
         cursor.execute(
             "CREATE VIRTUAL TABLE products USING fts5("
-            "parent_asin UNINDEXED, title, categories, features, details, store, description, "
+            "parent_asin UNINDEXED, "
+            "category, brand, color, material, feature, use_case, style, "
+            "title, categories, features, details, store, description, "
             "tokenize='unicode61 remove_diacritics 2')"
         )
-        batch: list[tuple[str, str, str, str, str, str, str]] = []
+        placeholders = ", ".join("?" for _ in range(len(BM25_INDEX_COLUMNS) + 1))
+        insert_sql = f"INSERT INTO products VALUES ({placeholders})"
+        batch: list[tuple[str, ...]] = []
         next_log = 5000
         for asin in self._asins:
             product = products.get(asin)
-            raw = getattr(product, "raw", product)
+            raw = getattr(product, "raw", None)
+            if raw is None and isinstance(product, Mapping):
+                raw = product.get("raw", product)
             if not isinstance(raw, Mapping):
                 raw = {}
+            facts = getattr(product, "facts", None)
+            if facts is None and isinstance(product, Mapping):
+                facts = product.get("facts", {})
+            if not isinstance(facts, Mapping):
+                facts = {}
             batch.append(
                 (
                     asin,
+                    *(
+                        _text(facts.get(field_name, ()))
+                        for field_name in BM25_QUERY_FIELDS
+                    ),
                     _text(raw.get("title")),
                     _text(raw.get("categories")),
                     _text(raw.get("features")),
@@ -340,7 +477,7 @@ class BM25Index:
                 )
             )
             if len(batch) >= 1000:
-                cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
+                cursor.executemany(insert_sql, batch)
                 self.indexed_rows += len(batch)
                 batch.clear()
                 if self.indexed_rows >= next_log:
@@ -350,7 +487,7 @@ class BM25Index:
                     )
                     next_log += 5000
         if batch:
-            cursor.executemany("INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?)", batch)
+            cursor.executemany(insert_sql, batch)
             self.indexed_rows += len(batch)
         print(
             f"[bm25] catalog text preprocessing complete: "
@@ -361,20 +498,27 @@ class BM25Index:
 
     def search(
         self,
-        query_text: str,
+        query_text: str | Iterable[str],
         *,
         allowed_asins: Collection[str] | None = None,
+        fields: Collection[str] | None = None,
     ) -> dict[str, float]:
-        phrases = _query_ngrams(query_text)
-        expression = _match_expression(phrases)
+        # No route means the legacy raw BM25 view.  Slot-guided retrieval
+        # always supplies an explicit route that may include V5 fact columns.
+        selected_fields = BM25_RAW_COLUMNS if fields is None else fields
+        if isinstance(query_text, str):
+            phrases = _query_ngrams(query_text)
+        else:
+            phrases = _phrase_ngrams(query_text)
+        expression = _match_expression(phrases, fields=selected_fields)
         if not expression:
             return {}
 
         rows = self.connection.execute(
-            "SELECT parent_asin, bm25(products, ?, ?, ?, ?, ?, ?, ?) AS rank "
+            "SELECT parent_asin, bm25(products, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) AS rank "
             "FROM products WHERE products MATCH ? "
             "ORDER BY rank ASC, rowid ASC",
-            (*BM25_FIELD_WEIGHTS, expression),
+            (*BM25_INDEX_FIELD_WEIGHTS, expression),
         ).fetchall()
         allowed = None if allowed_asins is None else set(allowed_asins)
         scores: dict[str, float] = {}
@@ -395,6 +539,8 @@ __all__ = [
     "BM25_EXPANSION_MIN_SIMILARITY",
     "BM25_EXPANSION_MAX_SCORE_GAP",
     "BM25_FIELD_WEIGHTS",
+    "BM25_SLOT_FIELD_PATHS",
+    "BM25QueryGroup",
     "BM25Index",
     "BM25QueryCompiler",
 ]
