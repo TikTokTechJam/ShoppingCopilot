@@ -37,7 +37,10 @@ from starter.turn_interpreter import (
 )
 
 
-CLARIFICATION_CANDIDATE_LIMIT = 500
+# Keep a broader pool for facet distributions than the final recommendation
+# list.  This changes only clarification evidence; retrieval and ranking still
+# return the same production candidate type and downstream top_k.
+CLARIFICATION_CANDIDATE_LIMIT = 1000
 
 
 def _user_prior_rating(profile: Mapping[str, Any] | None) -> float | None:
@@ -452,6 +455,10 @@ class Agent:
             excluded_asins=state.excluded_recommendations,
             user_prior_rating=user_prior_rating,
         )
+        # Analyze the already-ranked pool once.  The policy uses these facet
+        # distributions for utility, and the selected question can reuse them
+        # to show the most common values from the same pool.
+        candidate_stats = self.clarification.analyze(candidates)
 
         try:
             requested_k = max(0, int(top_k))
@@ -501,6 +508,7 @@ class Agent:
                 mode=state.mode or "BROWSING",
                 profile_factor=affinity.factor if affinity is not None else None,
                 turn=state.turn,
+                candidate_stats=candidate_stats,
             )
             if ask_attribute is None:
                 # No useful normal field remains in this cycle. ``other`` is
@@ -515,7 +523,7 @@ class Agent:
         )
 
         return {
-            "message": self.clarification.question(ask_attribute),
+            "message": self.clarification.question(ask_attribute, candidate_stats),
             "ask_attribute": ask_attribute,
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
