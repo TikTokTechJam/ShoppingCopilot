@@ -31,6 +31,93 @@ class OverrideKind(str, Enum):
     PREFERENCE = "PREFERENCE"
 
 
+ConstraintRef = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class ConstraintProvenance:
+    """Origin and dependency metadata for one stored constraint value."""
+
+    attribute: str
+    value: str
+    source: str
+    parent: ConstraintRef | None = None
+
+
+# Only inferred descendants are removed when a preference is replaced.  The
+# graph is intentionally small and deterministic; independent fields such as
+# brand, color, and price never inherit a dependency from another field.
+DEPENDENCY_CHILDREN: dict[str, tuple[str, ...]] = {
+    "category": ("use_case", "size", "style"),
+    "use_case": ("feature", "material", "style"),
+}
+DEPENDENCY_PARENTS: dict[str, tuple[str, ...]] = {
+    "use_case": ("category",),
+    "size": ("category",),
+    "feature": ("use_case", "category"),
+    "material": ("use_case", "category"),
+    "style": ("use_case", "category"),
+}
+
+
+def _dependency_descendants(roots: Iterable[str]) -> set[str]:
+    descendants: set[str] = set()
+    pending = list(roots)
+    while pending:
+        parent = pending.pop(0)
+        for child in DEPENDENCY_CHILDREN.get(parent, ()):
+            if child not in descendants:
+                descendants.add(child)
+                pending.append(child)
+    return descendants
+
+
+def _dependency_roots(fields: Iterable[str]) -> tuple[str, ...]:
+    selected = {str(field) for field in fields}
+    if not selected:
+        return ()
+    return tuple(
+        field_name
+        for field_name in (*CATEGORICAL_FIELDS, "price")
+        if field_name in selected
+        and not any(
+            field_name in _dependency_descendants((other,))
+            for other in selected
+            if other != field_name
+        )
+    )
+
+
+def _provenance_record(
+    raw: object,
+    *,
+    attribute: str,
+    value: str,
+) -> ConstraintProvenance:
+    """Read current and legacy provenance representations safely."""
+
+    if isinstance(raw, ConstraintProvenance):
+        return raw
+    if isinstance(raw, Mapping):
+        source = str(raw.get("source", "explicit"))
+        parent_value = raw.get("parent")
+        parent: ConstraintRef | None = None
+        if isinstance(parent_value, (tuple, list)) and len(parent_value) == 2:
+            parent = (str(parent_value[0]), str(parent_value[1]))
+        return ConstraintProvenance(attribute, value, source, parent)
+    # Older sessions stored "initial", "clarification", or "override".
+    # Those values were all user-originated, so retain them as explicit facts.
+    source = "inferred" if str(raw) == "inferred" else "explicit"
+    return ConstraintProvenance(attribute, value, source)
+
+
+def _evidence_value(item: object) -> str:
+    canonical_id = str(getattr(item, "canonical_id", ""))
+    if ":" in canonical_id:
+        return canonical_id.split(":", 1)[1].replace("_", " ")
+    return canonical_id
+
+
 @dataclass
 class SessionState:
     """Mutable state for one evaluator session."""
@@ -59,12 +146,15 @@ class SessionState:
     turn: int = 0
     messages: list[str] = field(default_factory=list)
     last_asked: str | None = None
-    # Value-level provenance is deliberately small: it only distinguishes
-    # facts from the initial request, later clarifications, and an override.
-    # This is enough to remove an obsolete initial preference without creating
-    # a second session-state system.
-    constraint_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
-    semantic_constraint_provenance: dict[str, dict[str, str]] = field(
+    # Value-level provenance distinguishes explicit user facts from inferred
+    # semantic facts and records the optional dependency that produced an
+    # inferred value.
+    constraint_provenance: dict[str, dict[str, ConstraintProvenance | str]] = field(
+        default_factory=dict
+    )
+    semantic_constraint_provenance: dict[
+        str, dict[str, ConstraintProvenance | str]
+    ] = field(
         default_factory=dict
     )
     last_override_kind: str | None = None
@@ -131,8 +221,8 @@ def merge_constraints(
     new_min = getattr(delta, "price_min", None)
     new_max = getattr(delta, "price_max", None)
     if "price" in replacements:
-        values["price_min"] = new_min if new_min is not None else old_min
-        values["price_max"] = new_max if new_max is not None else old_max
+        values["price_min"] = new_min
+        values["price_max"] = new_max
     else:
         values["price_min"] = (
             max(float(old_min), float(new_min))
@@ -215,12 +305,6 @@ _CORRECTION_MARKER = re.compile(
     r"\b(?:actually|instead|rather|change|changed|switch(?:ing)?|not)\b",
     re.IGNORECASE,
 )
-_GOAL_LANGUAGE = re.compile(
-    r"\b(?:need|want|looking for|search(?:ing)? for|show me|find me|shopping for)\b",
-    re.IGNORECASE,
-)
-
-
 def correction_fields(
     message: str,
     current: ShoppingConstraints,
@@ -235,18 +319,33 @@ def correction_fields(
         return ()
     current_semantic = current_semantic or SemanticShoppingConstraints()
     delta_semantic = delta_semantic or SemanticShoppingConstraints()
-    fields = [
-        field_name
-        for field_name in CATEGORICAL_FIELDS
-        if (
+    fields: list[str] = []
+    for field_name in CATEGORICAL_FIELDS:
+        has_current = bool(
             _field_values(current, field_name)
             or _field_values(current_semantic, field_name)
         )
-        and (
+        has_delta = bool(
             _field_values(delta, field_name)
             or _field_values(delta_semantic, field_name)
         )
-    ]
+        if not has_current or not has_delta:
+            continue
+        semantic_values = _field_values(delta_semantic, field_name)
+        if semantic_values:
+            semantic_evidence = tuple(
+                item
+                for item in _evidence(delta_semantic)
+                if str(getattr(item, "attribute", "")) == field_name
+            )
+            # Dense matches participate in override detection only at the
+            # same high-confidence level used for replacement decisions.
+            if semantic_evidence and not any(
+                float(getattr(item, "confidence", 0.0)) >= 0.9
+                for item in semantic_evidence
+            ):
+                continue
+        fields.append(field_name)
     if (
         getattr(current, "price_min", None) is not None
         or getattr(current, "price_max", None) is not None
@@ -285,20 +384,10 @@ def detect_override_kind(
     """Classify an explicit change without conflating it with reset scope."""
 
     text = message or ""
-    lowered = text.casefold()
     if not lexicon.OVERRIDE_MARKER.search(text):
         return OverrideKind.NONE
 
-    old_categories = set(_field_values(current, "category"))
-    new_categories = set(_field_values(delta, "category"))
-    category_replacement = bool(
-        new_categories
-        and _GOAL_LANGUAGE.search(text)
-        and (not old_categories or new_categories.isdisjoint(old_categories))
-        and _CORRECTION_MARKER.search(text)
-    )
-
-    if lexicon.FULL_GOAL_OVERRIDE_MARKER.search(text) or category_replacement:
+    if lexicon.FULL_GOAL_OVERRIDE_MARKER.search(text):
         return OverrideKind.FULL_GOAL
 
     # Marker-only messages are not enough to mutate state. A preference
@@ -359,107 +448,177 @@ class SessionManager:
         state.last_override_delta = None
         return state
 
-    def reset_preference(self, session_id: str) -> SessionState:
-        """Replace stale preference state while retaining the active goal.
-
-        Category, mode, profile, and an explicit budget remain active. Values
-        recorded on the initial turn are treated as the obsolete priority;
-        facts learned during later clarification turns survive unless the
-        current override explicitly replaces their field.
+    def reset_preference(
+        self,
+        session_id: str,
+        overridden_fields: Iterable[str] = (),
+    ) -> SessionState:
+        """Remove only the preference branch being replaced.
         """
 
         state = self.get(session_id)
-        kept_values: dict[str, tuple[str, ...]] = {}
-        kept_provenance: dict[str, dict[str, str]] = {}
-        for field_name in CATEGORICAL_FIELDS:
-            values = _field_values(state.constraints, field_name)
-            origins = state.constraint_provenance.get(field_name, {})
-            if field_name == "category":
-                kept = values
-            else:
-                kept = tuple(
-                    value
-                    for value in values
-                    # Unknown provenance is preserved conservatively. The
-                    # Agent records provenance for all normal updates, while
-                    # this protects callers that construct state directly.
-                    if origins.get(value) != "initial"
-                )
-            kept_values[field_name] = kept
-            if kept:
-                kept_provenance[field_name] = {
-                    value: origins[value]
-                    for value in kept
-                    if value in origins
-                }
+        roots = _dependency_roots(overridden_fields)
+        if not roots:
+            return state
 
-        payload: dict[str, object] = {
-            **kept_values,
-            "price_min": getattr(state.constraints, "price_min", None),
-            "price_max": getattr(state.constraints, "price_max", None),
-            # Unresolved text belongs to the old semantic goal and must not be
-            # carried into the new query context.
-            "unmapped": (),
+        structured_values = {
+            field_name: _field_values(state.constraints, field_name)
+            for field_name in CATEGORICAL_FIELDS
         }
-        try:
-            state.constraints = replace(state.constraints, **payload, evidence=())
-        except TypeError:
-            state.constraints = replace(state.constraints, **payload)
-
-        state.constraint_provenance = kept_provenance
-
-        semantic_values: dict[str, tuple[str, ...]] = {}
-        semantic_provenance: dict[str, dict[str, str]] = {}
-        for field_name in (
-            "category",
-            "color",
-            "material",
-            "style",
-            "feature",
-            "use_case",
-        ):
-            values = _field_values(state.semantic_constraints, field_name)
-            origins = state.semantic_constraint_provenance.get(field_name, {})
-            kept = tuple(
-                value for value in values if origins.get(value) != "initial"
+        semantic_values = {
+            field_name: _field_values(state.semantic_constraints, field_name)
+            for field_name in (
+                "category",
+                "color",
+                "material",
+                "style",
+                "feature",
+                "use_case",
             )
-            semantic_values[field_name] = kept
-            if kept:
-                semantic_provenance[field_name] = {
-                    value: origins[value]
-                    for value in kept
-                    if value in origins
-                }
-        state.semantic_constraints = SemanticShoppingConstraints(
-            **semantic_values,
+        }
+        if getattr(state.constraints, "price_min", None) is not None:
+            structured_values["price"] = ("price_min",)
+        if getattr(state.constraints, "price_max", None) is not None:
+            structured_values.setdefault("price", ())
+            structured_values["price"] = (*structured_values["price"], "price_max")
+
+        root_attributes = set(roots)
+        dependent_attributes = _dependency_descendants(roots)
+        removed_refs: set[ConstraintRef] = {
+            (attribute, value)
+            for attribute in root_attributes
+            for value in (
+                *structured_values.get(attribute, ()),
+                *semantic_values.get(attribute, ()),
+            )
+        }
+
+        def provenance_for(attribute: str, value: str) -> ConstraintProvenance:
+            raw = state.constraint_provenance.get(attribute, {}).get(value)
+            if raw is None:
+                raw = state.semantic_constraint_provenance.get(attribute, {}).get(value)
+            return _provenance_record(
+                raw,
+                attribute=attribute,
+                value=value,
+            )
+
+        # A missing parent is treated as dependent only for an inferred value
+        # in the affected subtree.  Explicit values are always preserved.
+        changed = True
+        while changed:
+            changed = False
+            for attribute in CATEGORICAL_FIELDS:
+                if attribute not in dependent_attributes:
+                    continue
+                for value in (
+                    *structured_values.get(attribute, ()),
+                    *semantic_values.get(attribute, ()),
+                ):
+                    reference = (attribute, value)
+                    if reference in removed_refs:
+                        continue
+                    provenance = provenance_for(attribute, value)
+                    if provenance.source != "inferred":
+                        continue
+                    parent = provenance.parent
+                    if parent is None or parent in removed_refs:
+                        removed_refs.add(reference)
+                        changed = True
+
+        removed_attributes = {attribute for attribute, _ in removed_refs}
+
+        def keep_evidence(item: object) -> bool:
+            attribute = str(getattr(item, "attribute", ""))
+            if attribute in root_attributes:
+                return False
+            if attribute not in dependent_attributes:
+                return True
+            if str(getattr(item, "layer", "layer1")) != "layer2":
+                return True
+            return (attribute, _evidence_value(item)) not in removed_refs
+
+        constraint_payload: dict[str, object] = {
+            field_name: tuple(
+                value
+                for value in _field_values(state.constraints, field_name)
+                if (field_name, value) not in removed_refs
+            )
+            for field_name in CATEGORICAL_FIELDS
+        }
+        constraint_payload["price_min"] = (
+            None
+            if "price" in removed_attributes
+            else getattr(state.constraints, "price_min", None)
+        )
+        constraint_payload["price_max"] = (
+            None
+            if "price" in removed_attributes
+            else getattr(state.constraints, "price_max", None)
+        )
+        try:
+            state.constraints = replace(
+                state.constraints,
+                **constraint_payload,
+                evidence=tuple(
+                    item for item in _evidence(state.constraints) if keep_evidence(item)
+                ),
+            )
+        except TypeError:
+            state.constraints = replace(state.constraints, **constraint_payload)
+
+        semantic_payload = {
+            field_name: tuple(
+                value
+                for value in _field_values(state.semantic_constraints, field_name)
+                if (field_name, value) not in removed_refs
+            )
+            for field_name in (
+                "category",
+                "color",
+                "material",
+                "style",
+                "feature",
+                "use_case",
+            )
+        }
+        state.semantic_constraints = replace(
+            state.semantic_constraints,
+            **semantic_payload,
             evidence=tuple(
                 item
                 for item in _evidence(state.semantic_constraints)
-                if getattr(item, "attribute", "") in semantic_values
-                and getattr(
-                    item,
-                    "canonical_id",
-                    "",
-                )
-                in {
-                    f"{field_name}:{value.replace(' ', '_')}"
-                    for field_name, values in semantic_values.items()
-                    for value in values
-                }
+                if keep_evidence(item)
             ),
         )
-        state.semantic_constraint_provenance = semantic_provenance
+
+        def prune_provenance(
+            source_map: dict[str, dict[str, ConstraintProvenance | str]],
+        ) -> dict[str, dict[str, ConstraintProvenance | str]]:
+            result: dict[str, dict[str, ConstraintProvenance | str]] = {}
+            for attribute, values in source_map.items():
+                kept = {
+                    value: raw
+                    for value, raw in values.items()
+                    if attribute not in root_attributes
+                    and (attribute, value) not in removed_refs
+                }
+                if kept:
+                    result[attribute] = kept
+            return result
+
+        state.constraint_provenance = prune_provenance(state.constraint_provenance)
+        state.semantic_constraint_provenance = prune_provenance(
+            state.semantic_constraint_provenance
+        )
+
+        # The goal and its recommendation exclusions remain active.  Only the
+        # clarification cursor is restarted so the new preference can be
+        # collected without erasing independent state.
         state.asked_attributes.clear()
-        # A preference override starts a new clarification cycle but remains
-        # within the same shopping goal.  Explicit no-preference decisions are
-        # therefore session/goal-level blocks and must survive this reset.
         state.attribute_call_count = _fresh_attribute_call_count()
         state.clarification_cycle = 1
         state.clarification_stopped = False
-        state.last_recommendations = ()
-        state.excluded_recommendations.clear()
-        state.last_user_message = None
-        state.messages.clear()
         state.last_asked = None
         return state
 
@@ -522,13 +681,75 @@ class SessionManager:
             semantic_delta,
             replace_fields=replacements,
         )
+
+        def parent_for(attribute: str) -> ConstraintRef | None:
+            for parent_attribute in DEPENDENCY_PARENTS.get(attribute, ()):
+                parent_values = _unique(
+                    (
+                        *_field_values(semantic_delta, parent_attribute),
+                        *_field_values(structured_delta, parent_attribute),
+                        *_field_values(state.semantic_constraints, parent_attribute),
+                        *_field_values(state.constraints, parent_attribute),
+                    )
+                )
+                if parent_values:
+                    return (parent_attribute, parent_values[0])
+            return None
+
+        def semantic_source(attribute: str, value: str) -> str:
+            matches = tuple(
+                item
+                for item in _evidence(semantic_delta)
+                if str(getattr(item, "attribute", "")) == attribute
+                and _evidence_value(item).casefold() == value.casefold()
+            )
+            if not matches:
+                return "inferred"
+            return (
+                "inferred"
+                if any(str(getattr(item, "layer", "layer1")) == "layer2" for item in matches)
+                else "explicit"
+            )
+
+        def store_provenance(
+            target: dict[str, dict[str, ConstraintProvenance | str]],
+            attribute: str,
+            value: str,
+            source_kind: str,
+            parent: ConstraintRef | None = None,
+        ) -> None:
+            target.setdefault(attribute, {})[value] = ConstraintProvenance(
+                attribute=attribute,
+                value=value,
+                source=source_kind,
+                parent=parent if source_kind == "inferred" else None,
+            )
+
         for field_name in CATEGORICAL_FIELDS:
             incoming = _field_values(structured_delta, field_name)
             if not incoming:
                 continue
-            provenance = state.constraint_provenance.setdefault(field_name, {})
             for value in incoming:
-                provenance[value] = update_source
+                store_provenance(
+                    state.constraint_provenance,
+                    field_name,
+                    value,
+                    "explicit",
+                )
+        if getattr(structured_delta, "price_min", None) is not None:
+            store_provenance(
+                state.constraint_provenance,
+                "price",
+                "price_min",
+                "explicit",
+            )
+        if getattr(structured_delta, "price_max", None) is not None:
+            store_provenance(
+                state.constraint_provenance,
+                "price",
+                "price_max",
+                "explicit",
+            )
         for field_name in (
             "category",
             "color",
@@ -540,11 +761,15 @@ class SessionManager:
             incoming = _field_values(semantic_delta, field_name)
             if not incoming:
                 continue
-            provenance = state.semantic_constraint_provenance.setdefault(
-                field_name, {}
-            )
             for value in incoming:
-                provenance[value] = update_source
+                source_kind = semantic_source(field_name, value)
+                store_provenance(
+                    state.semantic_constraint_provenance,
+                    field_name,
+                    value,
+                    source_kind,
+                    parent_for(field_name),
+                )
         return state.constraints
 
     def mark_asked(self, session_id: str, attribute: str | None) -> None:
@@ -571,6 +796,7 @@ class SessionManager:
 __all__ = [
     "SessionManager",
     "SessionState",
+    "ConstraintProvenance",
     "OverrideKind",
     "correction_fields",
     "detect_override_kind",

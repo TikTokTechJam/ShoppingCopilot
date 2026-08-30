@@ -195,10 +195,24 @@ class Agent:
         has_new_information = bool(delta.populated_fields())
         other_cycle_has_information = pending_other and has_new_information
 
+        # Compute the replacement scope against the pre-override state.  The
+        # old flow reset preference state first, which made it impossible to
+        # identify the dependency branch that needed pruning.
+        replacements = correction_fields(
+            message,
+            state.constraints,
+            delta,
+            current_semantic=getattr(state, "semantic_constraints", None),
+            delta_semantic=semantic_delta,
+        )
+
         if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)
         elif override_kind is OverrideKind.PREFERENCE:
-            state = self.sessions.reset_preference(session_id)
+            state = self.sessions.reset_preference(
+                session_id,
+                overridden_fields=replacements,
+            )
         else:
             self.sessions.promote_last_recommendations(session_id)
 
@@ -210,13 +224,6 @@ class Agent:
         if state.mode is None:
             state.mode = self._route(message)
 
-        replacements = correction_fields(
-            message,
-            state.constraints,
-            delta,
-            current_semantic=getattr(state, "semantic_constraints", None),
-            delta_semantic=semantic_delta,
-        )
         if override_kind is OverrideKind.FULL_GOAL:
             source = "initial"
         elif override_kind is OverrideKind.PREFERENCE:
