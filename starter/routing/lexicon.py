@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from starter.routing.constraints import (
     ATTRIBUTE_TOPIC,
     PRICE_EXPRESSION,
-    SIZE_NUMERIC,
+    SIZE_EXPRESSION,
     alias_pattern,
     first_price_expression_match,
 )
@@ -79,10 +79,11 @@ _BUDGET = _compile(PRICE_EXPRESSION.pattern, _QUALITATIVE_BUDGET.pattern)
 _BRAND = alias_pattern("brand", r"\bbrands?\b")
 
 # Size is structured runtime evidence rather than a dictionary value. Numeric
-# sizes and the topic word are matched explicitly; bare single letters are not.
+# sizes, typed product measurements, and the topic word are matched explicitly;
+# bare single letters are not.
 # An unanchored \bm\b matches the "m" in "I'm" and invents a hard constraint
 # out of a contraction, flipping the label confidently wrong.
-_SIZE = alias_pattern("size", SIZE_NUMERIC.pattern, r"\bsizes?\b")
+_SIZE = alias_pattern("size", SIZE_EXPRESSION.pattern, r"\bsizes?\b")
 
 _COLOR = alias_pattern("color", r"\bcolou?rs?\b")
 
