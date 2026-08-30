@@ -15,7 +15,6 @@ from evaluator.hard_evaluator import (
     metric_summary,
     normalize_recommendations,
     parse_fact_id,
-    select_sessions,
     simulate_customer_reply,
     validate_agent_response,
     validate_sessions,
@@ -65,17 +64,6 @@ class HardEvaluatorTests(unittest.TestCase):
         )
         self.assertEqual(len({row["target_asin"] for row in self.sessions}), 400)
         self.assertTrue(all(row["target_asin"] in self.catalog_ids for row in self.sessions))
-
-    def test_override_only_selection_keeps_only_intent_override_sessions(self) -> None:
-        selected = select_sessions(self.sessions, override_only=True)
-        self.assertEqual(len(selected), SCENARIO_COUNTS["intent_override"])
-        self.assertTrue(
-            all(row["scenario_type"] == "intent_override" for row in selected)
-        )
-        self.assertEqual(
-            select_sessions(self.sessions, override_only=False),
-            self.sessions,
-        )
 
     def test_fact_ids_are_attribute_scoped(self) -> None:
         fact = self.sessions[0]["hidden_facts"][0]

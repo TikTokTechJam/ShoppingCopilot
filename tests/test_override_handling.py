@@ -8,14 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from starter.agent import Agent
-from starter.routing.constraints import (
-    ConstraintEvidence,
-    SemanticShoppingConstraints,
-    ShoppingConstraints,
-    extract_constraints,
-)
+from starter.routing.constraints import ShoppingConstraints, extract_constraints
 from starter.session import (
-    ConstraintProvenance,
     OverrideKind,
     SessionManager,
     detect_override_kind,
@@ -105,7 +99,7 @@ class OverrideHandlingTests(unittest.TestCase):
             OverrideKind.FULL_GOAL,
         )
 
-    def test_preference_override_preserves_independent_constraints_and_goal(self) -> None:
+    def test_preference_override_preserves_goal_and_mode_but_replaces_initial_preference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             agent = self.make_agent(root)
@@ -128,9 +122,6 @@ class OverrideHandlingTests(unittest.TestCase):
             ):
                 agent.respond("session", "shoes in red, casual", 1, 3)
                 agent.respond("session", "nylon", 2, 3)
-                excluded_before_override = set(
-                    agent.sessions.get("session").excluded_recommendations
-                )
                 agent.respond(
                     "session",
                     "Actually, my priority changed. Pockets matter.",
@@ -144,16 +135,16 @@ class OverrideHandlingTests(unittest.TestCase):
             self.assertEqual(state.constraints.category, ("shoes",))
             self.assertEqual(state.constraints.material, ("nylon",))
             self.assertEqual(state.constraints.feature, ("pockets",))
-            self.assertEqual(state.constraints.color, ("red",))
-            self.assertEqual(state.constraints.style, ("casual",))
+            self.assertEqual(state.constraints.color, ())
+            self.assertEqual(state.constraints.style, ())
             self.assertEqual(
                 state.query_text,
-                "shoes in red, casual nylon Actually, my priority changed. Pockets matter.",
+                "Actually, my priority changed. Pockets matter.",
             )
-            self.assertEqual(state.excluded_recommendations, excluded_before_override)
+            self.assertEqual(state.excluded_recommendations, set())
             self.assertEqual(state.last_override_kind, "PREFERENCE")
 
-    def test_preference_transition_restarts_clarification_without_clearing_goal_state(self) -> None:
+    def test_preference_transition_clears_clarification_and_recommendation_history(self) -> None:
         manager = SessionManager()
         state = manager.reset("session", {})
         state.mode = "BROWSING"
@@ -176,20 +167,20 @@ class OverrideHandlingTests(unittest.TestCase):
             "material": {"nylon": "clarification"},
         }
 
-        manager.reset_preference("session", overridden_fields=("color",))
+        manager.reset_preference("session")
         state = manager.get("session")
         self.assertEqual(state.mode, "BROWSING")
         self.assertEqual(state.constraints.category, ("shoes",))
         self.assertEqual(state.constraints.color, ())
         self.assertEqual(state.constraints.material, ("nylon",))
-        self.assertEqual(state.messages, ["old goal"])
+        self.assertEqual(state.messages, [])
         self.assertEqual(state.asked_attributes, set())
         self.assertEqual(state.no_preference_attributes, {"color"})
         self.assertEqual(state.attribute_call_count["material"], 0)
         self.assertEqual(state.clarification_cycle, 1)
         self.assertIsNone(state.last_asked)
-        self.assertEqual(state.last_recommendations, ("A", "B"))
-        self.assertEqual(state.excluded_recommendations, {"A", "B"})
+        self.assertEqual(state.last_recommendations, ())
+        self.assertEqual(state.excluded_recommendations, set())
 
     def test_full_goal_override_still_resets_category_and_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -227,167 +218,6 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertEqual(
             detect_override_kind("actually black", current, delta),
             OverrideKind.PREFERENCE,
-        )
-        self.assertEqual(
-            detect_override_kind(
-                "actually boots instead",
-                current,
-                ShoppingConstraints(category=("boots",)),
-            ),
-            OverrideKind.PREFERENCE,
-        )
-
-    def test_category_override_removes_inferred_descendants_but_keeps_explicit_values(self) -> None:
-        manager = SessionManager()
-        state = manager.reset("session", {})
-        state.semantic_constraints = state.semantic_constraints.__class__(
-            category=("shirt",),
-            color=("black",),
-            use_case=("sunny",),
-            feature=("uv protection",),
-        )
-        state.semantic_constraint_provenance = {
-            "category": {
-                "shirt": ConstraintProvenance("category", "shirt", "inferred")
-            },
-            "color": {
-                "black": ConstraintProvenance("color", "black", "explicit")
-            },
-            "use_case": {
-                "sunny": ConstraintProvenance(
-                    "use_case", "sunny", "inferred", ("category", "shirt")
-                )
-            },
-            "feature": {
-                "uv protection": ConstraintProvenance(
-                    "feature", "uv protection", "inferred", ("use_case", "sunny")
-                )
-            },
-        }
-
-        manager.reset_preference("session", overridden_fields=("category",))
-
-        self.assertEqual(state.semantic_constraints.category, ())
-        self.assertEqual(state.semantic_constraints.use_case, ())
-        self.assertEqual(state.semantic_constraints.feature, ())
-        self.assertEqual(state.semantic_constraints.color, ("black",))
-
-    def test_use_case_override_removes_only_inferred_feature_branch(self) -> None:
-        manager = SessionManager()
-        state = manager.reset("session", {})
-        state.semantic_constraints = state.semantic_constraints.__class__(
-            category=("shoes",),
-            color=("black",),
-            use_case=("running",),
-            feature=("moisture wicking",),
-            material=("mesh",),
-        )
-        state.semantic_constraint_provenance = {
-            "category": {
-                "shoes": ConstraintProvenance("category", "shoes", "explicit")
-            },
-            "color": {
-                "black": ConstraintProvenance("color", "black", "explicit")
-            },
-            "use_case": {
-                "running": ConstraintProvenance("use_case", "running", "inferred")
-            },
-            "feature": {
-                "moisture wicking": ConstraintProvenance(
-                    "feature", "moisture wicking", "inferred", ("use_case", "running")
-                )
-            },
-            "material": {
-                "mesh": ConstraintProvenance(
-                    "material", "mesh", "inferred", ("use_case", "running")
-                )
-            },
-        }
-
-        manager.reset_preference("session", overridden_fields=("use_case",))
-
-        self.assertEqual(state.semantic_constraints.category, ("shoes",))
-        self.assertEqual(state.semantic_constraints.use_case, ())
-        self.assertEqual(state.semantic_constraints.feature, ())
-        self.assertEqual(state.semantic_constraints.material, ())
-        self.assertEqual(state.semantic_constraints.color, ("black",))
-
-    def test_color_override_does_not_remove_other_semantic_constraints(self) -> None:
-        manager = SessionManager()
-        state = manager.reset("session", {})
-        state.semantic_constraints = state.semantic_constraints.__class__(
-            color=("red",),
-            use_case=("running",),
-            feature=("breathable",),
-        )
-        state.semantic_constraint_provenance = {
-            "color": {
-                "red": ConstraintProvenance("color", "red", "explicit")
-            },
-            "use_case": {
-                "running": ConstraintProvenance("use_case", "running", "inferred")
-            },
-            "feature": {
-                "breathable": ConstraintProvenance(
-                    "feature", "breathable", "inferred", ("use_case", "running")
-                )
-            },
-        }
-
-        manager.reset_preference("session", overridden_fields=("color",))
-
-        self.assertEqual(state.semantic_constraints.color, ())
-        self.assertEqual(state.semantic_constraints.use_case, ("running",))
-        self.assertEqual(state.semantic_constraints.feature, ("breathable",))
-
-    def test_brand_override_preserves_color_and_removes_old_brand(self) -> None:
-        manager = SessionManager()
-        state = manager.reset("session", {})
-        state.constraints = ShoppingConstraints(brand=("nike",), color=("black",))
-        state.constraint_provenance = {
-            "brand": {"nike": ConstraintProvenance("brand", "nike", "explicit")},
-            "color": {
-                "black": ConstraintProvenance("color", "black", "explicit")
-            },
-        }
-
-        manager.reset_preference("session", overridden_fields=("brand",))
-
-        self.assertEqual(state.constraints.brand, ())
-        self.assertEqual(state.constraints.color, ("black",))
-
-    def test_updates_record_explicit_and_inferred_dependency_provenance(self) -> None:
-        manager = SessionManager()
-        manager.reset("session", {})
-        semantic_delta = SemanticShoppingConstraints(
-            category=("shirts",),
-            use_case=("rain",),
-            feature=("waterproof",),
-            evidence=(
-                ConstraintEvidence("category:shirts", "category", "shirts", "semantic_1gram", 1.0, "layer2"),
-                ConstraintEvidence("use_case:rain", "use_case", "rain", "semantic_1gram", 1.0, "layer2"),
-                ConstraintEvidence("feature:waterproof", "feature", "waterproof", "semantic_1gram", 1.0, "layer2"),
-            ),
-        )
-
-        manager.update_constraints(
-            "session",
-            ShoppingConstraints(brand=("nike",)),
-            semantic_delta=semantic_delta,
-        )
-        state = manager.get("session")
-
-        self.assertEqual(
-            state.constraint_provenance["brand"]["nike"].source,
-            "explicit",
-        )
-        self.assertEqual(
-            state.semantic_constraint_provenance["use_case"]["rain"].parent,
-            ("category", "shirts"),
-        )
-        self.assertEqual(
-            state.semantic_constraint_provenance["feature"]["waterproof"].parent,
-            ("use_case", "rain"),
         )
 
     def test_no_preference_reply_skips_extraction_and_excludes_attribute(self) -> None:

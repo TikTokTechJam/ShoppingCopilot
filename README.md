@@ -131,15 +131,6 @@ Run the hard evaluator with:
 python -m evaluator.hard_evaluator
 ```
 
-To evaluate only the Intent Override scenario, use:
-
-```bash
-python -m evaluator.hard_evaluator --override-only --output results_override.json
-```
-
-The evaluator still validates the complete fixed 400-session benchmark before
-selecting its 60 override sessions.
-
 For a local turn-by-turn view of the same Manual400 Agent flow, run
 `python -m evaluator.debug_web` and open <http://127.0.0.1:8765>. See
 [`docs/debug_web.md`](docs/debug_web.md) for model setup and controls.
