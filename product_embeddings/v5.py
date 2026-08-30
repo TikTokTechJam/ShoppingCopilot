@@ -18,7 +18,7 @@ from typing import Any
 
 
 V5_PRODUCT_ARTIFACT_VERSION = "v5-semantic-product-card-v1"
-V5_PRODUCT_TEXT_VERSION = "v5-facts-product-card-v1"
+V5_PRODUCT_TEXT_VERSION = "v5-facts-product-card-v2"
 V5_PRODUCT_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 V5_PRODUCT_EMBEDDING_FILE = "product_embeddings.npy"
 V5_PRODUCT_METADATA_FILE = "product_embedding_metadata.json"
@@ -28,6 +28,7 @@ V5_PRODUCT_FACT_FIELDS = (
     "brand",
     "color",
     "material",
+    "style",
     "feature",
     "use_case",
 )

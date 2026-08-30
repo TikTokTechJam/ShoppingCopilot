@@ -62,6 +62,7 @@ def fixture(root: Path) -> tuple[Path, Path]:
                     "brand": [],
                     "color": [],
                     "material": ["polyester"],
+                    "style": ["costume"],
                     "feature": ["zipper closure"],
                     "use_case": ["cosplay"],
                 },
@@ -100,6 +101,9 @@ class V5ProductEmbeddingTests(unittest.TestCase):
             self.assertEqual(manifest["embedding_model"], V5_PRODUCT_MODEL)
             self.assertEqual(manifest["product_count"], 3)
             self.assertEqual(manifest["dimension"], 3)
+            self.assertIn("style", manifest["product_card_fields"])
+            card_text = (output / "product_cards.jsonl").read_text(encoding="utf-8")
+            self.assertIn("style: costume", card_text)
             index = V5ProductEmbeddingIndex.load(
                 output,
                 expected_asins=("A", "B", "C"),
