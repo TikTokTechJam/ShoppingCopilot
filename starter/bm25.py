@@ -269,8 +269,9 @@ class BM25QueryCompiler:
 
     Each returned group represents one information need such as ``feature`` or
     ``use_case``. Canonical values already present in the active state are
-    included once. Evidence-derived user surfaces are optional expansions and
-    capped per slot.
+    included once. Evidence-derived user surfaces are optional BGE expansions
+    and capped per slot. The retriever uses these expanded groups for Buying;
+    Browsing uses its raw current-goal query as the lexical RRF arm.
 
     The compiler only creates query text. SQLite still owns tokenization, FTS
     matching, BM25 scoring, and result ordering. Score normalization/fusion is
@@ -495,6 +496,18 @@ class BM25Index:
             flush=True,
         )
         self.connection.commit()
+
+    @staticmethod
+    def query_phrases(query_text: str) -> tuple[str, ...]:
+        """Return the normalized 1/2/3-gram phrases used by ``search``."""
+
+        return _query_ngrams(query_text)
+
+    @classmethod
+    def query_expression(cls, query_text: str) -> str:
+        """Return the exact FTS5 expression sent for a query."""
+
+        return _match_expression(cls.query_phrases(query_text))
 
     def search(
         self,

@@ -1,53 +1,115 @@
 # Retrieval architecture
 
-This document describes the active runtime path. Whole-product embedding
-retrieval is retired; the runtime uses the generated V5 canonical dictionary
-and its BGE semantic attribute matrices.
+This document describes the active retrieval implementation. `Agent` owns the
+conversation and clarification policy; `ProductRetriever` owns the shared
+catalog indexes and mode-specific ranking.
 
 ## Runtime flow
 
 ```text
-user message
-  -> intent routing
-  -> structured + exact canonical extraction
-  -> residual stopword-filtered 1/2/3-gram extraction
-  -> BGE-small semantic attribute matching
-  -> session constraints and evidence
-  -> structured scorer / reranker
-  -> hard filters and recommendation exclusions
-  -> deterministic Top10
+user turn
+  -> intent routing and deterministic constraint extraction
+  -> session state (structured values, BGE evidence, active-goal query text)
+  -> budget eligibility and recommendation exclusions
+  ->
+     BUYING: BM25 with accepted canonical expansions + exact structured points
+     BROWSING: Qwen product-card Top100 + raw BM25 Top100
+  ->
+     BUYING: weighted score
+     BROWSING: reciprocal-rank fusion, then product-card MMR
+  -> Top10
 ```
 
-The active semantic model is `BAAI/bge-small-en-v1.5` with 384-dimensional
-L2-normalized vectors. Each attribute has its own canonical-value matrix:
+The same `Agent` and `ProductRetriever` are used by the evaluators and the
+debug web page. The debug page only exposes the intermediate signals; it does
+not create a second ranking path.
+
+## Two semantic roles
+
+### BGE canonical expansion
+
+The local `BAAI/bge-small-en-v1.5` registry searches short canonical attribute
+phrases. It turns unresolved user spans into accepted canonical values and
+stores their cosine confidence in session evidence. Matching is attribute
+scoped and uses the existing stopword-filtered one-, two-, and three-gram
+matcher. Brand remains exact-only.
+
+These canonical matches are sparse posting-list evidence. They are not
+product-vector dense retrieval. In Buying, their product score is an optional
+small supporting term alongside structured points and BM25.
+
+### V5 product-card vectors
+
+Browsing uses a separate product-level artifact built from the title and V5
+facts (`category`, `brand`, `color`, `material`, `feature`, and `use_case`):
 
 ```text
-category, color, material, style, feature, use_case
+V5 annotations + catalog title
+  -> deterministic product card
+  -> Qwen/Qwen3-Embedding-0.6B
+  -> one L2-normalized vector per catalog product
 ```
 
-Brand remains exact-only and has no semantic matrix. The BGE model is loaded
-locally through `SHOPPING_ATTRIBUTE_EMBEDDING_MODEL` or the default local model
-directory. Runtime loading never downloads a model.
+The artifact is loaded from `data/derived/product_embeddings_v5`. Its query
+encoder must be the same local model named in the manifest and is configured
+with `SHOPPING_PRODUCT_EMBEDDING_MODEL`. Runtime loading is local-only; a
+missing or incompatible model disables product-vector search without falling
+back to a hash encoder.
 
-## Matching and scoring
+## Mode-specific ranking
 
-Layer 1 still handles numeric and structured values, exact canonical matches,
-price bounds, size, and intent state. The semantic matcher removes configured
-stopwords, creates one-, two-, and three-token phrases, and searches only the
-selected attribute matrices. Matches at or above the configured threshold are
-stored as evidence with their cosine similarity.
+Buying applies budget eligibility first. It then ranks all eligible,
+non-excluded products with:
 
-The existing product scorer uses those evidence similarities when calculating
-candidate points. It does not load or compare whole-product vectors. Missing
-semantic evidence is not treated as a hard contradiction.
+```text
+1.00 * structured_score
++ 0.20 * canonical_expansion_score
++ 1.00 * expanded_bm25_score
++ rating tie-break
+```
 
-Price eligibility and recommendation exclusions remain hard. The same
-`ProductRetriever` and `Agent` serve Buying and Browsing; Browsing changes
-clarification and soft preference behavior, not the embedding model.
+The expanded BM25 signal contains the active-goal raw query plus bounded BGE
+canonical/user-surface expansions. The BM25 score is normalized per query
+group before the groups are averaged, so a slot cannot dominate merely by
+having more synonym text.
 
-## Artifacts
+Browsing searches the full eligible catalog through both independent signals:
 
-The active artifacts are:
+```text
+dense_top100 = Qwen product-card cosine ranking
+bm25_top100  = raw current-goal BM25 ranking
+rrf(p) = 1 / (60 + dense_rank) + 1 / (60 + bm25_rank)
+```
+
+The union is sorted by RRF and truncated to a fused Top-50 pool. When the
+V5 product index and query encoder are available, Browsing then applies MMR
+using product-card cosine similarity (`lambda = 0.80`) to reduce near-duplicate
+results before the requested recommendation limit. Buying does not use MMR. If
+product vectors are unavailable, Browsing retains its raw BM25 RRF arm and
+skips product-vector MMR.
+
+`Candidate.score` is the score used by the final ordering, including the
+rating tie-break. `Candidate.dense_score` means the V5 product-vector score;
+`Candidate.semantic_score` means BGE canonical posting evidence;
+`Candidate.fusion_score` is the Browsing RRF score; and `Candidate.mmr_score`
+is the diversity score when Browsing MMR is active. The debug evaluator also
+shows the raw FTS expression and target rank for each active BM25 slot query.
+
+## State and hard filters
+
+`SessionState.retrieval_query_text` contains only the active goal segment.
+Preference overrides preserve independent constraints but clear the replaced
+lexical segment, so obsolete wording is not sent to BM25. The visible
+transcript remains available for debugging.
+
+Known prices outside an active budget are ineligible, and unknown prices are
+also ineligible when a budget is active. Previously shown/rejected
+recommendations remain excluded before ranking. No semantic or lexical signal
+can bypass either rule.
+
+## Artifacts and commands
+
+The BGE canonical artifacts are under:
 
 ```text
 data/derived/annotations/v5/dictionary/
@@ -64,20 +126,31 @@ data/derived/annotations/v5/dictionary/
     └── metadata.json
 ```
 
-The retired `data/derived/product_embeddings_jina` artifact is not discovered
-or loaded by the evaluator. It may remain locally ignored for cleanup or
-historical comparison, but it is outside the active runtime.
+The V5 product-card artifact contains `product_embeddings.npy`,
+`product_embedding_metadata.json`, `product_cards.jsonl`, and `manifest.json`
+under `data/derived/product_embeddings_v5/`.
 
-## Commands
-
-Run the interactive canonical semantic tool:
+Build the V5 product-card artifact after placing a compatible local Qwen model
+on disk:
 
 ```bash
-python -m scripts.console_semantic_attribute_test
+python -m scripts.setup_qwen_product_model
+python -m scripts.build_v5_product_embeddings \
+  --catalog data/catalog.jsonl \
+  --annotations data/derived/annotations/v5/annotations.jsonl \
+  --output-dir data/derived/product_embeddings_v5 \
+  --model models/qwen3-embedding-0.6b \
+  --progress
 ```
 
-Run the evaluator without any product-embedding model configuration:
+Configure the same model for runtime queries:
 
-```bash
+```powershell
+$env:SHOPPING_PRODUCT_EMBEDDING_MODEL="models/qwen3-embedding-0.6b"
 python -m evaluator.hard_evaluator
 ```
+
+The product artifact is generated offline and is ignored by Git. The existing
+Jina four-view artifact is not part of this V5 product-card path and is not
+auto-discovered. The older direct-catalog Layer 2 interface remains available
+only to callers that explicitly pass `layer2_artifact_dir` for compatibility.

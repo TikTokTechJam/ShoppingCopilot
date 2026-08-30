@@ -134,6 +134,8 @@ def _product_payload(agent: Any, asin: str) -> dict[str, Any]:
 
 
 def _layer2_status(agent: Any) -> dict[str, Any]:
+    """Report the BGE canonical-expansion path, not product-vector search."""
+
     del agent
     loader = getattr(constraint_module, "_load_default_dictionary", None)
     dictionary = loader() if callable(loader) else None
@@ -153,11 +155,61 @@ def _layer2_status(agent: Any) -> dict[str, Any]:
         }
     return {
         "available": False,
-        "reason": "The local BGE canonical-attribute dictionary is unavailable.",
+        "reason": "The local BGE canonical-expansion dictionary is unavailable.",
         "setup_hint": (
             "Install the local BGE model under models/bge-small-en-v1.5 or set "
             "SHOPPING_ATTRIBUTE_EMBEDDING_MODEL to its local path."
         ),
+    }
+
+
+def _product_dense_status(agent: Any) -> dict[str, Any]:
+    """Report the V5 product-card vector path used by Browsing."""
+
+    retriever = getattr(agent, "retriever", None)
+    index = getattr(retriever, "product_embedding_index", None)
+    encoder = getattr(retriever, "product_query_encoder", None)
+    available = bool(getattr(retriever, "product_dense_available", False))
+    manifest = getattr(index, "manifest", {}) if index is not None else {}
+    if not isinstance(manifest, Mapping):
+        manifest = {}
+    artifact_model = manifest.get("embedding_model", manifest.get("model"))
+    dimension = getattr(index, "dimension", None)
+    if available:
+        return {
+            "available": True,
+            "artifact": "data/derived/product_embeddings_v5",
+            "model": artifact_model,
+            "query_model": getattr(encoder, "model_id", None),
+            "dimension": dimension,
+            "products": int(manifest.get("product_count", len(getattr(index, "asins", ())))),
+            "product_card_fields": list(
+                manifest.get(
+                    "product_card_fields",
+                    ["category", "brand", "color", "material", "feature", "use_case"],
+                )
+            ),
+            "hash_fallback": False,
+        }
+    if index is None:
+        reason = "The V5 semantic product-card artifact is unavailable."
+    else:
+        reason = getattr(retriever, "product_embedding_compatibility_error", None) or (
+            "The V5 product-card query encoder is unavailable or incompatible."
+        )
+    return {
+        "available": False,
+        "artifact_loaded": index is not None,
+        "artifact": "data/derived/product_embeddings_v5",
+        "model": artifact_model,
+        "query_model": getattr(encoder, "model_id", None),
+        "dimension": dimension,
+        "reason": reason,
+        "setup_hint": (
+            "Build the local Qwen product-card artifact, install its local "
+            "query model, and set SHOPPING_PRODUCT_EMBEDDING_MODEL if needed."
+        ),
+        "hash_fallback": False,
     }
 
 
@@ -195,6 +247,11 @@ def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
                 str(value) for value in getattr(state, "asked_attributes", set())
             ),
             "last_asked": getattr(state, "last_asked", None),
+            "retrieval_query_text": getattr(
+                state,
+                "retrieval_query_text",
+                getattr(state, "query_text", ""),
+            ),
         }
     )
     return snapshot
@@ -206,6 +263,7 @@ def _candidate_payload(
     rank: int,
     target: str,
     dense_available: bool,
+    canonical_available: bool,
     bm25_available: bool,
 ) -> dict[str, Any]:
     asin = str(candidate.parent_asin)
@@ -221,7 +279,12 @@ def _candidate_payload(
         ),
         "semantic_score": (
             float(getattr(candidate, "semantic_score", candidate.dense_score))
-            if dense_available
+            if canonical_available
+            else None
+        ),
+        "canonical_score": (
+            float(getattr(candidate, "semantic_score", 0.0))
+            if canonical_available
             else None
         ),
         "bm25_score": (
@@ -229,7 +292,17 @@ def _candidate_payload(
             if bm25_available
             else None
         ),
-        "final_score": float(candidate.ranking_score),
+        "fusion_score": (
+            float(getattr(candidate, "fusion_score", 0.0))
+            if getattr(candidate, "fusion_score", None) is not None
+            else None
+        ),
+        "mmr_score": (
+            float(getattr(candidate, "mmr_score"))
+            if getattr(candidate, "mmr_score", None) is not None
+            else None
+        ),
+        "final_score": float(candidate.score),
         "base_score": float(candidate.score),
         "ranking_score": float(candidate.ranking_score),
         "matched_constraints": list(candidate.matched_constraints),
@@ -247,8 +320,10 @@ def _ranking_payload(
     ranked: Iterable[str],
 ) -> dict[str, Any]:
     snapshot = _debug_ranking_snapshot(agent, session_id, target)
-    layer2_status = _layer2_status(agent)
-    dense_available = bool(layer2_status.get("available", False))
+    canonical_status = _layer2_status(agent)
+    canonical_available = bool(canonical_status.get("available", False))
+    product_dense_status = _product_dense_status(agent)
+    dense_available = bool(product_dense_status.get("available", False))
     bm25_status = _bm25_status(agent)
     bm25_available = bool(bm25_status.get("available", False))
     eligible = list(snapshot["eligible"])
@@ -267,6 +342,7 @@ def _ranking_payload(
                     rank,
                     target,
                     dense_available,
+                    canonical_available,
                     bm25_available,
                 )
             )
@@ -280,7 +356,10 @@ def _ranking_payload(
                     "structured_score": None,
                     "dense_score": None,
                     "semantic_score": None,
+                    "canonical_score": None,
                     "bm25_score": None,
+                    "fusion_score": None,
+                    "mmr_score": None,
                     "final_score": None,
                     "base_score": None,
                     "ranking_score": None,
@@ -297,6 +376,11 @@ def _ranking_payload(
         "structured_rank": _debug_rank(snapshot["structured"], target),
         "dense_rank": (
             _debug_rank(snapshot["dense"], target) if dense_available else None
+        ),
+        "canonical_rank": (
+            _debug_rank(snapshot["canonical"], target)
+            if canonical_available
+            else None
         ),
         "bm25_rank": (
             _debug_rank(snapshot["bm25"], target) if bm25_available else None
@@ -319,12 +403,28 @@ def _ranking_payload(
         ),
         "semantic_score": (
             float(getattr(score_candidate, "semantic_score", score_candidate.dense_score))
-            if score_candidate is not None and dense_available
+            if score_candidate is not None and canonical_available
+            else None
+        ),
+        "canonical_score": (
+            float(getattr(score_candidate, "semantic_score", 0.0))
+            if score_candidate is not None and canonical_available
             else None
         ),
         "bm25_score": (
             float(getattr(score_candidate, "bm25_score", 0.0))
             if score_candidate is not None and bm25_available
+            else None
+        ),
+        "fusion_score": (
+            float(getattr(score_candidate, "fusion_score", 0.0))
+            if score_candidate is not None
+            else None
+        ),
+        "mmr_score": (
+            float(getattr(score_candidate, "mmr_score"))
+            if score_candidate is not None
+            and getattr(score_candidate, "mmr_score", None) is not None
             else None
         ),
         "final_score": (
@@ -341,6 +441,7 @@ def _ranking_payload(
             else None
         ),
         "top10": top10,
+        "bm25_debug": snapshot.get("bm25_debug", {}),
         "view_scores": None,
     }
 
@@ -886,6 +987,7 @@ class DebugWebController:
                 "done": bool(runner.done),
                 "state": state,
                 "layer2": _layer2_status(self.agent),
+                "product_dense": _product_dense_status(self.agent),
                 "bm25": _bm25_status(self.agent),
                 "benchmark": None,
                 "miss_search": self.miss_search,
@@ -901,6 +1003,7 @@ class DebugWebController:
                 "total_turns": MAX_TURNS,
                 "done": True,
                 "layer2": _layer2_status(self.agent),
+                "product_dense": _product_dense_status(self.agent),
                 "bm25": _bm25_status(self.agent),
                 "score_weights": MODE_SCORE_WEIGHTS,
                 "benchmark": None,
@@ -925,6 +1028,7 @@ class DebugWebController:
             "done": bool(self.runner.done),
             "state": state,
             "layer2": _layer2_status(self.agent),
+            "product_dense": _product_dense_status(self.agent),
             "bm25": _bm25_status(self.agent),
             "benchmark": self._benchmark_payload(),
             "miss_search": self.miss_search,
@@ -987,6 +1091,10 @@ class DebugWebController:
                 ),
                 "extracted_this_turn": extracted_this_turn,
                 "query_text": after_state.get("query_text", ""),
+                "retrieval_query_text": after_state.get(
+                    "retrieval_query_text",
+                    after_state.get("query_text", ""),
+                ),
                 "asked_attributes": after_state.get("asked_attributes", []),
                 "last_asked": after_state.get("last_asked"),
                 "exclusions": after_state.get("excluded", []),
