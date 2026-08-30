@@ -1,7 +1,7 @@
 """Dependency-light in-memory product retrieval for the Layer 1/2/3 MVP.
 
 The retriever consumes canonical product facts, optional direct Layer 2 field
-vectors, and a BM25 product-text index. It does not parse user language.
+vectors, and a BM25F product-text index. It does not parse user language.
 Structured, semantic, and lexical scores are kept separate until the shared
 final scorer combines them.
 """
@@ -12,7 +12,6 @@ import heapq
 import json
 import math
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Mapping
@@ -24,7 +23,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
-from starter.bm25 import BM25Index
+from starter.bm25 import BM25FIndex
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -358,17 +357,17 @@ class ProductRetriever:
         self.rating_lookup: dict[str, float | None] = {}
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
-        self.bm25_index: BM25Index | None = None
+        self.bm25_index: BM25FIndex | None = None
         self.bm25_state = "loading"
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
         try:
-            self.bm25_index = BM25Index(self.product_by_asin, self._catalog_order)
+            self.bm25_index = BM25FIndex(self.product_by_asin, self._catalog_order)
             self.bm25_state = "ready"
             self.bm25_build_seconds = self.bm25_index.build_seconds
-        except (OSError, RuntimeError, sqlite3.Error) as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self.bm25_state = "unavailable"
-            self.bm25_error = f"BM25 index unavailable: {exc}"
+            self.bm25_error = f"BM25F index unavailable: {exc}"
             print(f"[retrieval] {self.bm25_error}", flush=True)
         self.embedding_matrix: Any = None
         self.embedding_asins: tuple[str, ...] = ()
@@ -794,7 +793,7 @@ class ProductRetriever:
                 query_text,
                 allowed_asins=eligible_asins,
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+        except (OSError, RuntimeError, TypeError, ValueError):
             return {}
 
     def _query_embedding(self, query_text: str, dimension: int) -> Any:

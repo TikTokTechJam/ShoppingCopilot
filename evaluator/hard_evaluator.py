@@ -1175,10 +1175,10 @@ class InteractiveDebugPrinter:
             "Score weights: "
             f"structured={score_weights['structured']:.2f}, "
             f"dense={score_weights['dense']:.2f}, "
-            f"bm25={score_weights.get('bm25', 0.0):.2f}"
+            f"bm25f={score_weights.get('bm25', 0.0):.2f}"
         )
         print(
-            "BM25: "
+            "BM25F: "
             f"{'AVAILABLE' if bool(getattr(retriever, 'bm25_available', False)) else 'UNAVAILABLE'}"
         )
         print()
@@ -1238,14 +1238,14 @@ class InteractiveDebugPrinter:
         if target_candidate is not None:
             print(f"Structured score: {target_candidate.constraint_score:.4f}")
             print(f"Dense score: {target_candidate.dense_score:.4f}")
-            print(f"BM25 score: {target_candidate.bm25_score:.4f}")
+            print(f"BM25F score: {target_candidate.bm25_score:.4f}")
             print(f"Final score: {target_candidate.score:.4f}")
         else:
             print("Target score: N/A")
         print("Target ranks (eligible products):")
         print(f"  Structured rank: {_debug_rank(structured_ranking, target) or 'MISS'}")
         print(f"  Dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
-        print(f"  BM25 rank: {_debug_rank(bm25_ranking, target) or 'MISS'}")
+        print(f"  BM25F rank: {_debug_rank(bm25_ranking, target) or 'MISS'}")
         print(f"  Hybrid rank: {_debug_rank(hybrid_ranking, target) or 'MISS'}")
         top10_rank = ranked.index(target) + 1 if target in ranked else None
         print(f"Top10 rank: {top10_rank if top10_rank is not None else 'MISS'}")
@@ -1262,7 +1262,7 @@ class InteractiveDebugPrinter:
                 f"{index}. {asin} score={candidate.score:.4f} "
                 f"structured={candidate.constraint_score:.4f} "
                 f"dense={candidate.dense_score:.4f} "
-                f"bm25={candidate.bm25_score:.4f}"
+                f"bm25f={candidate.bm25_score:.4f}"
             )
             print(f"   matched={list(candidate.matched_constraints)}")
 

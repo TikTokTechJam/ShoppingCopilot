@@ -157,7 +157,7 @@ def _bm25_status(agent: Any) -> dict[str, Any]:
     retriever = getattr(agent, "retriever", None)
     available = bool(getattr(retriever, "bm25_available", False))
     reason = getattr(retriever, "bm25_error", None) or (
-        "The local BM25 product-text index is unavailable."
+        "The local BM25F product-text index is unavailable."
     )
     index = getattr(retriever, "bm25_index", None)
     return {
