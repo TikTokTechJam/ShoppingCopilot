@@ -32,3 +32,6 @@ data/derived/
 # Local embedding model weights. Download into this path; never commit them.
 model/*
 !model/.gitkeep
+
+# Per-run reports from the LLM intent classification suite.
+test_reports/
