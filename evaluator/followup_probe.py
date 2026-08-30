@@ -176,6 +176,7 @@ def main() -> None:
              "withholding counterfactual.",
     )
     parser.add_argument("--disable-user-profile", action="store_true")
+    parser.add_argument("--disable-evolution", action="store_true")
     args = parser.parse_args()
 
     from evaluator.agent_factory import build_evaluator_agent
@@ -185,6 +186,7 @@ def main() -> None:
     agent = build_evaluator_agent(
         args.catalog,
         disable_user_profile=args.disable_user_profile,
+        disable_evolution=args.disable_evolution,
     )
     result = run(
         agent, samples, catalog_ids, categories, products,

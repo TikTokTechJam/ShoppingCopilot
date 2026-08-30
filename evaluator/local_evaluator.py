@@ -339,11 +339,19 @@ def main() -> None:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")
     parser.add_argument("--output", default="results.json")
+    parser.add_argument(
+        "--disable-evolution",
+        action="store_true",
+        help="Run the pre-feedback-loop code path (no runtime belief "
+             "reweighting) -- the control arm for measuring the loop.",
+    )
     args = parser.parse_args()
     samples = load_jsonl(args.dataset)
     catalog_ids, categories, products = catalog_index(args.catalog)
     try:
-        agent = build_evaluator_agent(args.catalog)
+        agent = build_evaluator_agent(
+            args.catalog, disable_evolution=args.disable_evolution
+        )
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     result = evaluate(agent, samples, catalog_ids, categories, products)

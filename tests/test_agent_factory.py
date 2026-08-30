@@ -18,6 +18,7 @@ class AgentFactoryTests(unittest.TestCase):
             agent_class.assert_called_once_with(
                 catalog_path,
                 use_user_profile=True,
+                enable_evolution=True,
             )
 
     def test_disable_user_profile_builds_the_profile_free_agent(self) -> None:
@@ -29,6 +30,19 @@ class AgentFactoryTests(unittest.TestCase):
             agent_class.assert_called_once_with(
                 catalog_path,
                 use_user_profile=False,
+                enable_evolution=True,
+            )
+
+    def test_disable_evolution_builds_the_loop_free_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / "catalog.jsonl"
+            with patch("evaluator.agent_factory.Agent") as agent_class:
+                build_evaluator_agent(catalog_path, disable_evolution=True)
+
+            agent_class.assert_called_once_with(
+                catalog_path,
+                use_user_profile=True,
+                enable_evolution=False,
             )
 
 

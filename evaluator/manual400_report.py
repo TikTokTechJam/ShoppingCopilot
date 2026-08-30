@@ -363,7 +363,9 @@ def run(args: argparse.Namespace) -> Path:
     inputs = {str(row["sample_id"]): row for row in sessions}
 
     startup = time.perf_counter()
-    agent = build_evaluator_agent(catalog_path)
+    agent = build_evaluator_agent(
+        catalog_path, disable_evolution=getattr(args, "disable_evolution", False)
+    )
     startup_ms = (time.perf_counter() - startup) * 1000.0
     catalog_ids = hard_evaluator.load_catalog_ids(catalog_path)
     observed = ObservedAgent(agent, catalog_ids)
@@ -446,6 +448,11 @@ def main() -> None:
         "--non-strict",
         action="store_true",
         help="Pass the existing hard evaluator's non-strict mode through unchanged.",
+    )
+    parser.add_argument(
+        "--disable-evolution",
+        action="store_true",
+        help="Run the pre-feedback-loop code path (no runtime belief reweighting).",
     )
     args = parser.parse_args()
     if not RUN_NAME.fullmatch(args.run_name):

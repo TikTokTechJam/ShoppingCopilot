@@ -22,6 +22,11 @@ from starter.routing.constraints import (
 from starter.routing import lexicon
 
 
+# A session runs for at most ten turns, so the per-turn feedback trace is
+# naturally bounded; the cap is a defensive guard, not an expected code path.
+_MAX_EVOLUTION_TRACE = 10
+
+
 class OverrideKind(str, Enum):
     """Scope of an explicit change to the active shopping request."""
 
@@ -56,6 +61,13 @@ class SessionState:
     semantic_constraint_provenance: dict[str, dict[str, str]] = field(
         default_factory=dict
     )
+    # Feedback-loop sidecars (see starter/evolution). belief_weights holds a
+    # per-value confidence multiplier keyed [field][value]; an absent key means
+    # 1.0, and every stored factor is a strict subset of the live constraint
+    # pairs. evolution_trace is the append-only per-turn record the loop reads
+    # back (the per-turn shown sets that Architecture.md 12b.5 asks for).
+    belief_weights: dict[str, dict[str, float]] = field(default_factory=dict)
+    evolution_trace: list[dict[str, Any]] = field(default_factory=list)
     last_override_kind: str | None = None
     last_override_delta: ShoppingConstraints | None = None
 
@@ -326,6 +338,8 @@ class SessionManager:
         state.constraint_provenance.clear()
         state.semantic_constraints = SemanticShoppingConstraints()
         state.semantic_constraint_provenance.clear()
+        state.belief_weights.clear()
+        state.evolution_trace.clear()
         state.last_override_kind = None
         state.last_override_delta = None
         return state
@@ -420,6 +434,22 @@ class SessionManager:
             ),
         )
         state.semantic_constraint_provenance = semantic_provenance
+        # belief weights follow the same initial/clarification rule as
+        # provenance: keep a factor only if its value survived into kept_values.
+        kept_belief: dict[str, dict[str, float]] = {}
+        for field_name, survivors in kept_values.items():
+            existing = state.belief_weights.get(field_name)
+            if not existing:
+                continue
+            retained = {
+                value: weight
+                for value, weight in existing.items()
+                if value in survivors
+            }
+            if retained:
+                kept_belief[field_name] = retained
+        state.belief_weights = kept_belief
+        state.evolution_trace.clear()
         state.asked_attributes.clear()
         state.last_recommendations = ()
         state.excluded_recommendations.clear()
@@ -517,6 +547,28 @@ class SessionManager:
 
         state = self.get(session_id)
         state.excluded_recommendations.update(state.last_recommendations)
+
+    def set_belief_weights(
+        self, session_id: str, weights: Mapping[str, Mapping[str, float]]
+    ) -> None:
+        """Replace the feedback-loop belief-weight sidecar (owns the mutation)."""
+
+        state = self.get(session_id)
+        state.belief_weights = {
+            field_name: dict(values)
+            for field_name, values in weights.items()
+            if values
+        }
+
+    def record_evolution_turn(
+        self, session_id: str, record: Mapping[str, Any]
+    ) -> None:
+        """Append one per-turn feedback record, trimmed to the last MAX_TURNS."""
+
+        state = self.get(session_id)
+        state.evolution_trace.append(dict(record))
+        if len(state.evolution_trace) > _MAX_EVOLUTION_TRACE:
+            del state.evolution_trace[:-_MAX_EVOLUTION_TRACE]
 
 
 __all__ = [

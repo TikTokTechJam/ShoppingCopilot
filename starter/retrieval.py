@@ -759,12 +759,17 @@ class ProductRetriever:
         minimum_candidates: int = 50,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
+        field_weights: Mapping[str, float] | None = None,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
         The shared ranker accumulates exact structured matches from the
         inverted indexes. Non-budget fields are scored softly; an active
         budget is the only eligibility filter.
+
+        ``field_weights`` optionally overrides ``STRUCTURED_FIELD_WEIGHTS`` for
+        this call (the runtime feedback loop passes per-session weights here).
+        ``None`` reuses the module constant object unchanged.
         """
 
         del minimum_candidates
@@ -841,7 +846,7 @@ class ProductRetriever:
                                 matched_labels.setdefault(asin, []).append(
                                     f"{field_name}:{value}"
                                 )
-            field_weight = STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
+            field_weight = (field_weights or STRUCTURED_FIELD_WEIGHTS).get(field_name, 0.0)
             for asin in field_matches:
                 matched_weight[asin] = matched_weight.get(asin, 0.0) + (
                     field_weight * field_match_similarities.get(asin, 1.0)
@@ -917,6 +922,7 @@ class ProductRetriever:
         semantic_constraints: object | None = None,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
+        field_weights: Mapping[str, float] | None = None,
     ) -> list[Candidate]:
         """Return the complete ranking using the production scorer."""
 
@@ -928,6 +934,7 @@ class ProductRetriever:
             limit=len(self.product_by_asin),
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,
+            field_weights=field_weights,
         )
 
 

@@ -1345,6 +1345,12 @@ def main() -> None:
              "attribute to ask.",
     )
     parser.add_argument(
+        "--disable-evolution",
+        action="store_true",
+        help="Run the pre-feedback-loop code path (no runtime belief "
+             "reweighting) -- the control arm for measuring the loop.",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Suppress the per-session progress bar on stderr.",
@@ -1383,6 +1389,7 @@ def main() -> None:
         agent = build_evaluator_agent(
             args.catalog,
             disable_user_profile=args.disable_user_profile,
+            disable_evolution=args.disable_evolution,
         )
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))

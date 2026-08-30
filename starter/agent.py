@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from starter.clarification import ClarificationPolicy
+from starter.evolution import PHASE_A_CONFIG, EvolutionLoop, constraint_pairs
 from starter.followup import fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
 from starter.retrieval import ProductRetriever
@@ -39,6 +40,7 @@ class Agent:
         metadata_path: str | Path | None = None,
         query_encoder: object | None = None,
         use_user_profile: bool = True,
+        enable_evolution: bool = True,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
         retriever: ProductRetriever | None = None,
@@ -62,6 +64,10 @@ class Agent:
         self.clarification = ClarificationPolicy()
         self.use_user_profile = bool(use_user_profile)
         self._profile_affinity: dict[str, ProfileAffinity] = {}
+        # Runtime feedback loop. None == the pre-loop code path (byte-identical).
+        self.evolution = EvolutionLoop(PHASE_A_CONFIG) if enable_evolution else None
+        # Cumulative across the whole run; never reset between sessions.
+        self.last_diagnostics: dict[str, object] = {}
 
     @staticmethod
     def _extract(message: str) -> ShoppingConstraints:
@@ -87,6 +93,11 @@ class Agent:
                 user_profile,
                 encoder=getattr(self.retriever, "query_encoder", None),
             )
+
+    def telemetry(self) -> dict[str, object]:
+        """Snapshot of the run-level feedback-loop diagnostics."""
+
+        return dict(self.last_diagnostics)
 
     def respond(
         self,
@@ -146,6 +157,13 @@ class Agent:
             source = "override"
         else:
             source = "initial" if not had_messages else "clarification"
+
+        # OBSERVE (part 1): the constraint set held going into this turn's merge,
+        # captured after any override reset so an override turn reads as fresh.
+        evolution_pre_pairs: set[tuple[str, str]] = set()
+        if self.evolution is not None:
+            evolution_pre_pairs = constraint_pairs(state.constraints)
+
         self.sessions.update_constraints(
             session_id,
             structured_delta,
@@ -160,6 +178,37 @@ class Agent:
         )
         state.turn = int(turn)
 
+        # OBSERVE (part 2) + DISTILL + ACT. `field_weights` stays None -- the
+        # byte-identical retrieval path -- until the belief has moved.
+        field_weights = None
+        evolution_obs = None
+        if self.evolution is not None:
+            evolution_obs = self.evolution.observe(
+                turn=state.turn,
+                trace=state.evolution_trace,
+                structured_delta=structured_delta,
+                prev_pairs=evolution_pre_pairs,
+                new_pairs=constraint_pairs(state.constraints) - evolution_pre_pairs,
+                no_preference=no_preference_reply,
+                override_kind=(
+                    override_kind.value
+                    if override_kind is not OverrideKind.NONE
+                    else None
+                ),
+            )
+            new_belief = self.evolution.distill(
+                state.belief_weights,
+                evolution_obs,
+                constraints=state.constraints,
+                provenance=state.constraint_provenance,
+                replacements=replacements,
+                trace=state.evolution_trace,
+            )
+            self.sessions.set_belief_weights(session_id, new_belief)
+            field_weights = self.evolution.act_field_weights(
+                new_belief, state.constraints
+            )
+
         candidates = self.retriever.retrieve(
             state.mode or "BROWSING",
             state.query_text,
@@ -168,6 +217,7 @@ class Agent:
             limit=100,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
+            field_weights=field_weights,
         )
 
         try:
@@ -193,6 +243,25 @@ class Agent:
                 valid_asins=valid_asins,
             )
         recommendations = [{"parent_asin": asin} for asin in ranked]
+
+        # OBSERVE (finalize): record this turn's pool/churn signal and roll the
+        # run-level telemetry forward.
+        if self.evolution is not None and evolution_obs is not None:
+            self.sessions.record_evolution_turn(
+                session_id,
+                self.evolution.finalize_turn(
+                    evolution_obs,
+                    pool_size=len(candidates),
+                    ranked=ranked,
+                    trace=state.evolution_trace,
+                ),
+            )
+            self.last_diagnostics = self.evolution.telemetry_snapshot(
+                self.last_diagnostics,
+                evolution_obs,
+                state,
+                reweighted=field_weights is not None,
+            )
 
         affinity = self._profile_affinity.get(session_id)
         # No turn cutoff is needed here any more: a question asked on the final
