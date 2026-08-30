@@ -11,6 +11,7 @@ from __future__ import annotations
 import heapq
 import json
 import math
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -24,7 +25,7 @@ from product_embeddings.layer2 import (
     load_layer2_embedding_index,
 )
 from product_embeddings.pipeline import embedding_models_compatible
-from starter.bm25 import BM25Index
+from starter.bm25 import BM25Index, BM25QueryCompiler
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -88,6 +89,20 @@ NEUTRAL_NORMALIZED_RATING = 0.5
 CRITICAL_USER_RATING_THRESHOLD = 3.5
 RATING_BOOST_WEIGHT = 0.15
 RATING_DEFAULT_WEIGHT = 0.02
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Read a small boolean runtime switch without making configuration mandatory."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def normalized_rating(rating: float | None) -> float:
@@ -359,6 +374,14 @@ class ProductRetriever:
         self._facts_by_asin, self._annotated_prices = self._load_fact_artifact(facts_path)
         self._load_catalog()
         self.bm25_index: BM25Index | None = None
+        self.bm25_query_compiler = BM25QueryCompiler()
+        # The active-slot query is the default for the Option A experiment.
+        # Keeping an explicit compatibility switch makes before/after lexical
+        # comparisons possible without changing the BM25 index itself.
+        self.use_slot_bm25_query = _env_flag(
+            "SHOPPING_BM25_SLOT_COMPILATION",
+            default=True,
+        )
         self.bm25_state = "loading"
         self.bm25_error: str | None = None
         self.bm25_build_seconds: float | None = None
@@ -789,12 +812,20 @@ class ProductRetriever:
         self,
         query_text: str,
         eligible_asins: Collection[str],
+        constraints: object | None = None,
+        semantic_constraints: object | None = None,
     ) -> dict[str, float]:
         if self.bm25_index is None:
             return {}
         try:
+            lexical_query = query_text
+            if self.use_slot_bm25_query:
+                lexical_query = self.bm25_query_compiler.compile(
+                    constraints,
+                    semantic_constraints,
+                )
             return self.bm25_index.search(
-                query_text,
+                lexical_query,
                 allowed_asins=eligible_asins,
             )
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
@@ -931,7 +962,12 @@ class ProductRetriever:
         dense_scores = semantic_scores
         if not dense_scores and self.dense_available:
             dense_scores = self._dense_scores(query_text)
-        bm25_scores = self._bm25_scores(query_text, eligible_set)
+        bm25_scores = self._bm25_scores(
+            query_text,
+            eligible_set,
+            constraints,
+            semantic_constraints,
+        )
 
         constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
