@@ -25,6 +25,7 @@ from product_embeddings.layer2 import (
 )
 from product_embeddings.pipeline import embedding_models_compatible
 from starter.bm25 import BM25Index, BM25QueryCompiler, BM25_QUERY_FIELDS
+from starter.browsing import BrowsingDenseIndex, build_browsing_query, load_qwen_browsing_encoder
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -94,6 +95,20 @@ BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
 BM25_SCORE_TRANSFORM_ENV = "SHOPPING_BM25_SCORE_TRANSFORM"
 BM25_SCORE_TRANSFORM_DEFAULT = "log1p"
 
+# Browsing uses two independent recall sources.  These values intentionally
+# stay separate from the downstream recommendation limit: the clarification
+# flow can still request a broader ranked pool, while the first ten browsing
+# recommendations receive diversity selection.
+BROWSING_DENSE_ARTIFACT_DIR_ENV = "SHOPPING_BROWSING_DENSE_DIR"
+BROWSING_DENSE_MODEL_ENV = "SHOPPING_BROWSING_DENSE_MODEL"
+BROWSING_DENSE_DEFAULT_ARTIFACT_DIR = Path("data/derived/browsing_dense")
+BROWSING_DENSE_DEFAULT_MODEL = "model/Qwen3-Embedding-0.6B"
+BROWSING_DENSE_TOP_K = 200
+BROWSING_BM25_TOP_K = 200
+BROWSING_RRF_K = 60
+BROWSING_DIVERSITY_TOP_K = 10
+BROWSING_DIVERSITY_LAMBDA = 0.75
+
 # Rating tie-breaker (INSTRUCTION.md section 1).  The structured matcher scores
 # most candidates identically -- 9.6 of every 10 returned candidates share one
 # score -- so without a continuous term the top-10 order is catalog position.
@@ -148,6 +163,42 @@ def _transform_bm25_scores(
         if math.isfinite(value) and value > 0.0:
             transformed[str(asin)] = value
     return transformed
+
+
+def _top_score_map(
+    scores: Mapping[str, float],
+    limit: int,
+) -> dict[str, float]:
+    """Return a deterministically ordered positive-score prefix."""
+
+    rows: list[tuple[str, float]] = []
+    for asin, score in scores.items():
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0.0:
+            rows.append((str(asin), value))
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return dict(rows[: max(0, int(limit))])
+
+
+def _rrf_fuse(
+    dense_asins: Iterable[str],
+    bm25_scores: Mapping[str, float],
+    *,
+    rank_constant: int = BROWSING_RRF_K,
+) -> dict[str, float]:
+    """Fuse two already-bounded ranked lists with equal-weight RRF."""
+
+    fused: dict[str, float] = {}
+    for rank, asin in enumerate(dense_asins, 1):
+        key = str(asin)
+        fused[key] = fused.get(key, 0.0) + 1.0 / (rank_constant + rank)
+    for rank, asin in enumerate(bm25_scores, 1):
+        key = str(asin)
+        fused[key] = fused.get(key, 0.0) + 1.0 / (rank_constant + rank)
+    return fused
 
 
 def normalized_rating(rating: float | None) -> float:
@@ -403,10 +454,25 @@ class ProductRetriever:
         query_encoder: QueryEncoder | None = None,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
+        browsing_dense_artifact_dir: str | Path | None = None,
+        browsing_query_encoder: QueryEncoder | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.query_encoder = query_encoder
         self.layer2_weights = dict(layer2_weights) if layer2_weights is not None else None
+        configured_browsing_dir = (
+            browsing_dense_artifact_dir
+            if browsing_dense_artifact_dir is not None
+            else os.environ.get(BROWSING_DENSE_ARTIFACT_DIR_ENV)
+        )
+        self.browsing_dense_artifact_dir = Path(
+            configured_browsing_dir or BROWSING_DENSE_DEFAULT_ARTIFACT_DIR
+        )
+        self.browsing_query_encoder = browsing_query_encoder
+        self.browsing_dense_index: BrowsingDenseIndex | None = None
+        self.browsing_dense_state = "disabled"
+        self.browsing_dense_error: str | None = None
+        self.last_browsing_diagnostics: dict[str, Any] = {}
         self.product_by_asin: dict[str, ProductRecord] = {}
         self._catalog_order: list[str] = []
         self.inverted_index: dict[str, dict[str, set[str]]] = {
@@ -453,6 +519,7 @@ class ProductRetriever:
         self._layer2_encoder_compatible = False
         self.layer2_compatibility_error: str | None = None
         self._load_layer2(layer2_artifact_dir)
+        self._load_browsing_dense()
 
     @property
     def valid_asins(self) -> frozenset[str]:
@@ -463,6 +530,71 @@ class ProductRetriever:
         return bool(self.layer2_index is not None and self.layer2_index.asins) or (
             self.embedding_matrix is not None and bool(self.embedding_asins)
         )
+
+    @property
+    def browsing_dense_available(self) -> bool:
+        """Whether the separate Qwen Browsing index can answer queries."""
+
+        return bool(
+            self.browsing_dense_state == "ready"
+            and self.browsing_dense_index is not None
+            and self.browsing_query_encoder is not None
+        )
+
+    def _load_browsing_dense(self) -> None:
+        """Load the prebuilt Browsing index without rebuilding artifacts."""
+
+        directory = self.browsing_dense_artifact_dir
+        required = (
+            directory / "product_embeddings.npy",
+            directory / "parent_asins.json",
+            directory / "manifest.json",
+        )
+        if not directory.is_dir() or not all(path.is_file() for path in required):
+            return
+
+        self.browsing_dense_state = "loading"
+        model_path = os.environ.get(
+            BROWSING_DENSE_MODEL_ENV,
+            BROWSING_DENSE_DEFAULT_MODEL,
+        ).strip()
+        expected_model = model_path or None
+        try:
+            index = BrowsingDenseIndex.load(
+                directory,
+                expected_model=expected_model,
+            )
+            if tuple(index.parent_asins) != tuple(self._catalog_order):
+                raise ValueError(
+                    "browsing dense parent_asins do not match catalog order"
+                )
+            if self.browsing_query_encoder is None:
+                if not Path(model_path).is_dir():
+                    raise OSError(
+                        f"browsing dense model directory is missing: {model_path}"
+                    )
+                self.browsing_query_encoder = load_qwen_browsing_encoder(
+                    model_path,
+                    batch_size=32,
+                    show_progress_bar=False,
+                )
+            actual_dimension = _encoder_dimension(self.browsing_query_encoder)
+            if actual_dimension is not None and actual_dimension != index.dimension:
+                raise ValueError(
+                    "browsing dense query encoder dimension does not match index: "
+                    f"index={index.dimension}, encoder={actual_dimension}"
+                )
+        except Exception as exc:
+            self.browsing_dense_state = "unavailable"
+            self.browsing_dense_error = str(exc)
+            print(
+                "[retrieval] Browsing Qwen dense unavailable: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return
+        self.browsing_dense_index = index
+        self.browsing_dense_state = "ready"
 
     def _load_layer2(self, artifact_dir: str | Path | None) -> None:
         if artifact_dir is None:
@@ -882,12 +1014,104 @@ class ProductRetriever:
         except (ImportError, TypeError, ValueError, RuntimeError):
             return {}
 
+    def _browsing_dense_matches(
+        self,
+        constraints: object,
+        eligible_asins: Collection[str],
+    ) -> list[Any]:
+        """Retrieve Qwen Top-200 using only the active browsing slots."""
+
+        if not self.browsing_dense_available:
+            return []
+        query = build_browsing_query(constraints)
+        if not query:
+            self.last_browsing_diagnostics = {
+                "active": True,
+                "query": "",
+                "dense_count": 0,
+                "dense_top": [],
+            }
+            return []
+        assert self.browsing_dense_index is not None
+        try:
+            matches = self.browsing_dense_index.search(
+                query,
+                self.browsing_query_encoder,
+                top_k=BROWSING_DENSE_TOP_K,
+                allowed_asins=eligible_asins,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            matches = []
+        self.last_browsing_diagnostics = {
+            "active": True,
+            "query": query,
+            "dense_count": len(matches),
+            "dense_top": [
+                {"parent_asin": item.parent_asin, "score": round(item.score, 8)}
+                for item in matches[:10]
+            ],
+        }
+        return matches
+
+    def _diversify_browsing(
+        self,
+        ranked_asins: list[str],
+        relevance_scores: Mapping[str, float],
+        *,
+        top_k: int = BROWSING_DIVERSITY_TOP_K,
+    ) -> list[str]:
+        """Apply a small MMR pass to Browsing's first recommendations.
+
+        The full union remains available to clarification and downstream
+        callers. Only the first ``top_k`` items are selected with product-card
+        similarity; the remaining items retain their RRF order.
+        """
+
+        if top_k <= 0 or len(ranked_asins) <= 1 or not self.browsing_dense_available:
+            return ranked_asins
+        assert self.browsing_dense_index is not None
+        selected: list[str] = []
+        remaining = list(ranked_asins)
+        max_relevance = max(
+            (float(relevance_scores.get(asin, 0.0)) for asin in ranked_asins),
+            default=0.0,
+        )
+        while remaining and len(selected) < min(top_k, len(ranked_asins)):
+            if not selected:
+                best = remaining[0]
+            else:
+                best = max(
+                    remaining,
+                    key=lambda asin: (
+                        BROWSING_DIVERSITY_LAMBDA
+                        * (
+                            float(relevance_scores.get(asin, 0.0)) / max_relevance
+                            if max_relevance > 0.0
+                            else 0.0
+                        )
+                        - (1.0 - BROWSING_DIVERSITY_LAMBDA)
+                        * max(
+                            (
+                                self.browsing_dense_index.similarity(asin, chosen)
+                                for chosen in selected
+                            ),
+                            default=0.0,
+                        ),
+                        float(relevance_scores.get(asin, 0.0)),
+                        -self.product_by_asin[asin].catalog_order,
+                    ),
+                )
+            selected.append(best)
+            remaining.remove(best)
+        return selected + remaining
+
     def _bm25_scores(
         self,
         query_text: str,
         eligible_asins: Collection[str],
         constraints: object | None = None,
         semantic_constraints: object | None = None,
+        top_k: int | None = None,
     ) -> dict[str, float]:
         if self.bm25_index is None:
             self.last_bm25_diagnostics = {
@@ -919,9 +1143,13 @@ class ProductRetriever:
                             "top": self._top_score_rows(scores),
                         }
                     },
-                    aggregate=scores,
+                    aggregate=(
+                        _top_score_map(scores, top_k)
+                        if top_k is not None
+                        else scores
+                    ),
                 )
-                return scores
+                return _top_score_map(scores, top_k) if top_k is not None else scores
 
             groups = self.bm25_query_compiler.compile_group_specs(
                 constraints,
@@ -1013,13 +1241,14 @@ class ProductRetriever:
             for group_scores in normalized_by_group:
                 for asin, score in group_scores.items():
                     fused[asin] = fused.get(asin, 0.0) + score / group_count
+            aggregate = _top_score_map(fused, top_k) if top_k is not None else fused
             self._record_bm25_diagnostics(
                 query_text,
                 mode="slot_groups",
                 groups=group_diagnostics,
-                aggregate=fused,
+                aggregate=aggregate,
             )
-            return fused
+            return aggregate
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             self.last_bm25_diagnostics = {
                 "query": query_text,
@@ -1124,13 +1353,18 @@ class ProductRetriever:
         matched_semantic_constraints: tuple[str, ...] = (),
         bm25_score: float = 0.0,
         w_rating: float = 0.0,
+        score_override: float | None = None,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, dense_score, bm25_score)
+        score = (
+            float(score_override)
+            if score_override is not None
+            else _final_score(mode, dense_score, bm25_score)
+        )
         rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
@@ -1198,6 +1432,8 @@ class ProductRetriever:
         price_match_asins = set(price_eligible_asins)
         eligible_set = set(eligible_asins)
 
+        browsing_dense_active = False
+        browsing_dense_matches: list[Any] = []
         if mode == "BUYING":
             # BGE semantic evidence is consumed by BM25QueryCompiler as
             # bounded lexical alternatives. Buying does not run a separate
@@ -1205,18 +1441,33 @@ class ProductRetriever:
             dense_scores: dict[str, float] = {}
             semantic_labels: dict[str, tuple[str, ...]] = {}
         else:
-            semantic_scores, semantic_labels = self._semantic_scores(
-                eligible_asins,
-                semantic_constraints,
+            browsing_dense_active = bool(
+                self.browsing_dense_available and build_browsing_query(constraints)
             )
-            dense_scores = semantic_scores
-            if not dense_scores and self.dense_available:
-                dense_scores = self._dense_scores(query_text)
+            if browsing_dense_active:
+                browsing_dense_matches = self._browsing_dense_matches(
+                    constraints,
+                    eligible_asins,
+                )
+                dense_scores = {
+                    item.parent_asin: float(item.score)
+                    for item in browsing_dense_matches
+                }
+                semantic_labels = {}
+            else:
+                semantic_scores, semantic_labels = self._semantic_scores(
+                    eligible_asins,
+                    semantic_constraints,
+                )
+                dense_scores = semantic_scores
+                if not dense_scores and self.dense_available:
+                    dense_scores = self._dense_scores(query_text)
         bm25_scores = self._bm25_scores(
             query_text,
             eligible_set,
             constraints,
             semantic_constraints,
+            top_k=(BROWSING_BM25_TOP_K if mode == "BROWSING" else None),
         )
 
         constraint_similarities = self._constraint_similarities(constraints)
@@ -1306,7 +1557,48 @@ class ProductRetriever:
         def _zero(_asin: str) -> float:
             return 0.0
 
-        if not dense_scores and not constraint_fields and not bm25_scores:
+        score_overrides: dict[str, float] = {}
+        if browsing_dense_active:
+            # Dense and sparse are independent recall sources.  Their raw
+            # scores are intentionally not added together; RRF avoids having
+            # to calibrate cosine similarity against transformed BM25 scores.
+            rrf_scores = _rrf_fuse(
+                (item.parent_asin for item in browsing_dense_matches),
+                bm25_scores,
+            )
+            score_overrides = rrf_scores
+            candidate_union = [
+                asin for asin in rrf_scores if asin in eligible_set
+            ]
+            if not candidate_union:
+                # Keep the existing empty-query behavior when neither route
+                # has lexical evidence, while still applying eligibility.
+                candidate_union = list(eligible_asins)
+            ranked_asins = _select(
+                candidate_union,
+                lambda asin: rrf_scores.get(asin, 0.0),
+            )
+            ranked_asins = self._diversify_browsing(
+                ranked_asins,
+                rrf_scores,
+            )
+            self.last_browsing_diagnostics.update(
+                {
+                    "bm25_count": len(bm25_scores),
+                    "bm25_top": self._top_score_rows(bm25_scores),
+                    "union_count": len(candidate_union),
+                    "rrf_top": [
+                        {
+                            "parent_asin": asin,
+                            "score": round(float(rrf_scores[asin]), 8),
+                        }
+                        for asin in ranked_asins[:10]
+                        if asin in rrf_scores
+                    ],
+                    "diversity_top": ranked_asins[:10],
+                }
+            )
+        elif not dense_scores and not constraint_fields and not bm25_scores:
             # No constraints and no dense signal: every candidate ties at zero,
             # so the rating is the only thing left to order them by.
             ranked_asins = _select(eligible_asins, _zero)
@@ -1344,6 +1636,7 @@ class ProductRetriever:
                 semantic_labels.get(asin, ()),
                 bm25_scores.get(asin, 0.0),
                 w_rating=w_rating,
+                score_override=score_overrides.get(asin),
             )
             for asin in ranked_asins
         ]

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from product_embeddings.pipeline import load_local_sentence_transformer
+from product_embeddings.pipeline import (
+    embedding_models_compatible,
+    load_local_sentence_transformer,
+)
 
 
 BROWSING_QWEN_INSTRUCTION = (
@@ -136,10 +141,10 @@ class BrowsingDenseIndex:
         dimension = manifest.get("dimension")
         if dimension != int(embeddings.shape[1]):
             raise ValueError("browsing dense manifest dimension does not match matrix")
-        if expected_model is not None and manifest.get("model") not in {
+        if expected_model is not None and not embedding_models_compatible(
+            manifest.get("model", ""),
             expected_model,
-            str(expected_model).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1],
-        }:
+        ):
             raise ValueError(
                 f"browsing dense model mismatch: artifact={manifest.get('model')} "
                 f"expected={expected_model}"
@@ -150,12 +155,17 @@ class BrowsingDenseIndex:
     def dimension(self) -> int:
         return int(self.embeddings.shape[1])
 
+    @cached_property
+    def _positions(self) -> dict[str, int]:
+        return {asin: row for row, asin in enumerate(self.parent_asins)}
+
     def search(
         self,
         query_text: str,
         encoder: Any,
         *,
         top_k: int = 100,
+        allowed_asins: Collection[str] | None = None,
     ) -> list[BrowsingDenseMatch]:
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
             raise ValueError("top_k must be a positive integer")
@@ -168,22 +178,48 @@ class BrowsingDenseIndex:
                 f"query dimension {query.size} does not match index dimension {self.dimension}"
             )
         scores = self.embeddings @ query
-        count = min(top_k, len(self.parent_asins))
+        if allowed_asins is None:
+            candidate_rows = np.arange(len(self.parent_asins), dtype=np.int64)
+        else:
+            allowed = {str(asin) for asin in allowed_asins}
+            candidate_rows = np.asarray(
+                [
+                    row
+                    for row, asin in enumerate(self.parent_asins)
+                    if asin in allowed
+                ],
+                dtype=np.int64,
+            )
+        if candidate_rows.size == 0:
+            return []
+        candidate_scores = scores[candidate_rows]
+        count = min(top_k, int(candidate_rows.size))
         if count == 0:
             return []
-        if count < len(scores):
-            candidates = np.argpartition(-scores, count - 1)[:count]
-            order = candidates[np.argsort(-scores[candidates], kind="stable")]
+        if count < len(candidate_scores):
+            local_candidates = np.argpartition(-candidate_scores, count - 1)[:count]
+            local_order = local_candidates[
+                np.argsort(-candidate_scores[local_candidates], kind="stable")
+            ]
         else:
-            order = np.argsort(-scores, kind="stable")
+            local_order = np.argsort(-candidate_scores, kind="stable")
         return [
             BrowsingDenseMatch(
-                parent_asin=self.parent_asins[int(row)],
-                score=float(scores[int(row)]),
-                row=int(row),
+                parent_asin=self.parent_asins[int(candidate_rows[row])],
+                score=float(candidate_scores[row]),
+                row=int(candidate_rows[row]),
             )
-            for row in order
+            for row in local_order
         ]
+
+    def similarity(self, first_asin: str, second_asin: str) -> float:
+        """Return cosine similarity between two indexed product cards."""
+
+        first = self._positions.get(str(first_asin))
+        second = self._positions.get(str(second_asin))
+        if first is None or second is None:
+            return 0.0
+        return float(self.embeddings[first] @ self.embeddings[second])
 
 
 __all__ = [

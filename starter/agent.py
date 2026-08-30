@@ -107,6 +107,8 @@ class Agent:
         use_user_profile: bool = True,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
+        browsing_dense_artifact_dir: str | Path | None = None,
+        browsing_query_encoder: object | None = None,
         retriever: ProductRetriever | None = None,
         router: object | None = None,
         turn_interpreter: object | None = None,
@@ -119,6 +121,8 @@ class Agent:
             query_encoder=query_encoder,
             layer2_artifact_dir=layer2_artifact_dir,
             layer2_weights=layer2_weights,
+            browsing_dense_artifact_dir=browsing_dense_artifact_dir,
+            browsing_query_encoder=browsing_query_encoder,
         )
         self.sessions = SessionManager()
         # Keep the old private attribute available to lightweight integrations
