@@ -868,6 +868,10 @@ New explicit information overrides stale conflicting information. For example, `
 
 An intent override that clearly changes the shopping goal clears stale goal-specific constraints before applying the new request.
 
+Session state also carries the feedback-loop sidecars `belief_weights` and
+`evolution_trace` (Section 18.2). They are per-value confidence and per-turn
+history; they do not change the constraint contract above.
+
 No database or Redis is required for the MVP.
 
 ## 10. Retrieval architecture
@@ -1246,6 +1250,13 @@ a design assumption; measure it before enabling. Session state must retain the
 per-turn shown sets, not only the last recommendations, to support the
 experiment.
 
+Partly built: the feedback loop's `evolution_trace` now retains the per-turn
+shown sets, and Stage 2 of Section 18 (implicit-negative decay) implements the
+attribute-level version of this idea -- demoting a constraint value common to
+every shown-and-missed candidate, guarded by `turn >= 3` for the
+intent-override minority. It is gated off pending the measurement this section
+asks for.
+
 ### 12b.6 Measuring `gamma`
 
 The evaluator stops at the first hit, so the target's rank trajectory afterwards
@@ -1399,3 +1410,156 @@ learned posterior model
 ```
 
 These may be added later only when measured failures justify them and the architecture is intentionally revised.
+
+## 18. Runtime feedback loop (self-evolution)
+
+The pipeline described in Sections 8-12b is a fixed straight line with global
+constant weights: it parses, merges into session state, scores with
+`STRUCTURED_FIELD_WEIGHTS` / `MODE_SCORE_WEIGHTS`, and asks one question. It
+never observes how a turn went and never adjusts. The feedback loop wraps that
+line with a per-session control loop that revises two things each turn -- what
+the Agent *believes* about its own constraints, and *how* it retrieves against
+them -- and, across sessions, a small set of learned priors.
+
+It changes no component boundary. Product preprocessing, user parsing,
+retrieval, ranking, and clarification remain separate; the loop only feeds
+per-call parameters into `retrieve()` and reads back the ranked list. It runs
+in-process, uses no model, and returns `usage` unchanged.
+
+### 18.1 Where it sits
+
+```text
+                              USER TURN
+                                  |
+                    existing extract / override / merge      (Sections 8-9)
+                                  |
+                                  v
+        +----------------- OBSERVE ---------------------+
+        |  reinforced / new (field,value) pairs        |
+        |  called-again, pool delta, top-k churn       |
+        +----------------------+-----------------------+
+                               v
+        +----------------- DISTILL --------------------+
+        |  belief_weights[field][value] -> factor      |
+        |  + reinforcement   (Stage 1, always on)      |
+        |  - implicit decay  (Stage 2, gated)          |
+        |  seed from learned prior (Stage 4, gated)    |
+        +----------------------+-----------------------+
+                               v
+        +----------------- RE-PLAN --------------------+   (Stage 3, gated)
+        |  StrategyController -> field_weights /       |
+        |  score_weights override                     |
+        +----------------------+-----------------------+
+                               v
+                 retrieve(field_weights=, score_weights=)   (Section 10)
+                               |
+                               v
+                    rank -> Top-K -> clarify               (Sections 10-12)
+                               |
+        +----------------- FINALIZE -------------------+
+        |  append per-turn trace record               |
+        |  roll run-level telemetry                   |
+        |  (session end) fold surrogate into priors   |   (Stage 4, gated)
+        +---------------------------------------------+
+```
+
+The default build runs **Stage 1 only**. Stages 2-4 are each gated by an
+`EvolutionConfig` flag and default off, so the default Agent and the
+`--disable-evolution` path are byte-identical to the pre-loop pipeline: when
+nothing has moved the belief, `field_weights` and `score_weights` are `None`
+and `retrieve()` reuses the module constants unchanged.
+
+### 18.2 Belief state (Stage 1)
+
+Session state (Section 9) gains two sidecars, alongside `constraint_provenance`
+rather than inside `ShoppingConstraints`:
+
+```text
+belief_weights : dict[field][value] -> factor        # absent key == 1.0
+evolution_trace: list of per-turn records            # <= MAX_TURNS
+```
+
+`belief_weights` is always a strict subset of the live `(field, value)` pairs
+and every factor is clamped to `[w_min, w_max]` (`[0.75, 1.30]`) -- the same
+bounded-multiplier discipline as `ProfileAffinity` in Section 12.1, chosen so
+the loop can only reorder near-ties, never invert the trust order of Section
+10.1. A value the shopper restates gains `+reinforce_bump` (`0.12`) once per
+turn; a corrected or overridden field is reset to neutral. The per-field mean
+factor scales that field's `STRUCTURED_FIELD_WEIGHTS` entry for the one
+`retrieve()` call.
+
+`evolution_trace` records the per-turn *shown set*, pool size, churn and
+`made_progress` -- the "per-turn shown sets, not only the last
+recommendations" that Section 12b.5 says session state must retain before the
+implicit-negative-feedback experiment.
+
+`reset_goal` clears both sidecars; `reset_preference` prunes `belief_weights`
+to the values that survive its dependency-aware removal.
+
+### 18.3 Implicit-negative decay (Stage 2, gated)
+
+This is the DISTILL half that Section 12b.5 left open. After a turn that was
+called again and made no progress (guarded by `turn >= 3` so it cannot fire
+before an intent override), a value present in *every* candidate that was
+shown-and-missed carries no discriminating power and loses `neg_decay`, plus a
+penalty if it was a never-reinforced one-off. It reads the shown set's facts
+through an injected `fact_lookup` closure; hidden evaluator information is never
+consulted. It is off by default and should ship only after a probe shows its
+net effect on target rank is non-negative.
+
+### 18.4 Adaptive orchestration (Stage 3, gated)
+
+A deterministic `StrategyController` picks one of
+`NEUTRAL / EXPLOIT_NARROW / RECALL_BROAD / DIVERSIFY / RELAX_WEAKEST` per turn
+from signals available *before* retrieval -- this turn's observation plus the
+previous trace record -- and translates it into:
+
+- a `score_weights` triple `(structured, dense, bm25)` that overrides
+  `MODE_SCORE_WEIGHTS[mode]` for the call. This is the seam through which
+  Buying vs Browsing (Section 10.2 / 10.3) can finally change ranking rather
+  than only clarification priors;
+- a softening of the single weakest active constraint's `field_weights` entry,
+  for a starved pool (the controlled-relaxation idea of Section 10.2, chosen
+  per turn instead of only as a fallback).
+
+`retrieve()` and `_final_score()` gain a `score_weights` parameter; `None`
+keeps the mode table, so the default path is unchanged.
+
+### 18.5 Cross-session priors (Stage 4, gated)
+
+A process-local `CrossSessionStore` lives on the Agent and is **not** cleared
+by `reset()`. At session end -- detected as the next `reset()` for a new id, or
+`turn == MAX_TURNS` -- it folds a *surrogate* signal into a per-field starting
+factor: for each field that was reinforced, the fraction of later turns that
+made progress nudges that field's prior by a bounded EWMA. `prior_factor`
+seeds DISTILL's first sight of a value.
+
+The Agent cannot see hits (Section 15), so this never learns the real
+objective; it learns a proxy, and it is the acute overfitting risk of the
+loop. It has its own flag, must be validated on public200 as well as
+Manual400, and makes a run reproducible but not session-order independent.
+
+### 18.6 Determinism and boundaries
+
+Every stage is integer counts and bounded float arithmetic over deterministic
+inputs -- no RNG, no wall-clock, no catalog mutation. `belief_weights` and
+`evolution_trace` are pure functions of prior turns. The loop owns no session
+storage: `EvolutionLoop` is stateless apart from its config, `SessionManager`
+performs every session mutation, and the cross-session store is the only
+Agent-level state it adds. Hidden targets and simulator facts stay
+evaluator-side exactly as in Section 15.
+
+### 18.7 Current status
+
+On both evaluator simulators the loop is presently a **no-op**: their scripted
+customers disclose each constraint once and never restate it, so Stage 1
+reinforcement never fires (`reinforce_events = 0`, `retrieval_reweight_turns =
+0`), and Stage 3's stuck detector is degenerate because
+`excluded_recommendations` rotates the whole shown set each turn. `--evo-full`
+runs and is deterministic but does not move the benchmark score. The mechanism
+is exercised by the integration tests -- a restated constraint lifts the
+target several ranks -- and is intended for dialogue that reinforces, which the
+current benchmarks do not generate. Broadening the reinforcement trigger (a
+value that survives N turns un-contradicted; a clarification answer consistent
+with a held field) is the measured next step before any stage is enabled by
+default.
