@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Sequence
 
+from dictionary.registry import SEMANTIC_QUERY_STOPWORDS
 from starter.routing.constraints import CATEGORICAL_FIELDS, extract_constraints
 from starter.routing.lexicon import BUYING_TAG_THRESHOLD, TAG_COUNT_EXCLUDE
 from tests.utils.catalog_loader import summarize_products
@@ -77,6 +78,13 @@ def intent_constraint_band(intent_type: str) -> tuple[int, int]:
     return MIN_CONSTRAINTS, MAX_CONSTRAINTS
 
 
+def _is_conversational(surface: str) -> bool:
+    """Whether every token of a matched surface is a query stopword."""
+
+    tokens = [token for token in str(surface).casefold().split() if token]
+    return bool(tokens) and all(token in SEMANTIC_QUERY_STOPWORDS for token in tokens)
+
+
 def counted_constraints(utterance: str) -> tuple[str, ...]:
     """The fields our extractor reads, excluding the ones that do not count.
 
@@ -94,11 +102,20 @@ def counted_constraints(utterance: str) -> tuple[str, ...]:
         for item in getattr(constraints, "evidence", ()):
             attribute = str(getattr(item, "attribute", ""))
             raw = str(getattr(item, "raw_text", "") or "").strip()
-            if attribute and raw and attribute not in surfaces:
-                surfaces[attribute] = raw
+            if not attribute or not raw or attribute in surfaces:
+                continue
+            # A dictionary hit on a conversational word is not a commitment the
+            # shopper made. "you" and "show" are registered as a brand and a
+            # use_case, so counting them would make almost any polite question
+            # look over-constrained. The repo's own query stopword list is the
+            # existing definition of a word that carries no product meaning.
+            if _is_conversational(raw):
+                continue
+            surfaces[attribute] = raw
         return tuple(
-            f"{field}:{surfaces[field]}" if field in surfaces else field
+            (f"{field}:{surfaces[field]}" if field in surfaces else field)
             for field in fields
+            if field in surfaces or field == "price"
         )
     except Exception:  # noqa: BLE001 - a generator check must not break a run
         return ()
@@ -132,6 +149,10 @@ utterance must name AT MOST {high} of these fields:
 Naming a product type does not count against that limit, so say what kind of
 product you are looking at ({', '.join(UNCOUNTED_FIELDS)}) and then stop.
 
+Concretely: do NOT name a brand or store, a price or budget, or a size. Use at
+most ONE soft attribute (a colour, a material, a style, an occasion) and only
+if the sentence still sounds undecided.
+
 Do NOT state a budget, a size, a brand and a colour in the same sentence: an
 utterance carrying {BUYING_TAG_THRESHOLD} or more of the counted fields is a
 BUYING utterance by definition, not a BROWSING one, no matter how casually it
@@ -156,8 +177,8 @@ exactly {intent}.
 
 {intent} means: {INTENT_GUIDANCE.get(intent, '')}
 
-Ground every utterance in this real catalog sample. Use its products,
-categories and brands; do not invent products outside this domain:
+Ground every utterance in this real catalog sample; do not invent products
+outside this domain:
 {json.dumps(summarize_products(list(catalog_sample)), indent=2, ensure_ascii=False)}
 {constraint_rule}
 
@@ -194,12 +215,25 @@ def _coerce_cases(payload: Any, intent: str) -> List[Dict[str, Any]]:
     return cases
 
 
-def band_violation(case: Dict[str, Any], intent: str) -> str:
+def band_violation(
+    case: Dict[str, Any],
+    intent: str,
+    *,
+    enforce_minimum: bool = True,
+) -> str:
     """Why this case does not match its intent's constraint band, or ''.
 
-    The prompt asks for the band; this enforces it. A BROWSING utterance that
+    The maximum is definitional and always enforced: a BROWSING utterance that
     fills two counted fields is BUYING under our own Phase 1 rule, so scoring
     the classifier against it would penalise the correct answer.
+
+    The minimum is not definitional -- it exists to make generated cases hard
+    -- and it measures our extractor's granularity rather than the utterance's.
+    "the wool jacket ... under $100" reads as one category plus a price because
+    "wool jacket" resolves to a single category value, so a perfectly rich
+    sentence scores 1. Callers building a ground-truth dataset pass
+    ``enforce_minimum=False`` so the corpus is not biased toward the phrasings
+    the current extractor happens to parse finely.
     """
 
     low, high = intent_constraint_band(intent)
@@ -209,7 +243,7 @@ def band_violation(case: Dict[str, Any], intent: str) -> str:
             f"{len(fields)} counted constraints {tuple(fields)} exceeds the "
             f"{intent} maximum of {high}"
         )
-    if len(fields) < low:
+    if enforce_minimum and len(fields) < low:
         return (
             f"{len(fields)} counted constraints is below the {intent} minimum "
             f"of {low}"
@@ -223,6 +257,7 @@ def generate_synthetic_intent_cases(
     count: int = 10,
     *,
     client: Any = None,
+    enforce_minimum: bool = True,
 ) -> List[Dict]:
     """Uses LLM to generate test cases containing (sentence, ground_truth_intent, context).
 
@@ -237,6 +272,7 @@ def generate_synthetic_intent_cases(
         client = build_client()
 
     kept: List[Dict[str, Any]] = []
+    over_band: List[Dict[str, Any]] = []
     seen: set[str] = set()
     rejected: List[str] = []
 
@@ -257,9 +293,10 @@ def generate_synthetic_intent_cases(
                 # never tests the opening utterance of a session for one.
                 rejected.append(f"{case['utterance']!r} -> no prior_context")
                 continue
-            problem = band_violation(case, intent)
+            problem = band_violation(case, intent, enforce_minimum=enforce_minimum)
             if problem:
                 rejected.append(f"{case['utterance']!r} -> {problem}")
+                over_band.append(case)
                 continue
             kept.append(case)
 
@@ -270,6 +307,22 @@ def generate_synthetic_intent_cases(
         )
         for item in rejected:
             print(f"  - {item}")
+
+    if not kept and over_band:
+        # Every candidate broke the band. Returning nothing would abort the run
+        # with no evidence, which is the least useful outcome: the least
+        # constrained candidates are kept, flagged, and left for the judge to
+        # adjudicate, so the report shows what the generator actually produced.
+        over_band.sort(key=lambda case: len(case.get("constraint_fields") or []))
+        kept = over_band[:count]
+        for case in kept:
+            case["band_warning"] = band_violation(
+                case, intent, enforce_minimum=enforce_minimum
+            )
+        print(
+            f"[{intent}] no case met the constraint band; keeping the "
+            f"{len(kept)} least constrained and flagging them"
+        )
     return kept[:count]
 
 

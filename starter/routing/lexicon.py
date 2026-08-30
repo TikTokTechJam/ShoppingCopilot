@@ -222,7 +222,8 @@ OVERRIDE_MARKER_PATTERNS: tuple[str, ...] = (
     r"\bnever mind\b",
     rf"change\s+the\s+(?P<attribute>{attributes_pattern})\s+from\s+(?P<old_val>[\w\s]+?)\s+to\s+(?P<new_val>[\w\s]+)",
     r"\bstop looking for\b",
-    r"\bi was wrong about\b"
+    r"\bi was wrong about\b",
+    r"\bcancel the search for\b"
 )
 
 OVERRIDE_MARKER = _compile(*OVERRIDE_MARKER_PATTERNS)

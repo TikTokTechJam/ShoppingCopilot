@@ -118,6 +118,8 @@ def _render_case(index: int, record: Dict[str, Any]) -> str:
     if record["prior_context"]:
         prior = record["prior_context"].replace("\n", " | ")
         lines.append(f"     prior    : {prior}")
+    if record.get("band_warning"):
+        lines.append(f"     WARNING  : {record['band_warning']}")
     if record["reasoning"]:
         lines.append(f"     judge    : {record['reasoning']}")
     return "\n".join(lines)
@@ -223,6 +225,7 @@ def _run_intent_suite(
                 "expected": intent,
                 "predicted": actual_intent,
                 "constraint_fields": case.get("constraint_fields", []),
+                "band_warning": case.get("band_warning", ""),
                 "judged": verdict.get("judged_intent"),
                 "reasoning": verdict.get("reasoning", ""),
                 "judge_available": verdict.get("judge_available", True),
