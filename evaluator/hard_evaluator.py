@@ -1398,6 +1398,12 @@ def main() -> None:
              "reweighting) -- the control arm for measuring the loop.",
     )
     parser.add_argument(
+        "--evo-full",
+        action="store_true",
+        help="Turn on the gated loop stages: implicit-negative decay, "
+             "RE-PLAN strategy control, and cross-session LEARN priors.",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Suppress the per-session progress bar on stderr.",
@@ -1456,6 +1462,7 @@ def main() -> None:
             args.catalog,
             disable_user_profile=args.disable_user_profile,
             disable_evolution=args.disable_evolution,
+            evolution_full=args.evo_full,
         )
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))

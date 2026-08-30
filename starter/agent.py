@@ -9,8 +9,14 @@ from starter.clarification import (
     ClarificationPolicy,
     NORMAL_CLARIFICATION_ATTRIBUTES,
 )
-from starter.evolution import PHASE_A_CONFIG, EvolutionLoop, constraint_pairs
-from starter.followup import fill_to_top_k
+from starter.evolution import (
+    PHASE_A_CONFIG,
+    CrossSessionStore,
+    EvolutionConfig,
+    EvolutionLoop,
+    constraint_pairs,
+)
+from starter.followup import MAX_TURNS, fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
 from starter.retrieval import ProductRetriever, is_critical_user, normalized_rating
 from starter.routing import constraints as constraint_module
@@ -40,6 +46,25 @@ def _user_prior_rating(profile: Mapping[str, Any] | None) -> float | None:
     except (TypeError, ValueError):
         return None
     return rating if rating == rating else None
+
+
+def _belief_lost_weight(
+    before: Mapping[str, Mapping[str, float]],
+    after: Mapping[str, Mapping[str, float]],
+) -> bool:
+    """Whether a still-present per-value factor dropped between two snapshots.
+
+    Used only to flag an implicit-negative decay event for telemetry. A value
+    that simply left the belief (correction / no longer a live constraint) is
+    not a decay.
+    """
+
+    for field_name, values in after.items():
+        prior = before.get(field_name, {})
+        for value, weight in values.items():
+            if weight < prior.get(value, 1.0) - 1e-9:
+                return True
+    return False
 
 
 def _scoping_could_change(
@@ -84,6 +109,7 @@ class Agent:
         query_encoder: object | None = None,
         use_user_profile: bool = True,
         enable_evolution: bool = True,
+        evolution_config: EvolutionConfig | None = None,
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
         retriever: ProductRetriever | None = None,
@@ -108,7 +134,17 @@ class Agent:
         self.use_user_profile = bool(use_user_profile)
         self._profile_affinity: dict[str, ProfileAffinity] = {}
         # Runtime feedback loop. None == the pre-loop code path (byte-identical).
-        self.evolution = EvolutionLoop(PHASE_A_CONFIG) if enable_evolution else None
+        self._evolution_config = evolution_config or PHASE_A_CONFIG
+        self.evolution = (
+            EvolutionLoop(self._evolution_config) if enable_evolution else None
+        )
+        # Cross-session learned priors (Stage 3). Survives reset(); a no-op
+        # unless the config enables it.
+        self._evo_store = (
+            CrossSessionStore(self._evolution_config) if enable_evolution else None
+        )
+        self._evo_last_state: object | None = None
+        self._evo_last_session: str | None = None
         # Cumulative across the whole run; never reset between sessions.
         self.last_diagnostics: dict[str, object] = {}
 
@@ -133,6 +169,10 @@ class Agent:
         return "BUYING" if intent == "BUYING" else "BROWSING"
 
     def reset(self, session_id: str, user_profile: Mapping[str, Any]) -> None:
+        # LEARN (Stage 3): a new session id means the previous one is over, so
+        # fold its surrogate signal into the cross-session priors before its
+        # state is discarded. A no-op unless the config enables it.
+        self._finalize_evolution_session(session_id)
         self.sessions.reset(session_id, user_profile)
         # preference_tags are fixed for a session, so the prior is built once
         # here and reuses the already-loaded Layer 2 encoder.
@@ -146,7 +186,37 @@ class Agent:
     def telemetry(self) -> dict[str, object]:
         """Snapshot of the run-level feedback-loop diagnostics."""
 
-        return dict(self.last_diagnostics)
+        diagnostics = dict(self.last_diagnostics)
+        if self._evo_store is not None:
+            priors = self._evo_store.snapshot()
+            if priors:
+                diagnostics["evolution.learned_priors"] = priors
+        return diagnostics
+
+    def evolution_priors(self) -> dict[str, float]:
+        """Current cross-session learned per-field starting factors."""
+
+        return self._evo_store.snapshot() if self._evo_store is not None else {}
+
+    def _finalize_evolution_session(self, next_session_id: str | None) -> int:
+        """Fold the just-finished session into the LEARN priors. Returns updates."""
+
+        store = getattr(self, "_evo_store", None)
+        last_state = getattr(self, "_evo_last_state", None)
+        if (
+            store is None
+            or last_state is None
+            or getattr(self, "_evo_last_session", None) == next_session_id
+        ):
+            return 0
+        state = last_state
+        updates = store.observe_session_end(
+            belief_weights=getattr(state, "belief_weights", {}) or {},
+            trace=getattr(state, "evolution_trace", ()) or (),
+        )
+        self._evo_last_state = None
+        self._evo_last_session = None
+        return updates
 
     def respond(
         self,
@@ -283,11 +353,16 @@ class Agent:
             _user_prior_rating(state.profile) if self.use_user_profile else None
         )
 
-        # OBSERVE (part 2) + DISTILL + ACT. `field_weights` stays None -- the
-        # byte-identical retrieval path -- until the belief has moved.
+        # OBSERVE (part 2) + DISTILL + RE-PLAN + ACT. `field_weights` and
+        # `score_weights` stay None -- the byte-identical retrieval path --
+        # until the belief has moved or a non-neutral strategy is chosen.
         field_weights = None
+        score_weights = None
         evolution_obs = None
+        evolution_strategy = "neutral"
+        evolution_decayed = False
         if self.evolution is not None:
+            cfg = self._evolution_config
             evolution_obs = self.evolution.observe(
                 turn=state.turn,
                 trace=state.evolution_trace,
@@ -301,17 +376,42 @@ class Agent:
                     else None
                 ),
             )
+            fact_lookup = (
+                self._evolution_fact_lookup
+                if cfg.enable_implicit_negative
+                else None
+            )
+            prior_factor = (
+                self._evo_store.prior_factor
+                if (self._evo_store is not None and cfg.enable_learn)
+                else None
+            )
+            before_belief = state.belief_weights
             new_belief = self.evolution.distill(
-                state.belief_weights,
+                before_belief,
                 evolution_obs,
                 constraints=state.constraints,
                 provenance=state.constraint_provenance,
                 replacements=replacements,
                 trace=state.evolution_trace,
+                fact_lookup=fact_lookup,
+                prior_factor=prior_factor,
+            )
+            evolution_decayed = fact_lookup is not None and _belief_lost_weight(
+                before_belief, new_belief
             )
             self.sessions.set_belief_weights(session_id, new_belief)
             field_weights = self.evolution.act_field_weights(
                 new_belief, state.constraints
+            )
+            constraint_fields = tuple(
+                f for f in CATEGORICAL_FIELDS if getattr(state.constraints, f, ())
+            )
+            field_weights, score_weights, evolution_strategy = self.evolution.plan(
+                evolution_obs,
+                state.evolution_trace,
+                constraint_fields,
+                field_weights,
             )
 
         candidates = self.retriever.retrieve(
@@ -324,6 +424,7 @@ class Agent:
             excluded_asins=state.excluded_recommendations,
             field_weights=field_weights,
             user_prior_rating=user_prior_rating,
+            score_weights=score_weights,
         )
 
         try:
@@ -362,11 +463,21 @@ class Agent:
                     trace=state.evolution_trace,
                 ),
             )
+            # LEARN (Stage 3): remember this session so reset() -- or the final
+            # turn below -- can fold its surrogate signal into the priors.
+            self._evo_last_state = state
+            self._evo_last_session = session_id
+            learn_updates = 0
+            if state.turn >= MAX_TURNS:
+                learn_updates = self._finalize_evolution_session(None)
             self.last_diagnostics = self.evolution.telemetry_snapshot(
                 self.last_diagnostics,
                 evolution_obs,
                 state,
-                reweighted=field_weights is not None,
+                reweighted=(field_weights is not None or score_weights is not None),
+                strategy=evolution_strategy,
+                decayed=evolution_decayed,
+                learn_updates=learn_updates,
             )
 
         affinity = self._profile_affinity.get(session_id)
@@ -412,6 +523,14 @@ class Agent:
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         }
+
+    def _evolution_fact_lookup(self, asin: str, field_name: str) -> tuple[str, ...]:
+        """Facts of a shown candidate, for the implicit-negative decay check."""
+
+        record = self.retriever.product_by_asin.get(asin)
+        if record is None:
+            return ()
+        return tuple(record.facts.get(field_name, ()))
 
     def _relaxed_backfill(
         self,

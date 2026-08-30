@@ -175,12 +175,19 @@ def _final_score(
     structured_score: float,
     dense_score: float,
     bm25_score: float = 0.0,
+    score_weights: tuple[float, float, float] | None = None,
 ) -> float:
-    weights = MODE_SCORE_WEIGHTS[mode]
+    if score_weights is None:
+        weights = MODE_SCORE_WEIGHTS[mode]
+        w_structured = weights["structured"]
+        w_dense = weights["dense"]
+        w_bm25 = weights.get("bm25", 0.0)
+    else:
+        w_structured, w_dense, w_bm25 = score_weights
     return float(
-        weights["structured"] * structured_score
-        + weights["dense"] * dense_score
-        + weights.get("bm25", 0.0) * bm25_score
+        w_structured * structured_score
+        + w_dense * dense_score
+        + w_bm25 * bm25_score
     )
 
 
@@ -847,13 +854,16 @@ class ProductRetriever:
         matched_semantic_constraints: tuple[str, ...] = (),
         bm25_score: float = 0.0,
         w_rating: float = 0.0,
+        score_weights: tuple[float, float, float] | None = None,
     ) -> Candidate:
         violated = tuple(
             f"{field_name}:required"
             for field_name in constraint_fields
             if field_name not in matched_fields
         )
-        score = _final_score(mode, structured_score, dense_score, bm25_score)
+        score = _final_score(
+            mode, structured_score, dense_score, bm25_score, score_weights
+        )
         rating = self.rating_lookup.get(asin)
         return Candidate(
             parent_asin=asin,
@@ -885,6 +895,7 @@ class ProductRetriever:
         apply_budget: bool = True,
         field_weights: Mapping[str, float] | None = None,
         user_prior_rating: float | None = None,
+        score_weights: tuple[float, float, float] | None = None,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
@@ -1048,6 +1059,7 @@ class ProductRetriever:
                     structured_score(asin),
                     dense_scores.get(asin, 0.0),
                     bm25_scores.get(asin, 0.0),
+                    score_weights,
                 )
                 for asin in eligible_asins
             }
@@ -1064,6 +1076,7 @@ class ProductRetriever:
                 semantic_labels.get(asin, ()),
                 bm25_scores.get(asin, 0.0),
                 w_rating=w_rating,
+                score_weights=score_weights,
             )
             for asin in ranked_asins
         ]
@@ -1079,6 +1092,7 @@ class ProductRetriever:
         apply_budget: bool = True,
         field_weights: Mapping[str, float] | None = None,
         user_prior_rating: float | None = None,
+        score_weights: tuple[float, float, float] | None = None,
     ) -> list[Candidate]:
         """Return the complete ranking using the production scorer."""
 
@@ -1092,6 +1106,7 @@ class ProductRetriever:
             apply_budget=apply_budget,
             field_weights=field_weights,
             user_prior_rating=user_prior_rating,
+            score_weights=score_weights,
         )
 
 

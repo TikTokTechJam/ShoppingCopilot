@@ -345,12 +345,19 @@ def main() -> None:
         help="Run the pre-feedback-loop code path (no runtime belief "
              "reweighting) -- the control arm for measuring the loop.",
     )
+    parser.add_argument(
+        "--evo-full",
+        action="store_true",
+        help="Turn on the gated loop stages (decay, RE-PLAN, LEARN).",
+    )
     args = parser.parse_args()
     samples = load_jsonl(args.dataset)
     catalog_ids, categories, products = catalog_index(args.catalog)
     try:
         agent = build_evaluator_agent(
-            args.catalog, disable_evolution=args.disable_evolution
+            args.catalog,
+            disable_evolution=args.disable_evolution,
+            evolution_full=args.evo_full,
         )
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))

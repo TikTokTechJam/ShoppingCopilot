@@ -10,13 +10,17 @@ from unittest.mock import patch
 
 from starter.agent import Agent
 from starter.evolution import (
+    FULL_CONFIG,
+    CrossSessionStore,
     EvolutionConfig,
     EvolutionLoop,
+    Strategy,
+    StrategyController,
     TurnObservation,
     distill,
     field_factors,
 )
-from starter.retrieval import STRUCTURED_FIELD_WEIGHTS
+from starter.retrieval import STRUCTURED_FIELD_WEIGHTS, _final_score
 from starter.routing.constraints import ShoppingConstraints
 from starter.session import SessionManager
 
@@ -485,6 +489,304 @@ class RetrieveFieldWeightsTests(unittest.TestCase):
             top5 = retriever.retrieve("BUYING", "q", constraints, limit=5)
             self.assertEqual([c.parent_asin for c in full[:5]],
                              [c.parent_asin for c in top5])
+
+    def test_score_weights_none_matches_mode_table(self) -> None:
+        for mode in ("BUYING", "BROWSING"):
+            default = _final_score(mode, 2.0, 0.5, 1.0)
+            explicit = _final_score(mode, 2.0, 0.5, 1.0, None)
+            self.assertEqual(default, explicit)
+
+    def test_score_weights_override_changes_the_blend(self) -> None:
+        base = _final_score("BUYING", 1.0, 1.0, 1.0)
+        heavy_dense = _final_score("BUYING", 1.0, 1.0, 1.0, (1.0, 3.0, 0.0))
+        self.assertAlmostEqual(heavy_dense, 1.0 * 1.0 + 3.0 * 1.0 + 0.0 * 1.0)
+        self.assertNotEqual(base, heavy_dense)
+
+
+# --------------------------------------------------------------------------- #
+# Stage 1 — implicit-negative decay
+# --------------------------------------------------------------------------- #
+
+_DECAY_CONFIG = EvolutionConfig(enable_implicit_negative=True)
+
+
+class ImplicitNegativeDecayTests(unittest.TestCase):
+    def _trace(self, *, made_progress: bool, shown: tuple[str, ...]) -> list[dict]:
+        return [{"turn": 2, "pool_size": 40, "shown": shown,
+                 "reinforced": [], "new_pairs": [], "made_progress": made_progress,
+                 "churn": 1.0, "pool_delta": 0}]
+
+    def test_decays_value_common_to_every_shown_and_missed_candidate(self) -> None:
+        constraints = ShoppingConstraints(feature=("waterproof",))
+        obs = _obs(turn=3, called_again=True)
+        facts = {("A", "feature"): ("waterproof",), ("B", "feature"): ("waterproof",)}
+        out = distill(
+            {}, obs, constraints=constraints,
+            trace=self._trace(made_progress=False, shown=("A", "B")),
+            fact_lookup=lambda a, f: facts.get((a, f), ()),
+            config=_DECAY_CONFIG,
+        )
+        # 1.0 - neg_decay - oneoff_extra_penalty = 0.82
+        self.assertAlmostEqual(out["feature"]["waterproof"], 0.82)
+
+    def test_no_decay_when_value_discriminates(self) -> None:
+        constraints = ShoppingConstraints(feature=("waterproof",))
+        obs = _obs(turn=3, called_again=True)
+        facts = {("A", "feature"): ("waterproof",), ("B", "feature"): ()}
+        out = distill(
+            {}, obs, constraints=constraints,
+            trace=self._trace(made_progress=False, shown=("A", "B")),
+            fact_lookup=lambda a, f: facts.get((a, f), ()),
+            config=_DECAY_CONFIG,
+        )
+        self.assertEqual(out, {})
+
+    def test_no_decay_before_min_turn(self) -> None:
+        constraints = ShoppingConstraints(feature=("waterproof",))
+        obs = _obs(turn=2, called_again=True)
+        facts = {("A", "feature"): ("waterproof",)}
+        out = distill(
+            {}, obs, constraints=constraints,
+            trace=self._trace(made_progress=False, shown=("A",)),
+            fact_lookup=lambda a, f: facts.get((a, f), ()),
+            config=_DECAY_CONFIG,
+        )
+        self.assertEqual(out, {})
+
+    def test_gated_off_by_default(self) -> None:
+        constraints = ShoppingConstraints(feature=("waterproof",))
+        obs = _obs(turn=3, called_again=True)
+        facts = {("A", "feature"): ("waterproof",)}
+        out = distill(
+            {}, obs, constraints=constraints,
+            trace=self._trace(made_progress=False, shown=("A",)),
+            fact_lookup=lambda a, f: facts.get((a, f), ()),
+            config=CONFIG,  # enable_implicit_negative = False
+        )
+        self.assertEqual(out, {})
+
+    def test_no_decay_when_last_turn_made_progress(self) -> None:
+        constraints = ShoppingConstraints(feature=("waterproof",))
+        obs = _obs(turn=3, called_again=True)
+        facts = {("A", "feature"): ("waterproof",)}
+        out = distill(
+            {}, obs, constraints=constraints,
+            trace=self._trace(made_progress=True, shown=("A",)),
+            fact_lookup=lambda a, f: facts.get((a, f), ()),
+            config=_DECAY_CONFIG,
+        )
+        self.assertEqual(out, {})
+
+
+# --------------------------------------------------------------------------- #
+# Stage 2 — StrategyController
+# --------------------------------------------------------------------------- #
+
+_REPLAN_CONFIG = EvolutionConfig(enable_replan=True)
+
+
+class StrategyControllerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ctrl = StrategyController(_REPLAN_CONFIG)
+        self.off = StrategyController(CONFIG)
+
+    def test_disabled_always_neutral(self) -> None:
+        obs = _obs(turn=5, new_pairs=(("color", "black"),))
+        self.assertIs(self.off.choose(obs, [], ("color",)), Strategy.NEUTRAL)
+
+    def test_turn_one_or_no_constraints_is_recall_broad(self) -> None:
+        self.assertIs(
+            self.ctrl.choose(_obs(turn=1), [], ()), Strategy.RECALL_BROAD
+        )
+        self.assertIs(
+            self.ctrl.choose(_obs(turn=4), [], ()), Strategy.RECALL_BROAD
+        )
+
+    def test_stuck_is_diversify(self) -> None:
+        trace = [{"turn": 4, "pool_size": 50, "made_progress": False,
+                  "churn": 0.0, "pool_delta": 0}]
+        obs = _obs(turn=5, called_again=True)
+        self.assertIs(
+            self.ctrl.choose(obs, trace, ("color",)), Strategy.DIVERSIFY
+        )
+
+    def test_small_pool_is_relax_weakest(self) -> None:
+        trace = [{"turn": 4, "pool_size": 5, "made_progress": True,
+                  "churn": 1.0, "pool_delta": -3}]
+        obs = _obs(turn=5, called_again=True)
+        self.assertIs(
+            self.ctrl.choose(obs, trace, ("color",)), Strategy.RELAX_WEAKEST
+        )
+
+    def test_new_constraint_plus_contraction_is_exploit_narrow(self) -> None:
+        trace = [{"turn": 4, "pool_size": 60, "made_progress": True,
+                  "churn": 1.0, "pool_delta": -20}]
+        obs = _obs(turn=5, called_again=True, new_pairs=(("color", "black"),))
+        self.assertIs(
+            self.ctrl.choose(obs, trace, ("color",)), Strategy.EXPLOIT_NARROW
+        )
+
+    def test_apply_relax_weakest_softens_the_lowest_weight_field(self) -> None:
+        adjusted, score_weights = self.ctrl.apply(
+            Strategy.RELAX_WEAKEST, None, ("brand", "feature")
+        )
+        self.assertIsNone(score_weights)
+        # feature (0.5) is weaker than brand (>=3.0)
+        self.assertAlmostEqual(
+            adjusted["feature"],
+            STRUCTURED_FIELD_WEIGHTS["feature"] * _REPLAN_CONFIG.relax_scale,
+        )
+        self.assertEqual(adjusted["brand"], STRUCTURED_FIELD_WEIGHTS["brand"])
+
+    def test_apply_exploit_narrow_returns_structured_heavy_score_weights(self) -> None:
+        _adjusted, score_weights = self.ctrl.apply(
+            Strategy.EXPLOIT_NARROW, None, ("color",)
+        )
+        self.assertEqual(
+            score_weights,
+            (1.0, _REPLAN_CONFIG.exploit_dense_weight,
+             _REPLAN_CONFIG.exploit_bm25_weight),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Stage 3 — CrossSessionStore
+# --------------------------------------------------------------------------- #
+
+_LEARN_CONFIG = EvolutionConfig(enable_learn=True)
+
+
+class CrossSessionStoreTests(unittest.TestCase):
+    def test_disabled_prior_is_one(self) -> None:
+        store = CrossSessionStore(CONFIG)
+        store.observe_session_end(
+            belief_weights={"feature": {"waterproof": 1.24}},
+            trace=[{"turn": 1, "reinforced": ["feature:waterproof"],
+                    "new_pairs": [], "made_progress": True, "pool_delta": -5}],
+        )
+        self.assertEqual(store.prior_factor("feature"), 1.0)
+
+    def test_progress_after_reinforcement_nudges_prior_up(self) -> None:
+        store = CrossSessionStore(_LEARN_CONFIG)
+        trace = [
+            {"turn": 1, "reinforced": [], "new_pairs": ["feature:waterproof"],
+             "made_progress": True, "pool_delta": 0},
+            {"turn": 2, "reinforced": ["feature:waterproof"], "new_pairs": [],
+             "made_progress": True, "pool_delta": -8},
+            {"turn": 3, "reinforced": [], "new_pairs": [],
+             "made_progress": True, "pool_delta": -4},
+        ]
+        touched = store.observe_session_end(
+            belief_weights={"feature": {"waterproof": 1.24}}, trace=trace
+        )
+        self.assertEqual(touched, 1)
+        self.assertGreater(store.prior_factor("feature"), 1.0)
+        self.assertLessEqual(
+            store.prior_factor("feature"), _LEARN_CONFIG.learn_prior_ceiling
+        )
+
+    def test_never_reinforced_field_decays_toward_one(self) -> None:
+        from starter.evolution.store import _FieldPrior
+
+        store = CrossSessionStore(_LEARN_CONFIG)
+        store._priors["color"] = _FieldPrior(mean=1.14)  # a prior above neutral
+        store.observe_session_end(
+            belief_weights={},
+            trace=[{"turn": 1, "reinforced": [], "new_pairs": ["color:black"],
+                    "made_progress": False, "pool_delta": 0}],
+        )
+        self.assertLess(store.prior_factor("color"), 1.14)
+
+
+# --------------------------------------------------------------------------- #
+# FULL_CONFIG integration
+# --------------------------------------------------------------------------- #
+
+
+class FullLoopIntegrationTests(unittest.TestCase):
+    def test_full_config_keeps_the_response_contract(self) -> None:
+        allowed = {
+            "category", "material", "color", "size", "style", "brand",
+            "budget", "feature", "use_case", "other", None,
+        }
+        delta = ShoppingConstraints(category=("jacket",), feature=("waterproof",))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, facts = _build_fixture(root)
+            agent = Agent(
+                catalog, facts_path=facts,
+                embeddings_path=root / "m.npy", metadata_path=root / "m.json",
+                router=_FixedRouter(), enable_evolution=True,
+                evolution_config=FULL_CONFIG,
+            )
+            for session in ("s1", "s2"):
+                agent.reset(session, {})
+                with patch(
+                    "starter.agent.constraint_module.extract_constraints",
+                    return_value=delta,
+                ):
+                    for turn in range(1, 11):
+                        r = agent.respond(session, "waterproof jacket", turn, 10)
+                        self.assertEqual(
+                            set(r),
+                            {"message", "ask_attribute", "recommendations", "usage"},
+                        )
+                        self.assertEqual(
+                            r["usage"],
+                            {"prompt_tokens": 0, "completion_tokens": 0},
+                        )
+                        self.assertIn(r["ask_attribute"], allowed)
+                        self.assertLessEqual(len(r["recommendations"]), 10)
+
+    def test_full_config_is_deterministic(self) -> None:
+        delta = ShoppingConstraints(category=("jacket",), feature=("waterproof",))
+
+        def run(root: Path) -> list[list[str]]:
+            catalog, facts = _build_fixture(root)
+            agent = Agent(
+                catalog, facts_path=facts,
+                embeddings_path=root / "m.npy", metadata_path=root / "m.json",
+                router=_FixedRouter(), enable_evolution=True,
+                evolution_config=FULL_CONFIG,
+            )
+            out = []
+            agent.reset("s", {})
+            with patch(
+                "starter.agent.constraint_module.extract_constraints",
+                return_value=delta,
+            ):
+                for turn in range(1, 6):
+                    r = agent.respond("s", "waterproof jacket", turn, 10)
+                    out.append([x["parent_asin"] for x in r["recommendations"]])
+            return out
+
+        with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
+            self.assertEqual(run(Path(d1)), run(Path(d2)))
+
+    def test_learn_priors_survive_reset_and_appear_in_telemetry(self) -> None:
+        delta = ShoppingConstraints(category=("jacket",), feature=("waterproof",))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog, facts = _build_fixture(root)
+            agent = Agent(
+                catalog, facts_path=facts,
+                embeddings_path=root / "m.npy", metadata_path=root / "m.json",
+                router=_FixedRouter(), enable_evolution=True,
+                evolution_config=FULL_CONFIG,
+            )
+            for session in ("s1", "s2", "s3"):
+                agent.reset(session, {})
+                with patch(
+                    "starter.agent.constraint_module.extract_constraints",
+                    return_value=delta,
+                ):
+                    for turn in range(1, 11):
+                        agent.respond(session, "waterproof jacket", turn, 10)
+            # priors accumulated across sessions and are exposed
+            self.assertIsInstance(agent.evolution_priors(), dict)
+            self.assertGreaterEqual(
+                int(agent.telemetry().get("evolution.learn_sessions", 0)), 1
+            )
 
 
 if __name__ == "__main__":

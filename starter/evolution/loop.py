@@ -1,27 +1,37 @@
 """The feedback loop coordinator.
 
-``EvolutionLoop`` is stateless apart from its config: it owns no session state,
-it only turns Agent-visible inputs into a belief-weight sidecar, a per-call
-retrieval weight vector, a per-turn trace record, and a telemetry snapshot.
-``SessionManager`` performs every mutation.
+``EvolutionLoop`` is stateless apart from its config: it turns Agent-visible
+inputs into a belief-weight sidecar, a per-call retrieval weight vector, an
+optional score-weight override, a per-turn trace record, and a telemetry
+snapshot. ``SessionManager`` performs every session-state mutation; the
+cross-session ``CrossSessionStore`` lives on the Agent.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from starter.evolution.config import EvolutionConfig
-from starter.evolution.distiller import distill, field_factors
+from starter.evolution.distiller import (
+    FactLookup,
+    PriorFactor,
+    distill,
+    field_factors,
+)
 from starter.evolution.observe import TurnObservation, observe
+from starter.evolution.planner import ScoreWeights, Strategy, StrategyController
 from starter.retrieval import STRUCTURED_FIELD_WEIGHTS
 
 
 class EvolutionLoop:
-    """OBSERVE -> DISTILL -> ACT, plus a finalize/telemetry pass after retrieval."""
+    """OBSERVE -> DISTILL -> (RE-PLAN) -> ACT, plus a finalize/telemetry pass."""
 
     def __init__(self, config: EvolutionConfig) -> None:
         self.config = config
+        self.planner = StrategyController(config)
+
+    # -- OBSERVE ----------------------------------------------------------
 
     def observe(
         self,
@@ -44,6 +54,8 @@ class EvolutionLoop:
             override_kind=override_kind,
         )
 
+    # -- DISTILL --------------------------------------------------------
+
     def distill(
         self,
         belief: Mapping[str, Mapping[str, float]],
@@ -53,6 +65,8 @@ class EvolutionLoop:
         provenance: Mapping[str, Mapping[str, str]] | None = None,
         replacements: object = (),
         trace: list | None = None,
+        fact_lookup: FactLookup | None = None,
+        prior_factor: PriorFactor | None = None,
     ) -> dict[str, dict[str, float]]:
         return distill(
             belief,
@@ -61,8 +75,12 @@ class EvolutionLoop:
             provenance=provenance,
             replacements=replacements,
             trace=trace,
+            fact_lookup=fact_lookup,
+            prior_factor=prior_factor,
             config=self.config,
         )
+
+    # -- ACT ----------------------------------------------------------
 
     def act_field_weights(
         self,
@@ -78,6 +96,31 @@ class EvolutionLoop:
             field_name: weight * factors.get(field_name, 1.0)
             for field_name, weight in STRUCTURED_FIELD_WEIGHTS.items()
         }
+
+    # -- RE-PLAN ------------------------------------------------------
+
+    def plan(
+        self,
+        obs: TurnObservation,
+        trace: Sequence[Mapping[str, Any]],
+        constraint_fields: Sequence[str],
+        field_weights: Mapping[str, float] | None,
+    ) -> tuple[dict[str, float] | None, ScoreWeights | None, str]:
+        """Return (field_weights, score_weights, strategy_name).
+
+        With ``enable_replan`` off this is a pass-through: the strategy is
+        NEUTRAL and both overrides come back unchanged.
+        """
+
+        strategy = self.planner.choose(obs, trace, constraint_fields)
+        adjusted, score_weights = self.planner.apply(
+            strategy, field_weights, constraint_fields
+        )
+        if strategy is Strategy.NEUTRAL and field_weights is None:
+            adjusted = None
+        return adjusted, score_weights, strategy.value
+
+    # -- finalize + telemetry ---------------------------------------
 
     def finalize_turn(
         self,
@@ -124,6 +167,9 @@ class EvolutionLoop:
         state: Any,
         *,
         reweighted: bool,
+        strategy: str = "neutral",
+        decayed: bool = False,
+        learn_updates: int = 0,
     ) -> dict[str, Any]:
         """Update the cumulative run-level diagnostics dict."""
 
@@ -143,6 +189,14 @@ class EvolutionLoop:
             bump("evolution.retrieval_reweight_turns")
         if obs.reinforced_pairs:
             bump("evolution.reinforce_events", len(obs.reinforced_pairs))
+        if decayed:
+            bump("evolution.implicit_negative_turns")
+        if strategy != "neutral":
+            bump(f"evolution.strategy_{strategy}_turns")
+            bump("evolution.replan_turns")
+        if learn_updates:
+            bump("evolution.learn_updates", int(learn_updates))
+            bump("evolution.learn_sessions")
         diagnostics["evolution.belief_values_tracked"] = int(
             sum(len(values) for values in state.belief_weights.values())
         )

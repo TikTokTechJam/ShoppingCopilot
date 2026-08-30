@@ -177,6 +177,7 @@ def main() -> None:
     )
     parser.add_argument("--disable-user-profile", action="store_true")
     parser.add_argument("--disable-evolution", action="store_true")
+    parser.add_argument("--evo-full", action="store_true")
     args = parser.parse_args()
 
     from evaluator.agent_factory import build_evaluator_agent
@@ -187,6 +188,7 @@ def main() -> None:
         args.catalog,
         disable_user_profile=args.disable_user_profile,
         disable_evolution=args.disable_evolution,
+        evolution_full=args.evo_full,
     )
     result = run(
         agent, samples, catalog_ids, categories, products,

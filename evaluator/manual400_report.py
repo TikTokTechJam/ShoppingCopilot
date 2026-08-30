@@ -364,7 +364,9 @@ def run(args: argparse.Namespace) -> Path:
 
     startup = time.perf_counter()
     agent = build_evaluator_agent(
-        catalog_path, disable_evolution=getattr(args, "disable_evolution", False)
+        catalog_path,
+        disable_evolution=getattr(args, "disable_evolution", False),
+        evolution_full=getattr(args, "evo_full", False),
     )
     startup_ms = (time.perf_counter() - startup) * 1000.0
     catalog_ids = hard_evaluator.load_catalog_ids(catalog_path)
@@ -453,6 +455,11 @@ def main() -> None:
         "--disable-evolution",
         action="store_true",
         help="Run the pre-feedback-loop code path (no runtime belief reweighting).",
+    )
+    parser.add_argument(
+        "--evo-full",
+        action="store_true",
+        help="Turn on the gated loop stages (decay, RE-PLAN, LEARN).",
     )
     args = parser.parse_args()
     if not RUN_NAME.fullmatch(args.run_name):

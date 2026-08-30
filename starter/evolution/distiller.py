@@ -1,9 +1,17 @@
-"""DISTILL: turn observations into per-value belief weights (reinforcement only).
+"""DISTILL: turn observations into per-value belief weights.
 
 The belief is ``dict[field][value] -> factor`` with an absent key meaning 1.0.
-Phase A only ever *raises* a factor, for a value the shopper has restated (or
-re-added after a correction), and clamps it to ``[w_min, w_max]``. The deferred
-implicit-negative decay is a separate branch, gated off by config.
+
+* **reinforcement** (always on): a value the shopper restated -- or re-added
+  after a correction -- gains ``+reinforce_bump``, clamped to ``[w_min, w_max]``.
+* **implicit-negative decay** (``enable_implicit_negative``): after a turn that
+  was called again and made no progress, a value present in *every*
+  already-shown-and-missed candidate is non-discriminating, so it loses
+  ``neg_decay`` (plus a penalty if it was a never-reinforced one-off). Guarded
+  by ``turn >= implicit_negative_min_turn`` so it cannot fire before an intent
+  override.
+* **learned prior** (``enable_learn``): a value's first appearance is seeded at
+  its field's cross-session prior instead of 1.0.
 
 Every function is pure: inputs are never mutated, a fresh nested dict is
 returned.
@@ -11,11 +19,14 @@ returned.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from starter.evolution.config import EvolutionConfig
 from starter.evolution.observe import TurnObservation, constraint_pairs
 from starter.retrieval import STRUCTURED_FIELD_WEIGHTS
+
+FactLookup = Callable[[str, str], Iterable[str]]
+PriorFactor = Callable[[str], float]
 
 
 def _reweightable(field_name: str) -> bool:
@@ -32,6 +43,10 @@ def _prior_mentions(trace: list, key: str) -> int:
     )
 
 
+def _clamp(value: float, config: EvolutionConfig) -> float:
+    return min(config.w_max, max(config.w_min, value))
+
+
 def distill(
     belief: Mapping[str, Mapping[str, float]],
     obs: TurnObservation,
@@ -40,11 +55,13 @@ def distill(
     provenance: Mapping[str, Mapping[str, str]] | None = None,
     replacements: object = (),
     trace: list | None = None,
+    fact_lookup: FactLookup | None = None,
+    prior_factor: PriorFactor | None = None,
     config: EvolutionConfig,
 ) -> dict[str, dict[str, float]]:
     """Return the next belief-weight sidecar for this turn."""
 
-    del provenance  # reserved for the deferred implicit-negative branch
+    del provenance  # available for future rules; unused today
     trace = trace or []
     new: dict[str, dict[str, float]] = {
         field_name: dict(values) for field_name, values in belief.items()
@@ -55,16 +72,30 @@ def distill(
     for field_name in set(replacements):
         new.pop(field_name, None)
 
+    new_set = set(obs.new_pairs)
+    reinforced_set = set(obs.reinforced_pairs)
+    live = constraint_pairs(constraints)
+    live_by_field: dict[str, set[str]] = {}
+    for field_name, value in live:
+        live_by_field.setdefault(field_name, set()).add(value)
+
     # A preference override reseeds its new values at neutral: direct evidence
     # outranks a carried-over factor.
-    new_set = set(obs.new_pairs)
     if obs.override_kind == "PREFERENCE":
         for field_name, value in new_set:
             if field_name in new:
                 new[field_name].pop(value, None)
 
-    reinforced_set = set(obs.reinforced_pairs)
-    live = constraint_pairs(constraints)
+    # (0) learned prior: seed a value's first appearance at its field prior.
+    if prior_factor is not None:
+        for field_name, value in sorted(new_set):
+            if not _reweightable(field_name):
+                continue
+            if value in new.get(field_name, {}):
+                continue
+            seeded = _clamp(float(prior_factor(field_name)), config)
+            if abs(seeded - 1.0) > 1e-9:
+                new.setdefault(field_name, {})[value] = seeded
 
     # (b) reinforcement: +bump, once per turn per value.
     for field_name, value in sorted(live):
@@ -77,18 +108,44 @@ def distill(
         if not reinforced_now:
             continue
         weight = new.get(field_name, {}).get(value, 1.0) + config.reinforce_bump
-        weight = min(config.w_max, max(config.w_min, weight))
-        new.setdefault(field_name, {})[value] = weight
+        new.setdefault(field_name, {})[value] = _clamp(weight, config)
 
-    # (c) clamp + prune: keep only live pairs whose factor is off unity, so the
+    # (c) implicit-negative decay: a value common to every shown-and-missed
+    # candidate carries no discriminating power.
+    if (
+        config.enable_implicit_negative
+        and fact_lookup is not None
+        and obs.called_again
+        and obs.turn >= config.implicit_negative_min_turn
+        and trace
+        and trace[-1].get("made_progress") is False
+    ):
+        shown = tuple(trace[-1].get("shown", ()))
+        if shown:
+            for field_name, value in sorted(live):
+                if not _reweightable(field_name):
+                    continue
+                present = sum(
+                    1 for asin in shown if value in set(fact_lookup(asin, field_name))
+                )
+                if present / len(shown) < config.neg_common_frac:
+                    continue
+                key = f"{field_name}:{value}"
+                never_reinforced = (
+                    (field_name, value) not in reinforced_set
+                    and _prior_mentions(trace, key) == 0
+                )
+                weight = new.get(field_name, {}).get(value, 1.0) - config.neg_decay
+                if never_reinforced:
+                    weight -= config.oneoff_extra_penalty
+                new.setdefault(field_name, {})[value] = _clamp(weight, config)
+
+    # (d) clamp + prune: keep only live pairs whose factor is off unity, so the
     # sidecar stays a sparse strict subset of the active constraints.
-    live_by_field: dict[str, set[str]] = {}
-    for field_name, value in live:
-        live_by_field.setdefault(field_name, set()).add(value)
     pruned: dict[str, dict[str, float]] = {}
     for field_name, values in new.items():
         kept = {
-            value: min(config.w_max, max(config.w_min, weight))
+            value: _clamp(weight, config)
             for value, weight in values.items()
             if value in live_by_field.get(field_name, set())
             and abs(weight - 1.0) > 1e-9
@@ -116,7 +173,7 @@ def field_factors(
             continue
         field_belief = belief.get(field_name, {})
         mean = sum(field_belief.get(value, 1.0) for value in values) / len(values)
-        factors[field_name] = min(config.w_max, max(config.w_min, mean))
+        factors[field_name] = _clamp(mean, config)
     return factors
 
 
@@ -127,4 +184,4 @@ def _active_values(constraints: object) -> list[tuple[str, list[str]]]:
     return list(grouped.items())
 
 
-__all__ = ["distill", "field_factors"]
+__all__ = ["distill", "field_factors", "FactLookup", "PriorFactor"]
