@@ -141,6 +141,11 @@ class DebugWebTests(unittest.TestCase):
         self.assertEqual(pool.by_id("manual400_0003")["sample_id"], "manual400_0003")
         self.assertIsNone(pool.by_id("missing"))
 
+    def test_local_session_id_alias_loads_public_session(self) -> None:
+        pool = SessionPool([make_session("public_0001")], seed=3)
+        self.assertEqual(pool.by_id("public:public_0001")["sample_id"], "public_0001")
+        self.assertEqual(pool.by_id(" PUBLIC:PUBLIC_0001 ")["sample_id"], "public_0001")
+
     def test_next_unseen_finishes_without_restarting_the_pool(self) -> None:
         pool = SessionPool(self.sessions, seed=3)
         seen = [pool.next_unseen()["sample_id"] for _ in self.sessions]

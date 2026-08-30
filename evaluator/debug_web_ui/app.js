@@ -223,6 +223,49 @@ function renderConversation(data) {
 }
 
 let interactivePoll = null;
+let lastData = null;
+let pendingAction = null;
+
+const actionLabels = {
+  random: "New Random Session",
+  "find-miss": "Find Next Miss",
+  load: "Load",
+  next: "Next Turn",
+  "run-end": "Run To End",
+};
+
+function syncActionButtons() {
+  const data = lastData || {};
+  const active = !data.interactive_mode && Boolean(data.session) && !data.done;
+  const busy = pendingAction !== null;
+  $("next").disabled = busy || !active;
+  $("run-end").disabled = busy || !active;
+  $("random").disabled = busy || Boolean(data.interactive_mode);
+  $("find-miss").disabled = busy || Boolean(data.interactive_mode);
+  $("load").disabled = busy || Boolean(data.interactive_mode);
+}
+
+function setActionBusy(action, message) {
+  pendingAction = action;
+  Object.keys(actionLabels).forEach((id) => {
+    const button = $(id);
+    button.disabled = true;
+    button.setAttribute("aria-busy", id === action ? "true" : "false");
+    if (id === action) button.textContent = message;
+  });
+  $("action-status").textContent = message;
+}
+
+function clearActionBusy() {
+  pendingAction = null;
+  Object.entries(actionLabels).forEach(([id, label]) => {
+    const button = $(id);
+    button.textContent = label;
+    button.removeAttribute("aria-busy");
+  });
+  $("action-status").textContent = "";
+  syncActionButtons();
+}
 
 function updateInteractivePolling(data) {
   if (data.interactive_mode && interactivePoll === null) {
@@ -234,6 +277,7 @@ function updateInteractivePolling(data) {
 }
 
 function render(data) {
+  lastData = data;
   const evaluator = data.evaluator || "hard";
   $("eyebrow").textContent = evaluator === "local"
     ? "LOCAL EVALUATOR TOOL"
@@ -246,32 +290,37 @@ function render(data) {
       ? "One real Agent turn at a time — replies entered in the console."
       : "One real Agent turn at a time — Manual400 benchmark mode.";
   renderBanner(data); renderMissSearch(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
-  const active = !data.interactive_mode && Boolean(data.session) && !data.done;
-  $("next").disabled = !active;
-  $("run-end").disabled = !active;
-  $("random").disabled = Boolean(data.interactive_mode);
-  $("find-miss").disabled = Boolean(data.interactive_mode);
-  $("load").disabled = Boolean(data.interactive_mode);
+  syncActionButtons();
   updateInteractivePolling(data);
 }
 
-async function loadState(request) {
+async function loadState(request, action = null, message = "Working…") {
+  if (pendingAction !== null) return;
   clearError();
+  if (action) setActionBusy(action, message);
   try { render(await request()); } catch (error) { showError(error.message); }
+  finally { if (action) clearActionBusy(); }
 }
 
-$("random").onclick = () => loadState(() => api("/api/session/random", "POST", {scenario: $("scenario").value}));
-$("find-miss").onclick = () => loadState(() => api("/api/session/find-next-miss", "POST", {scenario: $("scenario").value}));
-$("load").onclick = () => loadState(() => api("/api/session/load", "POST", {session_id: $("session-id").value}));
-$("next").onclick = () => loadState(() => api("/api/session/next", "POST"));
-$("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"));
+$("random").onclick = () => loadState(() => api("/api/session/random", "POST", {scenario: $("scenario").value}), "random", "Loading session…");
+$("find-miss").onclick = () => loadState(() => api("/api/session/find-next-miss", "POST", {scenario: $("scenario").value}), "find-miss", "Searching for a miss…");
+$("load").onclick = () => {
+  const sessionId = $("session-id").value.trim();
+  if (!sessionId) {
+    showError("Enter a session ID before selecting Load.");
+    return;
+  }
+  loadState(() => api("/api/session/load", "POST", {session_id: sessionId}), "load", "Loading session…");
+};
+$("next").onclick = () => loadState(() => api("/api/session/next", "POST"), "next", "Running turn…");
+$("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"), "run-end", "Running session…");
 
 async function initialLoad() {
   try {
     const data = await api("/api/state");
     render(data);
     if (!data.interactive_mode && !data.session) {
-      await loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}));
+      await loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}), "random", "Loading session…");
     }
   } catch (error) {
     showError(error.message);
