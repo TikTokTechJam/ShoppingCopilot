@@ -13,7 +13,12 @@ from starter.followup import fill_to_top_k
 from starter.profile_affinity import ProfileAffinity
 from starter.retrieval import ProductRetriever, is_critical_user, normalized_rating
 from starter.routing import constraints as constraint_module
-from starter.routing.constraints import CATEGORICAL_FIELDS, ShoppingConstraints
+from starter.routing.constraints import (
+    CATEGORICAL_FIELDS,
+    CanonicalShoppingConstraints,
+    SemanticShoppingConstraints,
+    ShoppingConstraints,
+)
 from starter.routing.intent_router import LexicalIntentRouter, TwoPhaseIntentRouter
 from starter.session import (
     OverrideKind,
@@ -22,6 +27,13 @@ from starter.session import (
     detect_override_kind,
     is_generic_clarification_reply,
     is_no_preference_reply,
+    merge_constraints,
+    merge_semantic_constraints,
+)
+from starter.turn_interpreter import (
+    TurnInterpretation,
+    build_turn_interpreter,
+    parse_turn_interpretation,
 )
 
 
@@ -89,6 +101,7 @@ class Agent:
         layer2_weights: Mapping[str, float] | None = None,
         retriever: ProductRetriever | None = None,
         router: object | None = None,
+        turn_interpreter: object | None = None,
     ) -> None:
         self.retriever = retriever or ProductRetriever(
             catalog_path,
@@ -108,6 +121,13 @@ class Agent:
         self.clarification = ClarificationPolicy()
         self.use_user_profile = bool(use_user_profile)
         self._profile_affinity: dict[str, ProfileAffinity] = {}
+        # Optional local model, loaded once per Agent.  If it is absent or
+        # fails to load, the existing deterministic extraction remains active.
+        self.turn_interpreter = (
+            turn_interpreter
+            if turn_interpreter is not None
+            else build_turn_interpreter()
+        )
 
     @staticmethod
     def _extract(
@@ -121,7 +141,122 @@ class Agent:
             asked_attribute=asked_attribute,
         )
 
-    def _route(self, message: str) -> str:
+    @staticmethod
+    def _extract_without_semantics(
+        message: str,
+        asked_attribute: str | None = None,
+    ) -> ShoppingConstraints:
+        """Run deterministic parsing without a second BGE semantic pass."""
+
+        return constraint_module.extract_constraints(
+            message,
+            asked_attribute=asked_attribute,
+            semantic_matcher=lambda _phrase: (),
+        )
+
+    @staticmethod
+    def _merge_extraction_deltas(
+        first: ShoppingConstraints,
+        second: ShoppingConstraints,
+    ) -> ShoppingConstraints:
+        """Merge deterministic and schema-guided facts without losing Layer 2."""
+
+        merged = merge_constraints(first, second)
+        semantic = merge_semantic_constraints(
+            getattr(first, "semantic_constraints", SemanticShoppingConstraints()),
+            getattr(second, "semantic_constraints", SemanticShoppingConstraints()),
+        )
+        if not isinstance(merged, CanonicalShoppingConstraints):
+            return merged
+        return CanonicalShoppingConstraints(
+            category=merged.category,
+            brand=merged.brand,
+            price_min=merged.price_min,
+            price_max=merged.price_max,
+            color=merged.color,
+            material=merged.material,
+            size=merged.size,
+            style=merged.style,
+            feature=merged.feature,
+            use_case=merged.use_case,
+            unmapped=merged.unmapped,
+            evidence=merged.evidence,
+            semantic_constraints=semantic,
+        )
+
+    def _interpret(self, message: str, state: object) -> TurnInterpretation | None:
+        interpreter = self.turn_interpreter
+        if interpreter is None:
+            return None
+        try:
+            result = interpreter.interpret(message, state)
+        except Exception as exc:
+            print(
+                "[turn_interpreter] turn failed: "
+                f"{type(exc).__name__}: {exc}; using deterministic fallback",
+                flush=True,
+            )
+            return None
+        if isinstance(result, TurnInterpretation):
+            return result
+        if isinstance(result, (Mapping, str)):
+            return parse_turn_interpretation(result)
+        return None
+
+    def _constraints_from_interpretation(
+        self,
+        interpretation: TurnInterpretation,
+    ) -> ShoppingConstraints:
+        """Validate LLM categorical slots through the existing dictionary."""
+
+        delta: ShoppingConstraints = ShoppingConstraints()
+        for field_name, values in (interpretation.updates or {}).items():
+            # Price and size remain deterministic fields.  The interpreter can
+            # describe them, but it cannot bypass the existing typed parser.
+            if field_name in {"price_min", "price_max", "size"}:
+                continue
+            if field_name not in CATEGORICAL_FIELDS:
+                continue
+            for value in values:
+                try:
+                    value_delta = self._extract(
+                        value,
+                        asked_attribute=field_name,
+                    )
+                except Exception:
+                    continue
+                delta = self._merge_extraction_deltas(delta, value_delta)
+        return delta
+
+    def _extract_interpreted_turn(
+        self,
+        message: str,
+        interpretation: TurnInterpretation,
+    ) -> ShoppingConstraints:
+        parsed = self._extract_without_semantics(message)
+        # Once the schema-guided interpreter is active, categorical extraction
+        # comes from its current-turn delta.  The old exact dictionary would
+        # otherwise still turn dialogue framing such as "exploring" into the
+        # canonical use_case value ``exploring``.  Numeric price and size stay
+        # with the deterministic parser as required by the slot schema.
+        deterministic = ShoppingConstraints(
+            price_min=parsed.price_min,
+            price_max=parsed.price_max,
+            size=parsed.size,
+        )
+        interpreted = self._constraints_from_interpretation(interpretation)
+        return self._merge_extraction_deltas(deterministic, interpreted)
+
+    def _route(
+        self,
+        message: str,
+        *,
+        interpreted_intent: str | None = None,
+    ) -> str:
+        if interpreted_intent:
+            intent = str(interpreted_intent).upper()
+            if intent in {"BUYING", "BROWSING"}:
+                return intent
         try:
             result = self.router.classify(message)
         except Exception:
@@ -156,19 +291,38 @@ class Agent:
         skip_constraint_extraction = (
             no_preference_reply or generic_clarification_reply
         )
+        interpretation = (
+            None
+            if skip_constraint_extraction
+            else self._interpret(message, state)
+        )
         # No-preference answers and evaluator clarification filler are
         # conversation metadata, not product constraints. Skip the extractor
         # so words such as "you" and "one" cannot become accidental facts.
         delta = (
             ShoppingConstraints()
             if skip_constraint_extraction
-            else self._extract(message)
+            else (
+                self._extract_interpreted_turn(message, interpretation)
+                if interpretation is not None
+                else self._extract(message)
+            )
         )
         had_messages = bool(state.messages)
         override_kind = OverrideKind.NONE
 
         if state.mode is not None:
             override_kind = detect_override_kind(message, state.constraints, delta)
+            if (
+                override_kind is OverrideKind.NONE
+                and interpretation is not None
+                and interpretation.override_kind == OverrideKind.PREFERENCE.value
+                and delta.populated_fields()
+            ):
+                # Natural preference-override wording may not yet be covered
+                # by the lexical marker set.  Full-goal resets stay guarded by
+                # the existing explicit reset markers.
+                override_kind = OverrideKind.PREFERENCE
 
         if (
             no_preference_reply
@@ -187,7 +341,12 @@ class Agent:
             # rather than an answer and keeps the full reading above. A
             # no-preference reply produced no delta at all, so there is nothing
             # to narrow.
-            delta = self._extract(message, asked_attribute=pending_attribute)
+            if interpretation is None:
+                delta = self._extract(message, asked_attribute=pending_attribute)
+            else:
+                # The schema-guided interpreter is intentionally allowed to
+                # preserve several volunteered fields in one answer.
+                delta = self._extract_interpreted_turn(message, interpretation)
 
         semantic_delta = getattr(delta, "semantic_constraints", None)
         structured_delta = (
@@ -208,6 +367,16 @@ class Agent:
             current_semantic=getattr(state, "semantic_constraints", None),
             delta_semantic=semantic_delta,
         )
+        if override_kind is OverrideKind.PREFERENCE and interpretation is not None:
+            replacement_values = list(replacements)
+            for field_name in interpretation.override_fields:
+                if field_name not in replacement_values:
+                    replacement_values.append(field_name)
+            if not replacement_values:
+                for field_name in delta.populated_fields():
+                    if field_name not in replacement_values:
+                        replacement_values.append(field_name)
+            replacements = tuple(replacement_values)
 
         if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)
@@ -225,7 +394,12 @@ class Agent:
         state.last_override_delta = delta if override_kind is not OverrideKind.NONE else None
 
         if state.mode is None:
-            state.mode = self._route(message)
+            state.mode = self._route(
+                message,
+                interpreted_intent=(
+                    interpretation.intent if interpretation is not None else None
+                ),
+            )
 
         if override_kind is OverrideKind.FULL_GOAL:
             source = "initial"
