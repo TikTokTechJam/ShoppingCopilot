@@ -29,6 +29,9 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .shell { width: 100%; max-width: 1500px; }
 .grid, .grid > *, .side-column, .panel, .conversation, .turn-card { min-width: 0; max-width: 100%; }
 .panel { overflow: hidden; }
+.search-status { min-height: 20px; margin: -6px 0 10px; }
+.search-status.found { color: var(--bad); font-weight: 700; }
+.search-status.exhausted { color: var(--warn); }
 .session-banner > div, .banner-target { min-width: 0; max-width: 100%; }
 .banner-target-title { display: inline-block; max-width: min(60vw, 760px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .constraint-row { grid-template-columns: minmax(82px, 112px) minmax(0, 1fr); }
