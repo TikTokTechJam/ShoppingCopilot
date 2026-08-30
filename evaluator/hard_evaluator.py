@@ -979,11 +979,11 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
     structured = sort_by(eligible, "constraint_score")
     dense = sort_by(eligible, "dense_score")
     bm25 = sort_by(eligible, "bm25_score")
-    hybrid = sort_by(eligible, "score")
+    hybrid = sort_by(eligible, "ranking_score")
     global_structured = sort_by(global_ranking, "constraint_score")
     global_dense = sort_by(global_ranking, "dense_score")
     global_bm25 = sort_by(global_ranking, "bm25_score")
-    global_hybrid = sort_by(global_ranking, "score")
+    global_hybrid = sort_by(global_ranking, "ranking_score")
     return {
         "eligible": eligible,
         "global": global_ranking,
@@ -1256,7 +1256,7 @@ class InteractiveDebugPrinter:
             print(f"Structured score: {target_candidate.constraint_score:.4f}")
             print(f"Dense score: {target_candidate.dense_score:.4f}")
             print(f"BM25 score: {target_candidate.bm25_score:.4f}")
-            print(f"Final score: {target_candidate.score:.4f}")
+            print(f"Final score: {target_candidate.ranking_score:.4f}")
         else:
             print("Target score: N/A")
         print("Target ranks (eligible products):")
@@ -1276,7 +1276,7 @@ class InteractiveDebugPrinter:
                 print(f"{index}. {asin} (score unavailable)")
                 continue
             print(
-                f"{index}. {asin} score={candidate.score:.4f} "
+                f"{index}. {asin} score={candidate.ranking_score:.4f} "
                 f"structured={candidate.constraint_score:.4f} "
                 f"dense={candidate.dense_score:.4f} "
                 f"bm25={candidate.bm25_score:.4f}"

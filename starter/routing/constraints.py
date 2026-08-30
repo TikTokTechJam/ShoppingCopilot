@@ -934,49 +934,34 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
         ]
 
     def structured_only(self) -> "CanonicalShoppingConstraints":
-        """Return Layer 1's brand-only canonical view.
+        """Return Layer 1's exact canonical and structured runtime view.
 
-        Price and size remain structured runtime controls. The other canonical
-        attributes are intentionally left to the independent Layer 2 semantic
-        view so an exact dictionary match cannot create a second structured
-        claim for the same user utterance.
+        Exact dictionary evidence is useful for every categorical field.  The
+        independent Layer 2 values remain available through
+        ``semantic_constraints`` and are deliberately excluded here.
         """
 
-        semantic_ids = {
-            item.canonical_id for item in self.semantic_constraints.evidence
-        }
         structured_ids = {
             item.canonical_id
             for item in self.evidence
             if item.layer != "layer2"
-            and item.attribute
-            in (*STRUCTURED_CANONICAL_FIELDS, *STRUCTURED_RUNTIME_FIELDS, "price")
+            and item.attribute in (*CATEGORICAL_FIELDS, "price")
         }
         values: dict[str, tuple[str, ...]] = {}
         for field_name in CATEGORICAL_FIELDS:
-            if field_name in STRUCTURED_RUNTIME_FIELDS:
-                values[field_name] = tuple(getattr(self, field_name))
-            elif field_name in STRUCTURED_CANONICAL_FIELDS and self.evidence:
+            if self.evidence:
                 values[field_name] = tuple(
                     value
                     for value in getattr(self, field_name)
                     if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
                     in structured_ids
                 )
-            elif field_name in STRUCTURED_CANONICAL_FIELDS:
+            else:
                 # Preserve compatibility for manually constructed constraint
                 # objects that have no provenance attached.
-                values[field_name] = tuple(
-                    value
-                    for value in getattr(self, field_name)
-                    if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
-                    not in semantic_ids
-                )
-            else:
-                values[field_name] = ()
+                values[field_name] = tuple(getattr(self, field_name))
         allowed_evidence_attributes = {
-            *STRUCTURED_CANONICAL_FIELDS,
-            *STRUCTURED_RUNTIME_FIELDS,
+            *CATEGORICAL_FIELDS,
             "price",
         }
         return CanonicalShoppingConstraints(

@@ -1096,25 +1096,23 @@ class ProductRetriever:
         def _zero(_asin: str) -> float:
             return 0.0
 
-        if not dense_scores and not constraint_fields:
+        if not dense_scores and not constraint_fields and not bm25_scores:
             # No constraints and no dense signal: every candidate ties at zero,
             # so the rating is the only thing left to order them by.
             ranked_asins = _select(eligible_asins, _zero)
         elif not dense_scores:
-            positive_asins = sorted(matched_weight, key=_rank_key(structured_score))
-            ranked_asins = positive_asins[:limit]
-            if len(ranked_asins) < limit:
-                selected = set(ranked_asins)
-                remainder = [
-                    asin for asin in eligible_asins if asin not in selected
-                ]
-                # Zero-match padding is ordered by rating too, not by catalog
-                # position, so the pad respects the same preference.
-                ranked_asins.extend(
-                    heapq.nsmallest(
-                        limit - len(ranked_asins), remainder, key=_rank_key(_zero)
-                    )
+            # BM25 is still a lexical signal when dense retrieval is absent;
+            # do not silently discard it and fall back to dictionary order.
+            final_scores = {
+                asin: _final_score(
+                    mode,
+                    structured_score(asin),
+                    0.0,
+                    bm25_scores.get(asin, 0.0),
                 )
+                for asin in eligible_asins
+            }
+            ranked_asins = _select(eligible_asins, final_scores.__getitem__)
         else:
             final_scores = {
                 asin: _final_score(
