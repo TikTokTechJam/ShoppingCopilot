@@ -235,8 +235,6 @@ def parse_and_validate_style(raw_response: Any) -> dict[str, list[str]]:
     values = payload["style"]
     if not isinstance(values, list):
         raise TypeError("style must be an array of strings")
-    if len(values) > MAX_STYLE_VALUES:
-        raise ValueError(f"style must contain at most {MAX_STYLE_VALUES} values")
     normalized_values: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -247,7 +245,11 @@ def parse_and_validate_style(raw_response: Any) -> dict[str, list[str]]:
             raise ValueError("style values must be deduplicated")
         seen.add(normalized)
         normalized_values.append(normalized)
-    return {"style": normalized_values}
+    # Models occasionally return more valid descriptors than requested. This
+    # is recoverable output noise, not a reason to spend the retry budget on
+    # the same prompt. Preserve response order and enforce the artifact's
+    # maximum after filtering obvious field leakage and duplicates.
+    return {"style": normalized_values[:MAX_STYLE_VALUES]}
 
 
 def validate_style_record(record: Mapping[str, Any]) -> dict[str, Any]:

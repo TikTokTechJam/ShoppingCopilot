@@ -282,13 +282,35 @@ class _SessionState:
 
 @dataclass
 class SessionIntentTracker:
-    """Sticky session intent: seed on turn one, re-run only when unprompted."""
+    """Incremental session intent with conservative, explicit hysteresis."""
 
     router: IntentRouter = field(default_factory=lambda: TwoPhaseIntentRouter())
     _sessions: dict[str, _SessionState] = field(default_factory=dict, init=False)
 
     def reset(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
+
+    def seed(self, session_id: str, intent: str, turn: int = 1) -> IntentResult:
+        """Install an already-decided first-turn intent without reclassifying.
+
+        The Agent may obtain the initial intent from the schema-guided turn
+        interpreter.  Seeding lets later unsolicited turns use this same
+        tracker while avoiding a second first-turn classifier call.
+        """
+
+        normalized: Intent = BUYING if str(intent).upper() == BUYING else BROWSING
+        result = IntentResult(
+            intent=normalized,
+            confidence=0.5,
+            margin=0.0,
+            weak=True,
+            tier="default",
+        )
+        self._sessions[session_id] = _SessionState(
+            result=result,
+            decided_turn=int(turn),
+        )
+        return result
 
     def current(self, session_id: str) -> IntentResult | None:
         state = self._sessions.get(session_id)
@@ -300,6 +322,7 @@ class SessionIntentTracker:
         message: str,
         turn: int,
         asked_attribute: str | None = None,
+        extracted_constraints: ShoppingConstraints | None = None,
     ) -> IntentResult:
         """Update and return the session intent.
 
@@ -311,7 +334,7 @@ class SessionIntentTracker:
         state = self._sessions.get(session_id)
 
         if state is None:
-            result = self.router.classify(message)
+            result = self._classify(message, extracted_constraints)
             self._sessions[session_id] = _SessionState(result=result, decided_turn=turn)
             return result
 
@@ -319,7 +342,7 @@ class SessionIntentTracker:
             return state.result
 
         state.evaluations += 1
-        candidate = self.router.classify(message)
+        candidate = self._classify(message, extracted_constraints)
         held = state.result
 
         if candidate.intent == held.intent:
@@ -333,6 +356,23 @@ class SessionIntentTracker:
         state.result = candidate
         state.decided_turn = turn
         return state.result
+
+    def _classify(
+        self,
+        message: str,
+        extracted_constraints: ShoppingConstraints | None,
+    ) -> IntentResult:
+        """Classify without repeating the Agent's current-turn extraction."""
+
+        if (
+            extracted_constraints is not None
+            and isinstance(self.router, TwoPhaseIntentRouter)
+        ):
+            return self.router.classify(
+                message,
+                extracted_constraints=extracted_constraints,
+            )
+        return self.router.classify(message)
 
     @staticmethod
     def _is_unsolicited(message: str, asked_attribute: str | None) -> bool:
@@ -437,8 +477,19 @@ class TwoPhaseIntentRouter:
             and result.confidence >= lexicon.BROWSING_VETO_CONFIDENCE
         )
 
-    def classify(self, message: str) -> IntentResult:
-        constraints = extract_constraints(message)
+    def classify(
+        self,
+        message: str,
+        *,
+        extracted_constraints: ShoppingConstraints | None = None,
+    ) -> IntentResult:
+        # Agent.respond() may already have extracted this turn.  Reuse that
+        # delta so routing does not duplicate dictionary/semantic extraction.
+        constraints = (
+            extracted_constraints
+            if extracted_constraints is not None
+            else extract_constraints(message)
+        )
         tags = constraints.populated_fields(exclude=lexicon.TAG_COUNT_EXCLUDE)
 
         # -- Phase 1: enough named constraints is decisive on its own --------

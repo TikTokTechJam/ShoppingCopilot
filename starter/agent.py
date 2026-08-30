@@ -19,7 +19,11 @@ from starter.routing.constraints import (
     SemanticShoppingConstraints,
     ShoppingConstraints,
 )
-from starter.routing.intent_router import LexicalIntentRouter, TwoPhaseIntentRouter
+from starter.routing.intent_router import (
+    LexicalIntentRouter,
+    SessionIntentTracker,
+    TwoPhaseIntentRouter,
+)
 from starter.session import (
     OverrideKind,
     SessionManager,
@@ -85,10 +89,11 @@ def _scoping_could_change(
 class Agent:
     """In-memory conversational shopping agent for the evaluator contract.
 
-    Product artifacts are loaded once at construction. Session intent is sticky
-    after the first turn; only an explicit new shopping goal resets it. Every
-    response contains the current recommendations, with an optional single
-    clarification question selected from the same shared candidate pool.
+    Product artifacts are loaded once at construction. Session intent is
+    incremental with conservative hysteresis: unsolicited turns may move a
+    session when the existing tracker has sufficient evidence, while answers
+    to clarification questions do not cause random flips. Every response
+    contains current recommendations and an optional clarification question.
     """
 
     def __init__(
@@ -124,6 +129,7 @@ class Agent:
         # that inspected the starter, while the manager owns all mutations.
         self._sessions = self.sessions._sessions
         self.router = router or TwoPhaseIntentRouter()
+        self.intent_tracker = SessionIntentTracker(router=self.router)
         self._fallback_router = LexicalIntentRouter()
         self.clarification = ClarificationPolicy()
         self.use_user_profile = bool(use_user_profile)
@@ -259,13 +265,23 @@ class Agent:
         message: str,
         *,
         interpreted_intent: str | None = None,
+        extracted_constraints: ShoppingConstraints | None = None,
     ) -> str:
         if interpreted_intent:
             intent = str(interpreted_intent).upper()
             if intent in {"BUYING", "BROWSING"}:
                 return intent
         try:
-            result = self.router.classify(message)
+            if (
+                extracted_constraints is not None
+                and isinstance(self.router, TwoPhaseIntentRouter)
+            ):
+                result = self.router.classify(
+                    message,
+                    extracted_constraints=extracted_constraints,
+                )
+            else:
+                result = self.router.classify(message)
         except Exception:
             result = self._fallback_router.classify(message)
         intent = str(getattr(result, "intent", "BROWSING")).upper()
@@ -273,6 +289,7 @@ class Agent:
 
     def reset(self, session_id: str, user_profile: Mapping[str, Any]) -> None:
         self.sessions.reset(session_id, user_profile)
+        self.intent_tracker.reset(session_id)
         # preference_tags are fixed for a session, so the prior is built once
         # here and reuses the already-loaded Layer 2 encoder.
         self._profile_affinity.pop(session_id, None)
@@ -387,6 +404,7 @@ class Agent:
 
         if override_kind is OverrideKind.FULL_GOAL:
             state = self.sessions.reset_goal(session_id)
+            self.intent_tracker.reset(session_id)
         elif override_kind is OverrideKind.PREFERENCE:
             state = self.sessions.reset_preference(
                 session_id,
@@ -406,7 +424,26 @@ class Agent:
                 interpreted_intent=(
                     interpretation.intent if interpretation is not None else None
                 ),
+                extracted_constraints=delta,
             )
+            self.intent_tracker.seed(session_id, state.mode, turn=int(turn))
+        else:
+            # Re-evaluate only through the existing tracker. It ignores normal
+            # replies to our clarification questions and uses its explicit
+            # margin/signal hysteresis for genuine unsolicited direction shifts.
+            try:
+                routed = self.intent_tracker.observe(
+                    session_id,
+                    message,
+                    int(turn),
+                    asked_attribute=pending_attribute,
+                    extracted_constraints=delta,
+                )
+            except Exception:
+                routed = None
+            intent = str(getattr(routed, "intent", "")).upper()
+            if intent in {"BUYING", "BROWSING"}:
+                state.mode = intent
 
         if override_kind is OverrideKind.FULL_GOAL:
             source = "initial"
@@ -514,7 +551,10 @@ class Agent:
                 turn=state.turn,
                 candidate_stats=candidate_stats,
             )
-            if ask_attribute is None:
+            if (
+                ask_attribute is None
+                and self.clarification.is_broad_pool(candidate_stats)
+            ):
                 # No useful normal field remains in this cycle. ``other`` is
                 # the boundary marker and may be used again after a useful
                 # answer starts a new cycle. If its next answer is empty, the
@@ -541,8 +581,9 @@ class Agent:
     ) -> list[str]:
         """Candidates for padding a short list, weakest evidence relaxed first.
 
-        Section 10.2 ordering: drop the budget filter and the previously-shown
-        exclusions before returning fewer than the requested top_k.
+        Backfill remains subject to the active budget and recommendation
+        exclusions so padding cannot violate explicit user constraints or
+        re-show products already rejected by the session.
         """
         try:
             relaxed = self.retriever.retrieve(
@@ -550,7 +591,8 @@ class Agent:
                 state.retrieval_query_text,
                 state.constraints,
                 limit=max(int(limit) * 4, 50),
-                apply_budget=False,
+                apply_budget=True,
+                excluded_asins=state.excluded_recommendations,
                 user_prior_rating=user_prior_rating,
             )
         except Exception:

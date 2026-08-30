@@ -990,7 +990,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
     canonical = sort_by(eligible, "semantic_score")
     dense = sort_by(eligible, "dense_score")
     bm25 = sort_by(eligible, "bm25_score")
-    hybrid = sort_by(eligible, "score")
+    hybrid = sort_by(eligible, "ranking_score")
     global_structured = sort_by(global_ranking, "constraint_score")
     global_canonical = sort_by(global_ranking, "semantic_score")
     global_dense = sort_by(global_ranking, "dense_score")
@@ -1338,7 +1338,7 @@ class InteractiveDebugPrinter:
                 if target_candidate.mmr_score is not None
                 else "MMR score: N/A"
             )
-            print(f"Final score: {target_candidate.score:.4f}")
+            print(f"Final score: {target_candidate.ranking_score:.4f}")
         else:
             print("Target score: N/A")
         print("Target ranks (eligible products):")
@@ -1380,7 +1380,7 @@ class InteractiveDebugPrinter:
                 else "N/A"
             )
             print(
-                f"{index}. {asin} score={candidate.score:.4f} "
+                f"{index}. {asin} score={candidate.ranking_score:.4f} "
                 f"structured={candidate.constraint_score:.4f} "
                 f"canonical={candidate.semantic_score:.4f} "
                 f"product_dense={candidate.dense_score:.4f} "
