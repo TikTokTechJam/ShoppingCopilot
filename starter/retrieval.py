@@ -375,11 +375,11 @@ class ProductRetriever:
         self._load_catalog()
         self.bm25_index: BM25Index | None = None
         self.bm25_query_compiler = BM25QueryCompiler()
-        # The active-slot query is the default for the Option A experiment.
-        # Keeping an explicit compatibility switch makes before/after lexical
-        # comparisons possible without changing the BM25 index itself.
-        self.use_slot_bm25_query = _env_flag(
-            "SHOPPING_BM25_SLOT_COMPILATION",
+        # The per-slot BM25 path is the default. Keeping an explicit raw-query
+        # switch makes before/after lexical comparisons possible without
+        # changing the BM25 index itself.
+        self.use_slot_bm25_groups = _env_flag(
+            "SHOPPING_BM25_SLOT_GROUPS",
             default=True,
         )
         self.bm25_state = "loading"
@@ -818,16 +818,56 @@ class ProductRetriever:
         if self.bm25_index is None:
             return {}
         try:
-            lexical_query = query_text
-            if self.use_slot_bm25_query:
-                lexical_query = self.bm25_query_compiler.compile(
-                    constraints,
-                    semantic_constraints,
+            if not self.use_slot_bm25_groups:
+                return self.bm25_index.search(
+                    query_text,
+                    allowed_asins=eligible_asins,
                 )
-            return self.bm25_index.search(
-                lexical_query,
-                allowed_asins=eligible_asins,
+
+            groups = self.bm25_query_compiler.compile_groups(
+                constraints,
+                semantic_constraints,
             )
+            if not groups:
+                return {}
+
+            # Each slot is normalized independently before fusion. SQLite's
+            # raw BM25 scores are only comparable within the same query; a
+            # per-group peak normalization gives every active slot one equal
+            # contribution and prevents a slot with many lexical realizations
+            # from dominating the final lexical signal.
+            normalized_by_group: list[dict[str, float]] = []
+            for lexical_query in groups.values():
+                scores = self.bm25_index.search(
+                    lexical_query,
+                    allowed_asins=eligible_asins,
+                )
+                if not scores:
+                    normalized_by_group.append({})
+                    continue
+                peak = max(
+                    (float(score) for score in scores.values() if math.isfinite(float(score))),
+                    default=0.0,
+                )
+                if peak <= 0.0:
+                    normalized_by_group.append({})
+                    continue
+                normalized_by_group.append(
+                    {
+                        str(asin): min(1.0, max(0.0, float(score) / peak))
+                        for asin, score in scores.items()
+                        if math.isfinite(float(score)) and float(score) > 0.0
+                    }
+                )
+
+            group_count = len(normalized_by_group)
+            if group_count == 0:
+                return {}
+            fused: dict[str, float] = {}
+            for group_scores in normalized_by_group:
+                for asin, score in group_scores.items():
+                    fused[asin] = fused.get(asin, 0.0) + score / group_count
+            return fused
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
 

@@ -21,11 +21,10 @@ BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
 MAX_QUERY_NGRAM = 3
 
-# Option A keeps one SQLite query for the whole shopping request.  The
-# compiler below supplies the active canonical slot values and a deliberately
-# small number of semantic surface forms to that query.  It is intentionally
-# conservative: the lexical index is not asked to search every BGE candidate
-# retained in session evidence.
+# The compiler supplies each active slot with a deliberately small number of
+# semantic surface forms.  The retriever searches those slot groups separately
+# so one slot cannot dominate the combined BM25 signal merely because it has
+# many BGE candidates.
 BM25_EXPANSIONS_PER_FIELD = 3
 BM25_EXPANSION_MIN_SIMILARITY = 0.82
 BM25_EXPANSION_MAX_SCORE_GAP = 0.08
@@ -167,15 +166,17 @@ def _is_semantic_evidence(item: object) -> bool:
 
 
 class BM25QueryCompiler:
-    """Compile active slot state into one bounded lexical BM25 query.
+    """Compile active slot state into bounded lexical BM25 query groups.
 
-    This is the small Option A experiment.  Canonical values already present
-    in the active state are included once.  Evidence-derived user surfaces are
-    treated as optional expansions and capped per slot, so one slot cannot
-    overwhelm the combined query merely because it has many BGE matches.
+    Each returned group represents one information need such as ``feature`` or
+    ``use_case``. Canonical values already present in the active state are
+    included once. Evidence-derived user surfaces are optional expansions and
+    capped per slot.
 
-    The compiler only creates query text.  SQLite still owns tokenization,
-    FTS matching, BM25 scoring, and result ordering.
+    The compiler only creates query text. SQLite still owns tokenization, FTS
+    matching, BM25 scoring, and result ordering. Score normalization/fusion is
+    deliberately left to the retriever because it needs the per-group result
+    distributions.
     """
 
     def __init__(
@@ -207,13 +208,13 @@ class BM25QueryCompiler:
         seen.add(key)
         terms.append(text)
 
-    def compile(
+    def compile_groups(
         self,
         constraints: object | None,
         semantic_constraints: object | None = None,
-    ) -> str:
-        terms: list[str] = []
-        seen: set[str] = set()
+    ) -> dict[str, str]:
+        """Return one combined lexical query for each active normal slot."""
+
         semantic_evidence = _evidence_items(semantic_constraints)
         # Some callers retain the evidence on the combined constraints object;
         # include it as a fallback without duplicating the semantic view.
@@ -222,7 +223,10 @@ class BM25QueryCompiler:
                 item for item in _evidence_items(constraints) if _is_semantic_evidence(item)
             )
 
+        groups: dict[str, str] = {}
         for field_name in BM25_QUERY_FIELDS:
+            terms: list[str] = []
+            seen: set[str] = set()
             for value in _field_values(constraints, field_name):
                 self._add_term(terms, seen, value)
 
@@ -236,27 +240,26 @@ class BM25QueryCompiler:
             expansions.sort(
                 key=lambda item: (-_evidence_score(item), _evidence_raw_text(item))
             )
-            if not expansions:
-                continue
-            best_score = _evidence_score(expansions[0])
-            added = 0
-            for item in expansions:
-                score = _evidence_score(item)
-                if score < self.min_expansion_similarity:
-                    continue
-                if best_score - score > self.max_expansion_score_gap:
-                    continue
-                before = len(terms)
-                # The canonical value and the user-facing surface are two
-                # lexical realizations of one accepted semantic slot value.
-                # They consume one expansion budget together.
-                self._add_term(terms, seen, _evidence_value(item))
-                self._add_term(terms, seen, _evidence_raw_text(item))
-                if len(terms) == before:
-                    continue
-                added += 1
-                if added >= self.expansions_per_field:
-                    break
+            if expansions:
+                best_score = _evidence_score(expansions[0])
+                added = 0
+                for item in expansions:
+                    score = _evidence_score(item)
+                    if score < self.min_expansion_similarity:
+                        continue
+                    if best_score - score > self.max_expansion_score_gap:
+                        continue
+                    before = len(terms)
+                    # The canonical value and the user-facing surface are two
+                    # lexical realizations of one accepted semantic slot
+                    # value. They consume one expansion budget together.
+                    self._add_term(terms, seen, _evidence_value(item))
+                    self._add_term(terms, seen, _evidence_raw_text(item))
+                    if len(terms) == before:
+                        continue
+                    added += 1
+                    if added >= self.expansions_per_field:
+                        break
 
             # A manually constructed/legacy semantic state may not carry
             # evidence. In that case its active values are still useful, but
@@ -270,7 +273,10 @@ class BM25QueryCompiler:
                 if not semantic_evidence or normalize_text(value) not in evidenced_values:
                     self._add_term(terms, seen, value)
 
-        return " ".join(terms)
+            if terms:
+                groups[field_name] = " ".join(terms)
+
+        return groups
 
 
 class BM25Index:
