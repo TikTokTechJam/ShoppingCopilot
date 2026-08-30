@@ -106,6 +106,11 @@ _LEGACY_FLOOR = ASK_SPLIT_FLOOR * PRIOR_CEILING
 # is not worth consuming the attribute slot for.
 ASK_UTILITY_FLOOR = _LEGACY_FLOOR * session_utility(2, 1)
 
+# The analyzer is intentionally run over a broad retrieval pool.  Once that
+# pool is small enough, another question has little expected value and the
+# Agent should recommend instead of forcing an ``other`` cycle.
+BROAD_CANDIDATE_THRESHOLD = 50
+
 
 def _horizon(turn: int | None) -> float:
     """Score still reachable if the answer converts the session next turn.
@@ -220,6 +225,12 @@ class ClarificationPolicy:
 
         return self.candidate_analyzer.analyze(candidates)
 
+    @staticmethod
+    def is_broad_pool(candidate_stats: CandidatePoolStats) -> bool:
+        """Return whether the current pool still warrants clarification."""
+
+        return candidate_stats.candidate_count > BROAD_CANDIDATE_THRESHOLD
+
     def choose(
         self,
         candidates: Iterable[object],
@@ -233,6 +244,8 @@ class ClarificationPolicy:
     ) -> str | None:
         pool = tuple(candidates)
         stats = candidate_stats or self.candidate_analyzer.analyze(pool)
+        if not self.is_broad_pool(stats):
+            return None
         asked = set(asked_attributes)
         available = [
             attribute
@@ -356,6 +369,7 @@ def choose_attribute(
 __all__ = [
     "ASK_SPLIT_FLOOR",
     "ASK_UTILITY_FLOOR",
+    "BROAD_CANDIDATE_THRESHOLD",
     "PRIOR_CEILING",
     "ATTRIBUTE_QUESTIONS",
     "CandidatePoolAnalyzer",

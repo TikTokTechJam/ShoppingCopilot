@@ -229,7 +229,9 @@ def _candidate_payload(
             if bm25_available
             else None
         ),
-        "final_score": float(candidate.score),
+        "final_score": float(candidate.ranking_score),
+        "base_score": float(candidate.score),
+        "ranking_score": float(candidate.ranking_score),
         "matched_constraints": list(candidate.matched_constraints),
         "matched_semantic_constraints": list(
             getattr(candidate, "matched_semantic_constraints", ())
@@ -280,6 +282,8 @@ def _ranking_payload(
                     "semantic_score": None,
                     "bm25_score": None,
                     "final_score": None,
+                    "base_score": None,
+                    "ranking_score": None,
                     "matched_constraints": [],
                     "matched_semantic_constraints": [],
                     "target": asin == target,
@@ -324,7 +328,17 @@ def _ranking_payload(
             else None
         ),
         "final_score": (
+            float(score_candidate.ranking_score)
+            if score_candidate is not None
+            else None
+        ),
+        "base_score": (
             float(score_candidate.score) if score_candidate is not None else None
+        ),
+        "ranking_score": (
+            float(score_candidate.ranking_score)
+            if score_candidate is not None
+            else None
         ),
         "top10": top10,
         "view_scores": None,

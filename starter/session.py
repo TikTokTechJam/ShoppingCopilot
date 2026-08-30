@@ -620,6 +620,11 @@ class SessionManager:
         state.clarification_cycle = 1
         state.clarification_stopped = False
         state.last_asked = None
+        # The replaced preference branch must not keep old conversational
+        # wording in query_text. Active constraints remain above, while the
+        # next retrieval query is rebuilt from the new goal context.
+        state.messages.clear()
+        state.last_user_message = None
         return state
 
     def reset_clarification_cycle(self, session_id: str) -> SessionState:
