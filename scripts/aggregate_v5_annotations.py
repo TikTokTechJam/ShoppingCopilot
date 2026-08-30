@@ -1,4 +1,4 @@
-"""Aggregate the six V5 single-attribute annotation files."""
+"""Aggregate the V5 single-attribute annotation files."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from annotation.runner import iter_catalog
-from annotation.schema import normalize_price
+from annotation.schema import normalize_price, validate_annotation_record
 
 
 V5_ATTRIBUTES = (
@@ -17,12 +17,14 @@ V5_ATTRIBUTES = (
     "brand",
     "color",
     "material",
+    "style",
     "feature",
     "use_case",
 )
 DEFAULT_CATALOG = Path("data/catalog.jsonl")
 DEFAULT_INPUT_DIR = Path("data/derived/annotations/v5")
 DEFAULT_OUTPUT = DEFAULT_INPUT_DIR / "annotations.jsonl"
+DEFAULT_STYLE_FALLBACK = Path("data/derived/annotations/v4/annotations.jsonl")
 
 
 def _normalize_value(value: str) -> str:
@@ -68,6 +70,7 @@ def _read_attribute_file(
     if not path.exists():
         return {}, {
             "file_present": False,
+            "source": "v5",
             "rows_read": 0,
             "unique_asins": 0,
             "missing_records": len(catalog_asins),
@@ -119,6 +122,75 @@ def _read_attribute_file(
     missing_asins = catalog_asins - records.keys()
     return records, {
         "file_present": True,
+        "source": "v5",
+        "rows_read": len(records),
+        "unique_asins": len(records),
+        "missing_records": len(missing_asins),
+        "missing_asin_examples": sorted(missing_asins)[:5],
+        "empty_values": empty_values,
+    }
+
+
+def _read_legacy_style_file(
+    path: Path,
+    catalog_asins: set[str],
+) -> tuple[dict[str, list[str]], dict[str, Any]]:
+    """Read style from the existing full V4 annotations when needed.
+
+    V5 was originally produced for six single-field files and intentionally
+    left style empty. The V4 records already contain a validated style field,
+    so they are a safe local migration source until a dedicated V5
+    ``style.jsonl`` is produced. An explicit V5 style file always takes
+    precedence over this fallback.
+    """
+
+    if not path.exists():
+        return {}, {
+            "file_present": False,
+            "source": "v4_fallback",
+            "rows_read": 0,
+            "unique_asins": 0,
+            "missing_records": len(catalog_asins),
+            "empty_values": len(catalog_asins),
+        }
+
+    records: dict[str, list[str]] = {}
+    empty_values = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                raw_record = json.loads(line)
+                record = validate_annotation_record(raw_record)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{path}:{line_number}: invalid V4 annotation") from exc
+
+            parent_asin = record["parent_asin"]
+            if parent_asin not in catalog_asins:
+                raise ValueError(
+                    f"{path}:{line_number}: parent_asin is absent from catalog: "
+                    f"{parent_asin}"
+                )
+            if parent_asin in records:
+                raise ValueError(
+                    f"{path}:{line_number}: duplicate annotation {parent_asin}"
+                )
+
+            values = _deduplicate_values(
+                record["facts"]["style"],
+                path=path,
+                line_number=line_number,
+                attribute="style",
+            )
+            if not values:
+                empty_values += 1
+            records[parent_asin] = values
+
+    missing_asins = catalog_asins - records.keys()
+    return records, {
+        "file_present": True,
+        "source": "v4_fallback",
         "rows_read": len(records),
         "unique_asins": len(records),
         "missing_records": len(missing_asins),
@@ -131,6 +203,7 @@ def aggregate_v5_annotations(
     catalog_path: str | Path = DEFAULT_CATALOG,
     input_dir: str | Path = DEFAULT_INPUT_DIR,
     output_path: str | Path = DEFAULT_OUTPUT,
+    style_fallback_path: str | Path | None = DEFAULT_STYLE_FALLBACK,
 ) -> dict[str, Any]:
     """Join V5 annotations onto every catalog row in catalog order."""
 
@@ -141,11 +214,18 @@ def aggregate_v5_annotations(
     annotations: dict[str, dict[str, list[str]]] = {}
     reports: dict[str, dict[str, Any]] = {}
     for attribute in V5_ATTRIBUTES:
-        annotations[attribute], reports[attribute] = _read_attribute_file(
-            input_root / f"{attribute}.jsonl",
-            attribute,
-            catalog_asins,
-        )
+        attribute_path = input_root / f"{attribute}.jsonl"
+        if attribute == "style" and not attribute_path.exists() and style_fallback_path:
+            annotations[attribute], reports[attribute] = _read_legacy_style_file(
+                Path(style_fallback_path),
+                catalog_asins,
+            )
+        else:
+            annotations[attribute], reports[attribute] = _read_attribute_file(
+                attribute_path,
+                attribute,
+                catalog_asins,
+            )
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +290,7 @@ def aggregate_v5_annotations(
             for attribute in V5_ATTRIBUTES
             if not reports[attribute]["file_present"]
         ],
+        "style_source": reports["style"].get("source"),
         "output_path": str(output),
     }
 
@@ -221,6 +302,16 @@ def main() -> None:
     parser.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     parser.add_argument("--input-dir", default=str(DEFAULT_INPUT_DIR))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
+    parser.add_argument(
+        "--style-fallback",
+        default=str(DEFAULT_STYLE_FALLBACK),
+        help="Existing V4 annotation JSONL used only when V5 style.jsonl is absent",
+    )
+    parser.add_argument(
+        "--no-style-fallback",
+        action="store_true",
+        help="Require style.jsonl instead of reading the V4 fallback",
+    )
     args = parser.parse_args()
     print(
         json.dumps(
@@ -228,6 +319,7 @@ def main() -> None:
                 args.catalog,
                 args.input_dir,
                 args.output,
+                None if args.no_style_fallback else args.style_fallback,
             ),
             ensure_ascii=False,
             indent=2,
