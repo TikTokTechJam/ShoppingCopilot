@@ -354,8 +354,10 @@ class AmbiguityResolutionTests(unittest.TestCase):
             constraints.semantic_constraints.feature,
             ("waterproof",),
         )
-        self.assertEqual(constraints.structured_only().category, ("rain boots",))
-        self.assertEqual(constraints.structured_only().feature, ("waterproof",))
+        structured = constraints.structured_only()
+        self.assertEqual(structured.brand, ())
+        self.assertEqual(structured.category, ())
+        self.assertEqual(structured.feature, ())
 
 
 if __name__ == "__main__":
