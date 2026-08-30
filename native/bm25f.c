@@ -11,6 +11,7 @@
 
 #include <math.h>
 #include <sqlite3ext.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 SQLITE_EXTENSION_INIT1
@@ -95,27 +96,24 @@ static int bm25fQueryData(
   return SQLITE_OK;
 }
 
-static void bm25fFunction(
+static int bm25fCalculate(
     const Fts5ExtensionApi *pApi,
     Fts5Context *pFts,
-    sqlite3_context *pCtx,
     int nVal,
-    sqlite3_value **apVal) {
+    sqlite3_value **apVal,
+    double **ppLevels,
+    int *pnLevels,
+    double *pTotal) {
   if (nVal != BM25F_CONFIG_VALUES) {
-    sqlite3_result_error(pCtx, "bm25f expects k1 plus 3 values per field", -1);
-    return;
+    return SQLITE_MISUSE;
   }
   if (pApi->xColumnCount(pFts) != BM25F_FIELD_COUNT) {
-    sqlite3_result_error(pCtx, "bm25f FTS column count mismatch", -1);
-    return;
+    return SQLITE_MISMATCH;
   }
 
   Bm25fQueryData *pQuery = NULL;
   int rc = bm25fQueryData(pApi, pFts, &pQuery);
-  if (rc != SQLITE_OK) {
-    sqlite3_result_error_code(pCtx, rc);
-    return;
-  }
+  if (rc != SQLITE_OK) return rc;
 
   double k1 = sqlite3_value_double(apVal[0]);
   double aWeight[BM25F_FIELD_COUNT];
@@ -131,16 +129,12 @@ static void bm25fFunction(
   int nInstance = 0;
   rc = pApi->xInstCount(pFts, &nInstance);
   if (rc != SQLITE_OK) {
-    sqlite3_result_error_code(pCtx, rc);
-    return;
+    return rc;
   }
   int nCells = pQuery->nPhrase * BM25F_FIELD_COUNT;
   int *aTf = (int *)sqlite3_malloc64(
       sizeof(int) * (sqlite3_uint64)(nCells > 0 ? nCells : 1));
-  if (aTf == NULL) {
-    sqlite3_result_error_code(pCtx, SQLITE_NOMEM);
-    return;
-  }
+  if (aTf == NULL) return SQLITE_NOMEM;
   for (int i = 0; i < nCells; ++i) aTf[i] = 0;
 
   for (int iInstance = 0; iInstance < nInstance; ++iInstance) {
@@ -150,8 +144,7 @@ static void bm25fFunction(
     rc = pApi->xInst(pFts, iInstance, &iPhrase, &iColumn, &iOffset);
     if (rc != SQLITE_OK) {
       sqlite3_free(aTf);
-      sqlite3_result_error_code(pCtx, rc);
-      return;
+      return rc;
     }
     (void)iOffset;
     if (iPhrase >= 0 && iPhrase < pQuery->nPhrase &&
@@ -160,8 +153,23 @@ static void bm25fFunction(
     }
   }
 
-  double score = 0.0;
+  int nLevels = 1;
   for (int iPhrase = 0; iPhrase < pQuery->nPhrase; ++iPhrase) {
+    int phraseSize = pApi->xPhraseSize(pFts, iPhrase);
+    if (phraseSize > nLevels) nLevels = phraseSize;
+  }
+  double *aLevels = (double *)sqlite3_malloc64(
+      sizeof(double) * (sqlite3_uint64)nLevels);
+  if (aLevels == NULL) {
+    sqlite3_free(aTf);
+    return SQLITE_NOMEM;
+  }
+  for (int i = 0; i < nLevels; ++i) aLevels[i] = 0.0;
+
+  for (int iPhrase = 0; iPhrase < pQuery->nPhrase; ++iPhrase) {
+    int phraseSize = pApi->xPhraseSize(pFts, iPhrase);
+    if (phraseSize < 1) phraseSize = 1;
+    if (phraseSize > nLevels) phraseSize = nLevels;
     double weightedTf = 0.0;
     for (int iField = 0; iField < BM25F_FIELD_COUNT; ++iField) {
       int tf = aTf[iPhrase * BM25F_FIELD_COUNT + iField];
@@ -170,8 +178,8 @@ static void bm25fFunction(
       rc = pApi->xColumnSize(pFts, iField, &fieldLength);
       if (rc != SQLITE_OK) {
         sqlite3_free(aTf);
-        sqlite3_result_error_code(pCtx, rc);
-        return;
+        sqlite3_free(aLevels);
+        return rc;
       }
       double normalizer = 1.0;
       if (aAverageLength[iField] > 0.0) {
@@ -181,12 +189,89 @@ static void bm25fFunction(
       weightedTf += aWeight[iField] * (double)tf / normalizer;
     }
     if (weightedTf != 0.0) {
-      score += pQuery->aIdf[iPhrase] * ((k1 + 1.0) * weightedTf) /
+      double contribution = pQuery->aIdf[iPhrase] *
+          ((k1 + 1.0) * weightedTf) /
           (k1 + weightedTf);
+      aLevels[phraseSize - 1] += contribution;
     }
   }
   sqlite3_free(aTf);
-  sqlite3_result_double(pCtx, score);
+  double total = 0.0;
+  for (int i = 0; i < nLevels; ++i) total += aLevels[i];
+  *ppLevels = aLevels;
+  *pnLevels = nLevels;
+  *pTotal = total;
+  return SQLITE_OK;
+}
+
+static void bm25fFunction(
+    const Fts5ExtensionApi *pApi,
+    Fts5Context *pFts,
+    sqlite3_context *pCtx,
+    int nVal,
+    sqlite3_value **apVal) {
+  double *aLevels = NULL;
+  int nLevels = 0;
+  double total = 0.0;
+  int rc = bm25fCalculate(
+      pApi, pFts, nVal, apVal, &aLevels, &nLevels, &total);
+  (void)nLevels;
+  if (rc != SQLITE_OK) {
+    if (rc == SQLITE_MISUSE) {
+      sqlite3_result_error(
+          pCtx, "bm25f expects k1 plus 3 values per field", -1);
+    } else if (rc == SQLITE_MISMATCH) {
+      sqlite3_result_error(pCtx, "bm25f FTS column count mismatch", -1);
+    } else {
+      sqlite3_result_error_code(pCtx, rc);
+    }
+    return;
+  }
+  sqlite3_free(aLevels);
+  sqlite3_result_double(pCtx, total);
+}
+
+static void bm25fLevelsFunction(
+    const Fts5ExtensionApi *pApi,
+    Fts5Context *pFts,
+    sqlite3_context *pCtx,
+    int nVal,
+    sqlite3_value **apVal) {
+  double *aLevels = NULL;
+  int nLevels = 0;
+  double total = 0.0;
+  int rc = bm25fCalculate(
+      pApi, pFts, nVal, apVal, &aLevels, &nLevels, &total);
+  (void)total;
+  if (rc != SQLITE_OK) {
+    if (rc == SQLITE_MISUSE) {
+      sqlite3_result_error(
+          pCtx, "bm25f_levels expects k1 plus 3 values per field", -1);
+    } else if (rc == SQLITE_MISMATCH) {
+      sqlite3_result_error(pCtx, "bm25f_levels FTS column count mismatch", -1);
+    } else {
+      sqlite3_result_error_code(pCtx, rc);
+    }
+    return;
+  }
+
+  sqlite3_uint64 capacity = (sqlite3_uint64)nLevels * 40 + 32;
+  char *result = (char *)sqlite3_malloc64(capacity);
+  if (result == NULL) {
+    sqlite3_free(aLevels);
+    sqlite3_result_error_code(pCtx, SQLITE_NOMEM);
+    return;
+  }
+  int offset = snprintf(result, (size_t)capacity, "{");
+  for (int i = 0; i < nLevels; ++i) {
+    offset += snprintf(
+        result + offset, (size_t)capacity - (size_t)offset,
+        "%s\"%d\":%.17g", i == 0 ? "" : ",", i + 1, aLevels[i]);
+  }
+  (void)snprintf(
+      result + offset, (size_t)capacity - (size_t)offset, "}");
+  sqlite3_free(aLevels);
+  sqlite3_result_text(pCtx, result, -1, sqlite3_free);
 }
 
 static int bm25fApiFromDb(sqlite3 *db, fts5_api **ppApi) {
@@ -217,6 +302,10 @@ int sqlite3_bm25f_init(
   }
   rc = pFts5->xCreateFunction(
       pFts5, "bm25f", NULL, bm25fFunction, NULL);
+  if (rc == SQLITE_OK) {
+    rc = pFts5->xCreateFunction(
+        pFts5, "bm25f_levels", NULL, bm25fLevelsFunction, NULL);
+  }
   return rc;
 }
 

@@ -27,6 +27,38 @@ For direct score/ranking parity and lexical timing diagnostics:
 python -m scripts.compare_bm25f
 ```
 
+The diagnostic compares the current native unigram baseline with the
+overlapping contiguous 1-to-n-gram experiment. The baseline remains the
+available as an explicit compatibility mode:
+
+```bash
+python -m scripts.compare_bm25f --mode baseline
+python -m scripts.compare_bm25f --mode ngrams
+```
+
+The evaluator/retriever runtime now uses 1-to-n-grams by default. Use this
+environment variable only when you want the old unigram baseline:
+
+```bash
+SHOPPING_BM25F_NGRAMS=0 python -m evaluator.hard_evaluator
+```
+
+The comparison script also accepts `--mode baseline`, `--mode ngrams`, or
+`--mode both`. In n-gram mode, a cleaned query with `n` tokens produces every
+contiguous window for `k=1..n`; all phrases at one level are OR alternatives,
+and every matching phrase contribution is summed. The final score is
+`S1 + S2 + ... + Sn`, with level weights of `1.0`. Phrase matches require
+ordered adjacency within one FTS5 column. The native scorer continues to use
+the existing BM25F weights, `k1`, `b`, IDF, field lengths, and candidate
+semantics.
+
+For a smaller diagnostic run with per-product `S_k` breakdowns:
+
+```bash
+python -m scripts.compare_bm25f --mode both --repeats 5 --breakdown-top 3 \
+  "waterproof hiking shoes" "black leather hiking shoes"
+```
+
 For a controlled Python-reference benchmark arm, set:
 
 ```bash
