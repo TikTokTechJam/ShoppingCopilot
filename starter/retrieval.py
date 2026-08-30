@@ -1012,12 +1012,11 @@ class ProductRetriever:
         constraints: object | None = None,
         semantic_constraints: object | None = None,
     ) -> dict[str, float]:
-        """Return BM25 scores with canonical BGE expansions for Buying.
+        """Return BM25 scores with canonical BGE expansions.
 
-        This is the expanded lexical signal. Browsing uses the raw query
-        separately as its lexical complement to product-vector retrieval;
-        keeping the two methods separate prevents canonical expansion from
-        being mistaken for product-level dense retrieval.
+        This is the expanded lexical signal for both Buying and Browsing.
+        Browsing combines it with product-vector retrieval through rank fusion;
+        the lexical expansion remains a separate retrieval signal.
         """
 
         if self.bm25_index is None:
@@ -1425,19 +1424,13 @@ class ProductRetriever:
         dense_scores: dict[str, float] = {}
         if mode == "BROWSING" and self.dense_available:
             dense_scores = self._dense_scores(query_text)
-        # Buying uses the expanded lexical signal (raw text plus accepted BGE
-        # canonical expansions). Browsing keeps its lexical complement raw so
-        # the RRF arm represents an independent text search next to product
-        # vectors rather than another copy of canonical-attribute evidence.
-        bm25_scores = (
-            self._raw_bm25_scores(query_text, eligible_set)
-            if mode == "BROWSING"
-            else self._bm25_scores(
-                query_text,
-                eligible_set,
-                constraints,
-                semantic_constraints,
-            )
+        # Both modes use the same expanded lexical route. Browsing still keeps
+        # BM25 separate from product dense retrieval and fuses the two by rank.
+        bm25_scores = self._bm25_scores(
+            query_text,
+            eligible_set,
+            constraints,
+            semantic_constraints,
         )
 
         constraint_similarities = self._constraint_similarities(constraints)

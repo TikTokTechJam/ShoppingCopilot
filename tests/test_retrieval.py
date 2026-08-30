@@ -389,6 +389,10 @@ class ProductRetrieverTests(unittest.TestCase):
                 "_dense_scores",
                 return_value=dense_scores,
             ), patch.object(
+                retriever,
+                "_bm25_scores",
+                return_value={},
+            ), patch.object(
                 type(retriever),
                 "dense_available",
                 new_callable=PropertyMock,
@@ -414,6 +418,10 @@ class ProductRetrieverTests(unittest.TestCase):
                 retriever,
                 "_dense_scores",
                 return_value=dense_scores,
+            ), patch.object(
+                retriever,
+                "_bm25_scores",
+                return_value={},
             ), patch.object(
                 type(retriever),
                 "dense_available",
@@ -441,7 +449,7 @@ class ProductRetrieverTests(unittest.TestCase):
                 return_value=dense_scores,
             ), patch.object(
                 retriever,
-                "_raw_bm25_scores",
+                "_bm25_scores",
                 return_value=bm25_scores,
             ), patch.object(
                 type(retriever),
@@ -459,6 +467,33 @@ class ProductRetrieverTests(unittest.TestCase):
             self.assertEqual(ranked[0].parent_asin, "B")
             self.assertGreater(ranked[0].fusion_score, ranked[1].fusion_score)
             self.assertEqual(ranked[0].score, ranked[0].ranking_score)
+
+    def test_browsing_uses_expanded_bm25_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            retriever = self.make_retriever(Path(directory))
+            constraints = ShoppingConstraints(feature=("lightweight",))
+            with patch.object(
+                retriever,
+                "_bm25_scores",
+                return_value={"A": 1.0},
+            ) as expanded_bm25, patch.object(
+                retriever,
+                "_raw_bm25_scores",
+                side_effect=AssertionError("Browsing must use the expanded BM25 route"),
+            ):
+                retriever.retrieve(
+                    "BROWSING",
+                    "lightweight shoes",
+                    constraints,
+                    limit=1,
+                )
+
+            expanded_bm25.assert_called_once_with(
+                "lightweight shoes",
+                {"A", "B", "C", "X", "D"},
+                constraints,
+                None,
+            )
 
     def test_dense_ranking_preserves_budget_and_recommendation_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

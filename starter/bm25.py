@@ -270,8 +270,9 @@ class BM25QueryCompiler:
     Each returned group represents one information need such as ``feature`` or
     ``use_case``. Canonical values already present in the active state are
     included once. Evidence-derived user surfaces are optional BGE expansions
-    and capped per slot. The retriever uses these expanded groups for Buying;
-    Browsing uses its raw current-goal query as the lexical RRF arm.
+    and capped per slot. The retriever uses these expanded groups for both
+    Buying and Browsing. Browsing keeps the expanded BM25 result as a separate
+    lexical RRF arm.
 
     The compiler only creates query text. SQLite still owns tokenization, FTS
     matching, BM25 scoring, and result ordering. Score normalization/fusion is

@@ -1018,7 +1018,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
                 semantic_constraints,
                 eligible_asins=allowed_asins,
                 target_asin=target,
-                expanded=str(mode).upper() == "BUYING",
+                expanded=True,
             )
         except (TypeError, ValueError, RuntimeError):
             bm25_debug = {}
