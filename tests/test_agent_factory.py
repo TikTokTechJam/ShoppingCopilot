@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from evaluator.agent_factory import build_evaluator_agent
+from evaluator.agent_factory import build_evaluator_agent, warm_evaluator_runtime
 
 
 class AgentFactoryTests(unittest.TestCase):
@@ -30,6 +30,14 @@ class AgentFactoryTests(unittest.TestCase):
                 catalog_path,
                 use_user_profile=False,
             )
+
+    def test_warmup_initializes_constraint_resources(self) -> None:
+        with patch(
+            "evaluator.agent_factory.constraint_module.extract_constraints"
+        ) as extract_constraints:
+            warm_evaluator_runtime()
+
+        extract_constraints.assert_called_once_with("")
 
 
 if __name__ == "__main__":

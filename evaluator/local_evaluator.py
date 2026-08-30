@@ -7,14 +7,16 @@ import re
 import statistics
 import uuid
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from evaluator.agent_factory import build_evaluator_agent
+from evaluator.agent_factory import build_evaluator_agent, warm_evaluator_runtime
 from starter.agent import Agent
 
 
 MAX_TURNS = 10
 TOP_K = 10
+DEFAULT_CONCURRENCY = 4
 ALLOWED_ATTRIBUTES = {
     "category", "material", "color", "size", "style", "brand",
     "budget", "feature", "use_case", "other",
@@ -253,11 +255,19 @@ def evaluate(
     catalog_ids: set[str],
     categories: dict[str, list[str]],
     products: dict[str, dict],
+    concurrency: int = 1,
 ) -> dict:
-    sessions: list[dict] = []
+    if concurrency < 1:
+        raise ValueError("concurrency must be positive")
+
+    sessions_by_index: list[dict | None] = [None] * len(samples)
+    completed_sessions: list[dict] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
-    for sample in samples:
+
+    def run_sample(sample: dict) -> tuple[dict, int, int]:
+        prompt_tokens = 0
+        completion_tokens = 0
         session_id = f"public_{uuid.uuid4().hex}"
         agent.reset(session_id, sample["user_profile"])
         target = str(sample["ground_truth"]["parent_asin"])
@@ -279,9 +289,9 @@ def evaluate(
             usage = response.get("usage")
             if isinstance(usage, dict):
                 if isinstance(usage.get("prompt_tokens"), int) and usage["prompt_tokens"] >= 0:
-                    total_prompt_tokens += usage["prompt_tokens"]
+                    prompt_tokens += usage["prompt_tokens"]
                 if isinstance(usage.get("completion_tokens"), int) and usage["completion_tokens"] >= 0:
-                    total_completion_tokens += usage["completion_tokens"]
+                    completion_tokens += usage["completion_tokens"]
             ranked = normalize_recommendations(response.get("recommendations"), catalog_ids)
             if override_applied and target in ranked:
                 best_rank = ranked.index(target) + 1
@@ -300,19 +310,42 @@ def evaluate(
                 user_message, boundary_used = customer_reply(
                     effective_sample, response.get("ask_attribute"), disclosed, boundary_used
                 )
-        sessions.append({
+        session = {
             "sample_id": sample["sample_id"],
             "scenario_type": sample["scenario_type"],
             "hit": hit_turn is not None,
             "first_hit_turn": hit_turn,
             "best_rank": best_rank,
             "reciprocal_rank": 0.0 if best_rank is None else 1.0 / best_rank,
-        })
+        }
+        return session, prompt_tokens, completion_tokens
+
+    def record_result(index: int, outcome: tuple[dict, int, int]) -> None:
+        nonlocal total_prompt_tokens, total_completion_tokens
+        session, prompt_tokens, completion_tokens = outcome
+        sessions_by_index[index] = session
+        completed_sessions.append(session)
+        total_prompt_tokens += prompt_tokens
+        total_completion_tokens += completion_tokens
         _print_evaluation_progress(
-            sessions,
+            completed_sessions,
             len(samples),
-            sessions[-1],
+            session,
         )
+
+    if concurrency == 1:
+        for index, sample in enumerate(samples):
+            record_result(index, run_sample(sample))
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {
+                executor.submit(run_sample, sample): index
+                for index, sample in enumerate(samples)
+            }
+            for future in as_completed(futures):
+                record_result(futures[future], future.result())
+
+    sessions = [session for session in sessions_by_index if session is not None]
 
     overall = metric_summary(sessions)
     efficiency = max(0.0, min(1.0, (11.0 - float(overall["mttc"])) / 10.0))
@@ -339,14 +372,31 @@ def main() -> None:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")
     parser.add_argument("--output", default="results.json")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"Number of sessions to evaluate in parallel (default: {DEFAULT_CONCURRENCY}).",
+    )
     args = parser.parse_args()
+    if args.concurrency <= 0:
+        parser.error("--concurrency must be positive")
     samples = load_jsonl(args.dataset)
     catalog_ids, categories, products = catalog_index(args.catalog)
     try:
         agent = build_evaluator_agent(args.catalog)
+        if args.concurrency > 1:
+            warm_evaluator_runtime()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))
-    result = evaluate(agent, samples, catalog_ids, categories, products)
+    result = evaluate(
+        agent,
+        samples,
+        catalog_ids,
+        categories,
+        products,
+        concurrency=args.concurrency,
+    )
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: value for key, value in result.items() if key != "sessions"}, indent=2))
 

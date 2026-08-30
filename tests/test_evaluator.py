@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import json
+import threading
 import tempfile
+import time
 
 from evaluator.local_evaluator import catalog_index, evaluate, metric_summary, normalize_recommendations
 
@@ -17,6 +19,28 @@ class EchoTargetAgent:
         if "B" in user_message:
             asin = "B"
         return {"message": "ok", "ask_attribute": None, "recommendations": [{"parent_asin": asin}]}
+
+
+class ParallelEchoTargetAgent:
+    def __init__(self, barrier: threading.Barrier) -> None:
+        self.barrier = barrier
+        self.targets: dict[str, str] = {}
+
+    def reset(self, session_id: str, user_profile: dict) -> None:
+        self.targets[session_id] = str(user_profile["target"])
+
+    def respond(self, session_id: str, user_message: str, turn: int, top_k: int) -> dict:
+        del user_message, turn, top_k
+        self.barrier.wait(timeout=2)
+        target = self.targets[session_id]
+        if target == "A":
+            time.sleep(0.05)
+        return {
+            "message": "ok",
+            "ask_attribute": None,
+            "recommendations": [{"parent_asin": target}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+        }
 
 
 class EvaluatorTest(unittest.TestCase):
@@ -79,6 +103,56 @@ class EvaluatorTest(unittest.TestCase):
             }]
             result = evaluate(EchoTargetAgent(), samples, catalog_ids, categories, products)
             self.assertEqual(result["hit_rate_at_10"], 1.0)
+
+    def test_parallel_evaluation_overlaps_samples_and_preserves_input_order(self) -> None:
+        samples = [
+            {
+                "sample_id": "slow",
+                "scenario_type": "buying",
+                "user_profile": {"target": "A"},
+                "ground_truth": {"parent_asin": "A"},
+                "intent_card": {
+                    "target_category": "shoes",
+                    "hard_constraints": ["blue"],
+                    "soft_preferences": [],
+                },
+                "behavior": {"scenario_type": "buying"},
+            },
+            {
+                "sample_id": "fast",
+                "scenario_type": "buying",
+                "user_profile": {"target": "B"},
+                "ground_truth": {"parent_asin": "B"},
+                "intent_card": {
+                    "target_category": "boots",
+                    "hard_constraints": ["black"],
+                    "soft_preferences": [],
+                },
+                "behavior": {"scenario_type": "buying"},
+            },
+        ]
+        result = evaluate(
+            ParallelEchoTargetAgent(threading.Barrier(2)),
+            samples,
+            {"A", "B"},
+            {"A": ["Shoes"], "B": ["Boots"]},
+            {},
+            concurrency=2,
+        )
+
+        self.assertEqual(
+            [row["sample_id"] for row in result["sessions"]],
+            ["slow", "fast"],
+        )
+        self.assertEqual(result["hit_rate_at_10"], 1.0)
+        self.assertEqual(
+            result["reported_token_usage"],
+            {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10},
+        )
+
+    def test_evaluate_rejects_nonpositive_concurrency(self) -> None:
+        with self.assertRaises(ValueError):
+            evaluate(EchoTargetAgent(), [], set(), {}, {}, concurrency=0)
 
 
 if __name__ == "__main__":

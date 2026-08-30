@@ -44,7 +44,9 @@ python3 -m evaluator.local_evaluator
 
 The local command runs the 200-session public benchmark in
 `data/public_set.jsonl` and writes detailed results and aggregate metrics to
-`results.json`. It uses the same `build_evaluator_agent` resource factory as
+`results.json`. It evaluates four sessions concurrently by default; use
+`--concurrency N` to tune the worker count or `--concurrency 1` for a serial
+run. It uses the same `build_evaluator_agent` resource factory as
 the hard evaluator, so both evaluators load the same catalog, V5 facts, local
 BGE model, canonical attribute dictionary, and attribute embedding artifacts.
 Only the benchmark dataset, conversation simulator, and evaluator wrapper
@@ -130,6 +132,9 @@ Run the hard evaluator with:
 ```bash
 python -m evaluator.hard_evaluator
 ```
+
+The hard evaluator also runs four sessions concurrently by default and accepts
+`--concurrency N`. Turns within each session remain sequential.
 
 To evaluate only the Intent Override scenario, use:
 
