@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from starter.agent import Agent
+from starter.routing import constraints as constraint_module
 
 
 def build_evaluator_agent(
@@ -26,4 +27,10 @@ def build_evaluator_agent(
     return Agent(catalog_path, use_user_profile=not disable_user_profile)
 
 
-__all__ = ["build_evaluator_agent"]
+def warm_evaluator_runtime() -> None:
+    """Load lazy shared resources once before evaluator workers start."""
+
+    constraint_module.extract_constraints("")
+
+
+__all__ = ["build_evaluator_agent", "warm_evaluator_runtime"]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import random
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -46,6 +48,28 @@ class SessionTargetAgent:
             "message": "I can compare these options.",
             "ask_attribute": None,
             "recommendations": recommendations,
+        }
+
+
+class ParallelTargetAgent:
+    def __init__(self, targets: dict[str, str], barrier: threading.Barrier) -> None:
+        self.targets = targets
+        self.barrier = barrier
+
+    def reset(self, session_id: str, user_profile: dict) -> None:
+        del session_id, user_profile
+
+    def respond(self, session_id: str, user_message: str, turn: int, top_k: int) -> dict:
+        del user_message, turn, top_k
+        self.barrier.wait(timeout=2)
+        sample_id = session_id.split(":", 1)[1]
+        if sample_id == "slow":
+            time.sleep(0.05)
+        return {
+            "message": "I can compare these options.",
+            "ask_attribute": None,
+            "recommendations": [{"parent_asin": self.targets[sample_id]}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
         }
 
 
@@ -174,6 +198,46 @@ class HardEvaluatorTests(unittest.TestCase):
             catalog_ids,
         )
         self.assertEqual(result["sessions"][0]["best_rank"], 2)
+
+    def test_parallel_evaluation_overlaps_sessions_and_preserves_input_order(self) -> None:
+        sessions = [
+            {
+                "sample_id": "slow",
+                "scenario_type": "browsing",
+                "target_asin": "A",
+                "initial_message": "Show me options.",
+            },
+            {
+                "sample_id": "fast",
+                "scenario_type": "browsing",
+                "target_asin": "B",
+                "initial_message": "Show me options.",
+            },
+        ]
+        result = evaluate(
+            ParallelTargetAgent(
+                {"slow": "A", "fast": "B"},
+                threading.Barrier(2),
+            ),
+            sessions,
+            {"A", "B"},
+            validate=False,
+            concurrency=2,
+        )
+
+        self.assertEqual(
+            [row["sample_id"] for row in result["sessions"]],
+            ["slow", "fast"],
+        )
+        self.assertEqual(result["hit_rate_at_10"], 1.0)
+        self.assertEqual(
+            result["reported_token_usage"],
+            {"prompt_tokens": 2, "completion_tokens": 4, "total_tokens": 6},
+        )
+
+    def test_evaluation_rejects_nonpositive_concurrency(self) -> None:
+        with self.assertRaises(ValueError):
+            evaluate(SessionTargetAgent({}), [], set(), validate=False, concurrency=0)
 
     def test_metric_formula(self) -> None:
         summary = metric_summary([

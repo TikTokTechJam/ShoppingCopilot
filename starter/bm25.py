@@ -8,6 +8,7 @@ the three paths see the same conversational query terms.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
@@ -78,7 +79,11 @@ class BM25Index:
         catalog_order: Iterable[str],
     ) -> None:
         started = time.perf_counter()
-        self.connection = sqlite3.connect(":memory:")
+        # Evaluators run independent sessions concurrently against this shared,
+        # read-only index.  SQLite connections reject cross-thread access by
+        # default, so opt in explicitly and serialize searches on the connection.
+        self.connection = sqlite3.connect(":memory:", check_same_thread=False)
+        self._search_lock = threading.Lock()
         self._asins = tuple(str(asin) for asin in catalog_order)
         self.indexed_rows = 0
         self.build_seconds: float | None = None
@@ -160,12 +165,13 @@ class BM25Index:
         if not expression:
             return {}
 
-        rows = self.connection.execute(
-            "SELECT parent_asin, bm25(products, ?, ?, ?, ?, ?, ?, ?) AS rank "
-            "FROM products WHERE products MATCH ? "
-            "ORDER BY rank ASC, rowid ASC",
-            (*BM25_FIELD_WEIGHTS, expression),
-        ).fetchall()
+        with self._search_lock:
+            rows = self.connection.execute(
+                "SELECT parent_asin, bm25(products, ?, ?, ?, ?, ?, ?, ?) AS rank "
+                "FROM products WHERE products MATCH ? "
+                "ORDER BY rank ASC, rowid ASC",
+                (*BM25_FIELD_WEIGHTS, expression),
+            ).fetchall()
         allowed = None if allowed_asins is None else set(allowed_asins)
         scores: dict[str, float] = {}
         for asin, raw_rank in rows:

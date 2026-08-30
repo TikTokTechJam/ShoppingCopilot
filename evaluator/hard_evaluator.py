@@ -8,10 +8,11 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from evaluator.agent_factory import build_evaluator_agent
+from evaluator.agent_factory import build_evaluator_agent, warm_evaluator_runtime
 from starter.agent import Agent
 from starter.retrieval import MODE_SCORE_WEIGHTS, STRUCTURED_FIELD_WEIGHTS
 
@@ -21,6 +22,7 @@ TOP_K = 10
 
 # How often the no-tqdm fallback reports, in sessions.
 PROGRESS_INTERVAL = 20
+DEFAULT_CONCURRENCY = 4
 
 SCENARIO_COUNTS = {
     "buying": 160,
@@ -713,19 +715,24 @@ def evaluate(
     session_callback: Any | None = None,
     validate: bool = True,
     progress: bool = False,
+    concurrency: int = 1,
 ) -> dict[str, Any]:
+    if concurrency < 1:
+        raise ValueError("concurrency must be positive")
+
     rows = (
         validate_sessions(sessions, catalog_ids)
         if validate
         else [dict(row) for row in sessions]
     )
 
-    results: list[dict[str, Any]] = []
+    results_by_index: list[dict[str, Any] | None] = [None] * len(rows)
+    completed_results: list[dict[str, Any]] = []
     prompt_tokens = 0
     completion_tokens = 0
     reporter = _Progress(len(rows), progress)
 
-    for session in rows:
+    def run_session(session: Mapping[str, Any]) -> tuple[dict[str, Any], int, int]:
         runner = Manual400SessionRunner(
             agent,
             session,
@@ -737,9 +744,19 @@ def evaluate(
             after_turn_callback=after_turn_callback,
         )
         result = runner.result()
-        results.append(result)
-        prompt_tokens += runner.prompt_tokens
-        completion_tokens += runner.completion_tokens
+        return result, runner.prompt_tokens, runner.completion_tokens
+
+    def record_result(
+        index: int,
+        session: Mapping[str, Any],
+        outcome: tuple[dict[str, Any], int, int],
+    ) -> None:
+        nonlocal prompt_tokens, completion_tokens
+        result, session_prompt_tokens, session_completion_tokens = outcome
+        results_by_index[index] = result
+        completed_results.append(result)
+        prompt_tokens += session_prompt_tokens
+        completion_tokens += session_completion_tokens
 
         reporter.advance(result["hit"])
 
@@ -747,10 +764,26 @@ def evaluate(
             session_callback(
                 session=session,
                 result=result,
-                completed_results=results,
+                completed_results=completed_results,
             )
 
-    reporter.close()
+    try:
+        if concurrency == 1:
+            for index, session in enumerate(rows):
+                record_result(index, session, run_session(session))
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = {
+                    executor.submit(run_session, session): (index, session)
+                    for index, session in enumerate(rows)
+                }
+                for future in as_completed(futures):
+                    index, session = futures[future]
+                    record_result(index, session, future.result())
+    finally:
+        reporter.close()
+
+    results = [result for result in results_by_index if result is not None]
 
     overall = add_score_fields(metric_summary(results))
 
@@ -1364,6 +1397,7 @@ def debug_evaluate(
         after_turn_callback=printer.after_turn,
         session_callback=printer.session_complete,
         validate=False,
+        concurrency=1,
     )
 
 
@@ -1397,6 +1431,12 @@ def main() -> None:
         "--no-progress",
         action="store_true",
         help="Suppress the per-session progress bar on stderr.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"Number of sessions to evaluate in parallel (default: {DEFAULT_CONCURRENCY}).",
     )
     parser.add_argument(
         "--non-strict",
@@ -1446,12 +1486,16 @@ def main() -> None:
         parser.error("--seed and --debug-sessions require --debug")
     if args.debug_sessions is not None and args.debug_sessions <= 0:
         parser.error("--debug-sessions must be positive")
+    if args.concurrency <= 0:
+        parser.error("--concurrency must be positive")
 
     try:
         agent = build_evaluator_agent(
             args.catalog,
             disable_user_profile=args.disable_user_profile,
         )
+        if not args.debug and args.concurrency > 1:
+            warm_evaluator_runtime()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         parser.error(str(exc))
     if args.debug:
@@ -1476,6 +1520,7 @@ def main() -> None:
         strict=not args.non_strict,
         validate=False,
         progress=not args.no_progress,
+        concurrency=args.concurrency,
     )
 
     Path(args.output).write_text(
