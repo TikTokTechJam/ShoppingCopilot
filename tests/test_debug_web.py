@@ -4,7 +4,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from evaluator.debug_web import DebugWebController, SessionPool, STATIC_DIR
+from evaluator.debug_web import (
+    DebugWebController,
+    LocalEvaluatorSessionRunner,
+    SessionPool,
+    STATIC_DIR,
+)
 from evaluator.hard_evaluator import Manual400SessionRunner
 from evaluator.hard_evaluator import _debug_state_snapshot
 from starter.routing.constraints import ShoppingConstraints
@@ -174,6 +179,75 @@ class DebugWebTests(unittest.TestCase):
         runner.next_turn()
         self.assertEqual(agent.calls[2][1], "Actually, I want a new goal.")
         self.assertEqual([event["turn"] for event in runner.events], [1, 2, 3])
+
+    def test_local_runner_uses_public_set_initial_message_and_target_isolation(self) -> None:
+        agent = FakeAgent()
+        runner = LocalEvaluatorSessionRunner(
+            agent,
+            {
+                "sample_id": "public_0001",
+                "scenario_type": "buying",
+                "ground_truth": {"parent_asin": "TARGET"},
+                "user_profile": {},
+                "intent_card": {
+                    "hard_constraints": ["waterproof"],
+                    "soft_preferences": ["black"],
+                },
+                "behavior": {},
+            },
+            {"TARGET", "OTHER"},
+            {"TARGET": ["boots"]},
+            {
+                "TARGET": {
+                    "title": "Waterproof boots",
+                    "features": ["waterproof"],
+                    "details": {},
+                    "categories": ["boots"],
+                    "price": 50.0,
+                }
+            },
+        )
+
+        event = runner.next_turn()
+
+        self.assertEqual(event["sample_id"], "public_0001")
+        self.assertEqual(event["turn"], 1)
+        self.assertIn("waterproof", agent.calls[0][1])
+        self.assertNotIn("TARGET", repr(agent.calls[0]))
+
+    def test_local_runner_applies_public_override_on_configured_turn(self) -> None:
+        agent = FakeAgent()
+        runner = LocalEvaluatorSessionRunner(
+            agent,
+            {
+                "sample_id": "public_0002",
+                "scenario_type": "intent_override",
+                "ground_truth": {"parent_asin": "TARGET"},
+                "user_profile": {},
+                "intent_card": {
+                    "hard_constraints": ["waterproof"],
+                    "soft_preferences": ["black"],
+                },
+                "behavior": {
+                    "override": {
+                        "turn": 3,
+                        "new_value": "waterproof",
+                        "message": "Actually, I need waterproof boots.",
+                    }
+                },
+            },
+            {"TARGET"},
+            {"TARGET": ["boots"]},
+            {},
+        )
+
+        runner.next_turn()
+        runner.next_turn()
+        runner.next_turn()
+
+        self.assertEqual(agent.calls[2][1], "Actually, I need waterproof boots.")
+        self.assertFalse(runner.events[0]["override_applied"])
+        self.assertTrue(runner.events[2]["override_applied"])
 
     def test_controller_resets_and_runs_to_end_sequentially(self) -> None:
         agent = FakeAgent()

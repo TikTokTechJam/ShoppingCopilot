@@ -143,6 +143,8 @@ selecting its 60 override sessions.
 For a local turn-by-turn view of the same Manual400 Agent flow, run
 `python -m evaluator.debug_web` and open <http://127.0.0.1:8765>. See
 [`docs/debug_web.md`](docs/debug_web.md) for model setup and controls.
+To inspect the public-set local evaluator in the same UI, run
+`python -m evaluator.debug_web --evaluator local --dataset data/public_set.jsonl`.
 
 The evaluator uses the frozen 50,000-product catalog as the Agent's retrieval universe and for exact `parent_asin` target validation. It does not rebuild facts or alter the benchmark. At each turn, the Agent may ask for one attribute and return up to 10 recommendations; the simulator supplies the corresponding fixed customer reply. The evaluator reports Hit Rate@10, MRR, MTTC, scenario metrics, and TechnicalScore under the ten-turn limit.
 
