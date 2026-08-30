@@ -182,7 +182,7 @@ class LexicalIntentRouter:
     def _match_signals(text: str):
         found = []
         for spec in lexicon.SIGNALS:
-            match = spec.pattern.search(text)
+            match = lexicon.match_signal(spec, text)
             if match is not None:
                 # A signal counts once however often it appears; three colours
                 # are not three times the evidence of one.

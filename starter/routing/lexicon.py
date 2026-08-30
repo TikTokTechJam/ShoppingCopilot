@@ -37,6 +37,7 @@ from starter.routing.constraints import (
     PRICE_EXPRESSION,
     SIZE_NUMERIC,
     alias_pattern,
+    first_price_expression_match,
 )
 
 
@@ -65,14 +66,15 @@ def _compile(*alternatives: str) -> re.Pattern[str]:
 # Evidence of commitment
 # --------------------------------------------------------------------------
 
-# Budget: any written price expression from the extractor, plus qualitative
-# price talk that sets no numeric bound.
-_BUDGET = _compile(
-    PRICE_EXPRESSION.pattern,
+# Budget: any validated price expression from the extractor, plus qualitative
+# price talk that sets no numeric bound. ``_BUDGET`` retains the complete
+# inspectable vocabulary; ``match_signal`` applies contextual numeric checks.
+_QUALITATIVE_BUDGET = _compile(
     r"\b(?:cheap|affordable|inexpensive|budget[-\s]friendly|price range)\b",
     r"\b(?:expensive|pricey|premium|high[-\s]end)\b",
     r"\bbudget\b",
 )
+_BUDGET = _compile(PRICE_EXPRESSION.pattern, _QUALITATIVE_BUDGET.pattern)
 
 _BRAND = alias_pattern("brand", r"\bbrands?\b")
 
@@ -180,6 +182,23 @@ SIGNALS: tuple[SignalSpec, ...] = (
 )
 
 SIGNAL_NAMES: tuple[str, ...] = tuple(spec.name for spec in SIGNALS)
+
+
+def match_signal(spec: SignalSpec, text: str) -> re.Match[str] | None:
+    """Match a signal, sharing contextual price validation with extraction."""
+
+    if spec.name != "budget":
+        return spec.pattern.search(text)
+    matches = tuple(
+        match
+        for match in (
+            first_price_expression_match(text),
+            _QUALITATIVE_BUDGET.search(text),
+        )
+        if match is not None
+    )
+    return min(matches, key=lambda match: match.start()) if matches else None
+
 
 # Maps the contract's `ask_attribute` values onto the signal that fires if the
 # customer answers that question. Used to tell an answer apart from an

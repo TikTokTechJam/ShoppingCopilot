@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from dictionary.registry import AttributeDictionary
+from dictionary.registry import AttributeDictionary, CanonicalValue
 from dictionary.semantic import (
     ATTRIBUTE_EMBEDDING_DIMENSION,
     ATTRIBUTE_EMBEDDING_MODEL,
@@ -101,10 +101,12 @@ class BgeAttributeSemanticTests(unittest.TestCase):
             root = Path(directory)
             source = root / "annotations.jsonl"
             source.write_text(
-                "\n".join(json.dumps(_record(asin, feature)) for asin, feature in (
-                    ("A", "non slip"),
-                    ("B", "quick drying"),
-                )) + "\n",
+                "\n".join(
+                    json.dumps(_record(f"{feature[:1]}{index}", feature))
+                    for feature in ("non slip", "quick drying")
+                    for index in range(10)
+                )
+                + "\n",
                 encoding="utf-8",
             )
             output = root / "dictionary"
@@ -165,6 +167,58 @@ class BgeAttributeSemanticTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "model does not match"):
                 dictionary.set_query_encoder(wrong)
+
+    def test_semantic_matching_ignores_rare_canonical_values(self) -> None:
+        rare = CanonicalValue(
+            "feature:rare", "feature", "rare", "rare", 9
+        )
+        common = CanonicalValue(
+            "feature:common", "feature", "common", "common", 10
+        )
+        rows = (
+            {"canonical_id": rare.canonical_id, "attribute": "feature", "value": rare.value},
+            {"canonical_id": common.canonical_id, "attribute": "feature", "value": common.value},
+        )
+        matrix = np.zeros((2, ATTRIBUTE_EMBEDDING_DIMENSION), dtype=np.float32)
+        matrix[:, 0] = (0.99, 0.95)
+        dictionary = AttributeDictionary(
+            (rare, common),
+            {
+                "feature": {
+                    "rare": (rare.canonical_id,),
+                    "common": (common.canonical_id,),
+                }
+            },
+            embedding_model="models/bge-small-en-v1.5",
+            embedding_dimension=ATTRIBUTE_EMBEDDING_DIMENSION,
+            embedding_normalization="l2",
+            attribute_embeddings={"feature": (rows, matrix)},
+        )
+        encoder = SimpleNamespace(
+            model_id="models/bge-small-en-v1.5",
+            embedding_dimension=ATTRIBUTE_EMBEDDING_DIMENSION,
+            embed_query=lambda _text: np.array([1.0] + [0.0] * 383, dtype=np.float32),
+        )
+        dictionary.set_query_encoder(encoder)
+
+        matches = dictionary.semantic_match(
+            "rare",
+            allowed_attribute="feature",
+            top_k=2,
+            min_similarity=0.80,
+        )
+        ngram_matches = dictionary.semantic_match_ngrams(
+            "rare",
+            allowed_attribute="feature",
+            stopwords=(),
+            max_ngram=1,
+            min_similarity=0.80,
+        )
+
+        self.assertEqual([match.canonical_id for match in matches], ["feature:common"])
+        self.assertEqual(
+            [match.canonical_id for match in ngram_matches], ["feature:common"]
+        )
 
     def test_console_selects_one_attribute_space(self) -> None:
         self.assertEqual(_parse_attribute_choice("5"), "feature")

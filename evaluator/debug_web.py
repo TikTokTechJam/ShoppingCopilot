@@ -38,12 +38,20 @@ from evaluator.hard_evaluator import (
     validate_agent_response,
     validate_sessions,
 )
+from evaluator.local_evaluator import (
+    catalog_index as local_catalog_index,
+    coarse_category as local_coarse_category,
+    customer_reply as local_customer_reply,
+    initial_message as local_initial_message,
+    materialize_hidden_fields as local_materialize_hidden_fields,
+)
 from starter.retrieval import MODE_SCORE_WEIGHTS
 from starter.routing import constraints as constraint_module
 
 
 DEFAULT_CATALOG = "data/catalog.jsonl"
 DEFAULT_SESSIONS = "data/derived/gptannotation/sessions.jsonl"
+DEFAULT_LOCAL_DATASET = "data/public_set.jsonl"
 DEFAULT_PORT = 8765
 STATIC_DIR = Path(__file__).with_name("debug_web_ui")
 
@@ -358,15 +366,38 @@ class SessionPool:
         self._positions[key] += 1
         return dict(self._orders[key][position])
 
+    def next_unseen(self, scenario: str = "ANY") -> dict[str, Any] | None:
+        """Return the next session without restarting an exhausted pass."""
+
+        key = scenario.upper()
+        if key not in self._orders:
+            order = self._matching(key)
+            if not order:
+                raise KeyError(f"no sessions found for scenario {scenario!r}")
+            self._rng.shuffle(order)
+            self._orders[key] = order
+            self._positions[key] = 0
+
+        position = self._positions[key]
+        if position >= len(self._orders[key]):
+            return None
+        self._positions[key] += 1
+        return dict(self._orders[key][position])
+
     def by_id(self, session_id: str) -> dict[str, Any] | None:
         wanted = str(session_id).strip()
+        if not wanted:
+            return None
         aliases = {wanted}
-        if wanted.startswith("manual400:"):
-            aliases.add(wanted.split(":", 1)[1])
-        if wanted.startswith("manual400_"):
-            aliases.add(wanted)
+        wanted_folded = wanted.casefold()
+        for prefix in ("manual400:", "public:"):
+            if wanted_folded.startswith(prefix):
+                aliases.add(wanted[len(prefix):])
+                break
+        alias_keys = {value.casefold() for value in aliases}
         for session in self.sessions:
-            if str(session.get("sample_id", "")).strip() in aliases:
+            sample_id = str(session.get("sample_id", "")).strip()
+            if sample_id.casefold() in alias_keys:
                 return dict(session)
         return None
 
@@ -452,6 +483,169 @@ class InteractiveSessionRunner:
         return event
 
 
+class LocalEvaluatorSessionRunner:
+    """Run one public-set session with the local evaluator's simulator.
+
+    This intentionally mirrors ``evaluator.local_evaluator.evaluate`` one
+    turn at a time so the browser is a diagnostic view of the same public-set
+    flow, rather than a second evaluator implementation with different reply
+    or override behavior.
+    """
+
+    def __init__(
+        self,
+        agent: Any,
+        session: Mapping[str, Any],
+        catalog_ids: set[str],
+        categories: Mapping[str, list[str]],
+        products: Mapping[str, dict[str, Any]],
+    ) -> None:
+        self.agent = agent
+        self.session = dict(session)
+        self.catalog_ids = catalog_ids
+        self.categories = categories
+        self.products = products
+        self.sample_id = str(self.session["sample_id"])
+        ground_truth = self.session.get("ground_truth")
+        if not isinstance(ground_truth, Mapping):
+            raise ValueError(f"{self.sample_id} is missing ground_truth")
+        self.target = str(ground_truth.get("parent_asin", "")).strip()
+        if self.target not in catalog_ids:
+            raise ValueError(
+                f"{self.sample_id} target is not in the catalog: {self.target!r}"
+            )
+        self.scenario = str(self.session["scenario_type"])
+        self.session_id = f"public:{self.sample_id}"
+        self.agent.reset(
+            self.session_id,
+            dict(self.session.get("user_profile") or {}),
+        )
+
+        card, behavior = local_materialize_hidden_fields(
+            self.session,
+            self.products,
+        )
+        self.effective_sample = {
+            **self.session,
+            "intent_card": card,
+            "behavior": behavior,
+        }
+        self.disclosed: set[str] = set()
+        self.boundary_used = False
+        self.override_applied = self.scenario != "intent_override"
+        self.user_message = local_initial_message(
+            self.effective_sample,
+            local_coarse_category(self.categories.get(self.target, [])),
+            self.disclosed,
+        )
+        self.next_turn_number = 1
+        self.first_hit_turn: int | None = None
+        self.best_rank: int | None = None
+        self.events: list[dict[str, Any]] = []
+        self.done = False
+
+    def next_turn(self) -> dict[str, Any] | None:
+        """Execute one public-set turn using local-evaluator semantics."""
+
+        if self.done:
+            return None
+
+        turn = self.next_turn_number
+        user_message = self.user_message
+        try:
+            raw_response = self.agent.respond(
+                self.session_id,
+                user_message,
+                turn,
+                TOP_K,
+            )
+        except Exception:
+            raw_response = None
+        if not isinstance(raw_response, dict) or not isinstance(
+            raw_response.get("message"), str
+        ):
+            response = {
+                "message": "",
+                "ask_attribute": None,
+                "recommendations": [],
+            }
+        else:
+            response = raw_response
+
+        ranked = normalize_recommendations(
+            response.get("recommendations"),
+            self.catalog_ids,
+        )
+        target_in_top10 = self.target in ranked
+        scoreable_hit = bool(self.override_applied and target_in_top10)
+        session_complete = scoreable_hit or turn == MAX_TURNS
+        event = {
+            "session_id": self.session_id,
+            "sample_id": self.sample_id,
+            "scenario_type": self.scenario,
+            "target_asin": self.target,
+            "turn": turn,
+            "user_message": user_message,
+            "response": response,
+            "ranked": ranked,
+            "override_applied": self.override_applied,
+            "pre_override_hit": bool(target_in_top10 and not self.override_applied),
+            "scoreable_hit": scoreable_hit,
+            "session_complete": session_complete,
+        }
+        self.events.append(event)
+
+        if scoreable_hit:
+            self.best_rank = ranked.index(self.target) + 1
+            self.first_hit_turn = turn
+            self.done = True
+        elif turn == MAX_TURNS:
+            self.done = True
+        else:
+            override = self.effective_sample.get("behavior", {}).get("override") or {}
+            if (
+                not self.override_applied
+                and turn + 1 == int(override.get("turn", 3))
+            ):
+                self.override_applied = True
+                new_value = str(override.get("new_value", ""))
+                if new_value:
+                    self.disclosed.add(new_value)
+                self.user_message = str(
+                    override.get(
+                        "message",
+                        "Actually, please ignore my earlier preference.",
+                    )
+                )
+            else:
+                self.user_message, self.boundary_used = local_customer_reply(
+                    self.effective_sample,
+                    response.get("ask_attribute"),
+                    self.disclosed,
+                    self.boundary_used,
+                )
+            self.next_turn_number += 1
+
+        return event
+
+    def result(self) -> dict[str, Any]:
+        """Return the local evaluator's per-session score record."""
+
+        return {
+            "sample_id": self.sample_id,
+            "scenario_type": self.scenario,
+            "target_asin": self.target,
+            "hit": self.first_hit_turn is not None,
+            "first_hit_turn": self.first_hit_turn,
+            "best_rank": self.best_rank,
+            "reciprocal_rank": (
+                0.0
+                if self.best_rank is None
+                else 1.0 / self.best_rank
+            ),
+        }
+
+
 class DebugWebController:
     """Own one active evaluator runner and serialize its debug state."""
 
@@ -461,10 +655,18 @@ class DebugWebController:
         sessions: Iterable[Mapping[str, Any]],
         catalog_ids: set[str],
         *,
+        evaluator_kind: str = "hard",
+        categories: Mapping[str, list[str]] | None = None,
+        products: Mapping[str, dict[str, Any]] | None = None,
         seed: int | None = None,
         interactive_mode: bool = False,
     ) -> None:
         self.agent = agent
+        if evaluator_kind not in {"hard", "local"}:
+            raise ValueError(f"unknown evaluator kind: {evaluator_kind!r}")
+        self.evaluator_kind = evaluator_kind
+        self.categories = dict(categories or {})
+        self.products = dict(products or {})
         self.pool = (
             None
             if interactive_mode
@@ -472,13 +674,14 @@ class DebugWebController:
         )
         self.catalog_ids = catalog_ids
         self.interactive_mode = bool(interactive_mode)
-        self.runner: Manual400SessionRunner | None = None
+        self.runner: Manual400SessionRunner | LocalEvaluatorSessionRunner | None = None
         self.interactive_runner: InteractiveSessionRunner | None = None
         self.turn_records: list[dict[str, Any]] = []
         self.before_state: dict[str, Any] = {}
         self.before_constraints: dict[str, Any] = {}
         self.before_semantic_constraints: dict[str, Any] = {}
         self.before_exclusions: list[str] = []
+        self.miss_search: dict[str, Any] | None = None
 
     @property
     def session(self) -> Mapping[str, Any] | None:
@@ -488,16 +691,26 @@ class DebugWebController:
 
     def _new_runner(self, session: Mapping[str, Any]) -> dict[str, Any]:
         self.interactive_runner = None
-        self.runner = Manual400SessionRunner(
-            self.agent,
-            session,
-            self.catalog_ids,
-        )
+        if self.evaluator_kind == "local":
+            self.runner = LocalEvaluatorSessionRunner(
+                self.agent,
+                session,
+                self.catalog_ids,
+                self.categories,
+                self.products,
+            )
+        else:
+            self.runner = Manual400SessionRunner(
+                self.agent,
+                session,
+                self.catalog_ids,
+            )
         self.turn_records = []
         self.before_state = {}
         self.before_constraints = {}
         self.before_semantic_constraints = {}
         self.before_exclusions = []
+        self.miss_search = None
         return self.state_payload()
 
     def new_random(self, scenario: str = "ANY") -> dict[str, Any]:
@@ -512,6 +725,40 @@ class DebugWebController:
         if session is None:
             raise KeyError(f"session {session_id!r} was not found")
         return self._new_runner(session)
+
+    def find_next_miss(self, scenario: str = "ANY") -> dict[str, Any]:
+        """Run unseen sessions until the first non-hit session is found."""
+
+        if self.pool is None:
+            raise RuntimeError("miss search is unavailable in interactive mode")
+
+        requested_scenario = str(scenario or "ANY").upper()
+        searched = 0
+        while True:
+            session = self.pool.next_unseen(requested_scenario)
+            if session is None:
+                self.miss_search = {
+                    "status": "exhausted",
+                    "scenario": requested_scenario,
+                    "searched": searched,
+                    "message": "No non-hit session remains in this pass.",
+                }
+                return self.state_payload()
+
+            self._new_runner(session)
+            self.run_to_end()
+            searched += 1
+            result = self.runner.result() if self.runner is not None else {}
+            if not bool(result.get("hit")):
+                self.miss_search = {
+                    "status": "found",
+                    "scenario": requested_scenario,
+                    "searched": searched,
+                    "sample_id": str(session.get("sample_id", "")),
+                    "result": result,
+                    "message": "Stopped at the first non-hit session.",
+                }
+                return self.state_payload()
 
     def search_catalog(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Find catalog products for developer target selection only."""
@@ -611,6 +858,7 @@ class DebugWebController:
             state = _state_payload(self.agent, runner.session_id)
             return {
                 "interactive_mode": True,
+                "evaluator": "interactive",
                 "session": {
                     "session_id": "interactive",
                     "scenario": "interactive",
@@ -626,12 +874,14 @@ class DebugWebController:
                 "layer2": _layer2_status(self.agent),
                 "bm25": _bm25_status(self.agent),
                 "benchmark": None,
+                "miss_search": self.miss_search,
                 "score_weights": MODE_SCORE_WEIGHTS,
                 "turns": self.turn_records,
             }
         if self.runner is None:
             return {
                 "interactive_mode": self.interactive_mode,
+                "evaluator": self.evaluator_kind,
                 "session": None,
                 "turn": 0,
                 "total_turns": MAX_TURNS,
@@ -640,12 +890,14 @@ class DebugWebController:
                 "bm25": _bm25_status(self.agent),
                 "score_weights": MODE_SCORE_WEIGHTS,
                 "benchmark": None,
+                "miss_search": self.miss_search,
             }
         session = self.runner.session
         state = _state_payload(self.agent, self.runner.session_id)
-        target = str(session["target_asin"])
+        target = str(self.runner.target)
         return {
             "interactive_mode": False,
+            "evaluator": self.evaluator_kind,
             "session": {
                 "session_id": str(session["sample_id"]),
                 "scenario": str(session["scenario_type"]),
@@ -661,6 +913,7 @@ class DebugWebController:
             "layer2": _layer2_status(self.agent),
             "bm25": _bm25_status(self.agent),
             "benchmark": self._benchmark_payload(),
+            "miss_search": self.miss_search,
             "score_weights": MODE_SCORE_WEIGHTS,
             "turns": self.turn_records,
         }
@@ -873,6 +1126,9 @@ class DebugRequestHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/session/load":
                 result = self.app.load(str(body.get("session_id", "")))
                 self._send_json(result)
+            elif parsed.path == "/api/session/find-next-miss":
+                result = self.app.find_next_miss(str(body.get("scenario", "ANY")))
+                self._send_json(result)
             elif parsed.path == "/api/session/next":
                 self._send_json(self.app.next_turn())
             elif parsed.path == "/api/session/run-to-end":
@@ -1021,13 +1277,63 @@ def run_interactive_console(app: DebugWebController) -> None:
             pending_target = next_target
 
 
+def validate_local_sessions(
+    sessions: Iterable[Mapping[str, Any]],
+    catalog_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Validate the public-set shape without changing its records."""
+
+    validated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, session in enumerate(sessions, 1):
+        if not isinstance(session, Mapping):
+            raise ValueError(f"public session {index} must be an object")
+        sample_id = str(session.get("sample_id", "")).strip()
+        if not sample_id:
+            raise ValueError(f"public session {index} is missing sample_id")
+        if sample_id in seen_ids:
+            raise ValueError(f"duplicate public session sample_id: {sample_id}")
+        seen_ids.add(sample_id)
+        scenario = str(session.get("scenario_type", "")).strip()
+        if not scenario:
+            raise ValueError(f"public session {sample_id} is missing scenario_type")
+        ground_truth = session.get("ground_truth")
+        target = (
+            str(ground_truth.get("parent_asin", "")).strip()
+            if isinstance(ground_truth, Mapping)
+            else ""
+        )
+        if not target or target not in catalog_ids:
+            raise ValueError(
+                f"public session {sample_id} has an invalid catalog target: {target!r}"
+            )
+        validated.append(dict(session))
+    if not validated:
+        raise ValueError("public session dataset is empty")
+    return validated
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Local Manual400 and interactive debug UI")
+    parser = argparse.ArgumentParser(
+        description="Local evaluator and interactive debug UI"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--catalog", default=DEFAULT_CATALOG)
-    parser.add_argument("--sessions", default=DEFAULT_SESSIONS)
+    parser.add_argument(
+        "--evaluator",
+        choices=("hard", "local"),
+        default="hard",
+        help="benchmark simulator to show (default: hard Manual400)",
+    )
+    parser.add_argument(
+        "--sessions",
+        "--dataset",
+        dest="sessions",
+        default=None,
+        help="benchmark session JSONL file",
+    )
     parser.add_argument(
         "--interactive",
         action="store_true",
@@ -1037,16 +1343,32 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def create_application(args: argparse.Namespace) -> DebugWebController:
-    catalog_ids = load_catalog_ids(args.catalog)
+    categories: dict[str, list[str]] = {}
+    products: dict[str, dict[str, Any]] = {}
+    if args.evaluator == "local" and not args.interactive:
+        catalog_ids, categories, products = local_catalog_index(args.catalog)
+    else:
+        catalog_ids = load_catalog_ids(args.catalog)
     sessions: list[dict[str, Any]] = []
     if not args.interactive:
-        sessions = load_jsonl(args.sessions)
-        sessions = validate_sessions(sessions, catalog_ids)
+        session_path = args.sessions or (
+            DEFAULT_LOCAL_DATASET
+            if args.evaluator == "local"
+            else DEFAULT_SESSIONS
+        )
+        sessions = load_jsonl(session_path)
+        if args.evaluator == "local":
+            sessions = validate_local_sessions(sessions, catalog_ids)
+        else:
+            sessions = validate_sessions(sessions, catalog_ids)
     agent = build_evaluator_agent(args.catalog)
     return DebugWebController(
         agent,
         sessions,
         catalog_ids,
+        evaluator_kind=args.evaluator,
+        categories=categories,
+        products=products,
         seed=args.seed,
         interactive_mode=args.interactive,
     )

@@ -35,3 +35,5 @@ model/*
 
 # Per-run reports from the LLM intent classification suite.
 test_reports/
+# Locally compiled SQLite extensions.
+native/build/

@@ -77,6 +77,9 @@ function similarityRows(similarities) {
 }
 
 function renderBanner(data) {
+  $("session-id").placeholder = data.evaluator === "local"
+    ? "public_0001"
+    : "manual400_0095";
   const session = data.session;
   if (!session) {
     $("session-banner").className = "panel empty";
@@ -94,12 +97,32 @@ function renderBanner(data) {
     <div class="banner-target">Target <code>${esc(target.parent_asin)}</code>${target.title ? `<span class="banner-target-title" title="${esc(target.title)}"> — ${esc(target.title)}</span>` : ""}</div>`;
 }
 
+function renderMissSearch(data) {
+  const search = data.miss_search;
+  const element = $("miss-search-status");
+  element.className = "muted search-status";
+  if (!search) {
+    element.textContent = "Find Next Miss runs unseen sessions and stops on the first non-hit case.";
+    return;
+  }
+  if (search.status === "found") {
+    element.className = "search-status found";
+    element.textContent = `${search.message} Searched ${search.searched} session${search.searched === 1 ? "" : "s"}; loaded ${search.sample_id}.`;
+    return;
+  }
+  element.className = "search-status exhausted";
+  element.textContent = `${search.message} Searched ${search.searched} session${search.searched === 1 ? "" : "s"} (${search.scenario}).`;
+}
+
 function renderState(data) {
   const state = data.state;
   if (!state) { $("state").innerHTML = "—"; return; }
   const layer2 = data.layer2 || {};
   const benchmark = data.benchmark || {};
   const metrics = benchmark.metrics || {};
+  const evaluatorLabel = data.evaluator === "local"
+    ? "Local evaluator score"
+    : "Hard evaluator score";
   const interactiveHint = data.interactive_mode
     ? '<div class="muted interactive-hint">Console input is active; this page updates after each reply.</div>'
     : "";
@@ -123,7 +146,7 @@ function renderState(data) {
     <div class="${layer2.available ? "ok" : "warning"}">${layer2.available ? "Available" : `Unavailable: ${esc(layer2.reason)}`}</div>
     <h3>BM25 lexical search</h3>
     <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
-    <h3>Hard evaluator score</h3>
+    <h3>${evaluatorLabel}</h3>
     <div class="kv"><span>HitRate@10</span><b>${score(metrics.hit_rate_at_10)}</b></div>
     <div class="kv"><span>MRR</span><b>${score(metrics.mrr)}</b></div>
     <div class="kv"><span>MTTC</span><b>${score(metrics.mttc)}</b></div>
@@ -200,6 +223,49 @@ function renderConversation(data) {
 }
 
 let interactivePoll = null;
+let lastData = null;
+let pendingAction = null;
+
+const actionLabels = {
+  random: "New Random Session",
+  "find-miss": "Find Next Miss",
+  load: "Load",
+  next: "Next Turn",
+  "run-end": "Run To End",
+};
+
+function syncActionButtons() {
+  const data = lastData || {};
+  const active = !data.interactive_mode && Boolean(data.session) && !data.done;
+  const busy = pendingAction !== null;
+  $("next").disabled = busy || !active;
+  $("run-end").disabled = busy || !active;
+  $("random").disabled = busy || Boolean(data.interactive_mode);
+  $("find-miss").disabled = busy || Boolean(data.interactive_mode);
+  $("load").disabled = busy || Boolean(data.interactive_mode);
+}
+
+function setActionBusy(action, message) {
+  pendingAction = action;
+  Object.keys(actionLabels).forEach((id) => {
+    const button = $(id);
+    button.disabled = true;
+    button.setAttribute("aria-busy", id === action ? "true" : "false");
+    if (id === action) button.textContent = message;
+  });
+  $("action-status").textContent = message;
+}
+
+function clearActionBusy() {
+  pendingAction = null;
+  Object.entries(actionLabels).forEach(([id, label]) => {
+    const button = $(id);
+    button.textContent = label;
+    button.removeAttribute("aria-busy");
+  });
+  $("action-status").textContent = "";
+  syncActionButtons();
+}
 
 function updateInteractivePolling(data) {
   if (data.interactive_mode && interactivePoll === null) {
@@ -211,31 +277,50 @@ function updateInteractivePolling(data) {
 }
 
 function render(data) {
-  renderBanner(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
-  const active = !data.interactive_mode && Boolean(data.session) && !data.done;
-  $("next").disabled = !active;
-  $("run-end").disabled = !active;
-  $("random").disabled = Boolean(data.interactive_mode);
-  $("load").disabled = Boolean(data.interactive_mode);
+  lastData = data;
+  const evaluator = data.evaluator || "hard";
+  $("eyebrow").textContent = evaluator === "local"
+    ? "LOCAL EVALUATOR TOOL"
+    : evaluator === "interactive"
+      ? "INTERACTIVE DEBUG TOOL"
+      : "HARD EVALUATOR TOOL";
+  $("subtitle").textContent = evaluator === "local"
+    ? "One real Agent turn at a time — public-set local evaluator mode."
+    : evaluator === "interactive"
+      ? "One real Agent turn at a time — replies entered in the console."
+      : "One real Agent turn at a time — Manual400 benchmark mode.";
+  renderBanner(data); renderMissSearch(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
+  syncActionButtons();
   updateInteractivePolling(data);
 }
 
-async function loadState(request) {
+async function loadState(request, action = null, message = "Working…") {
+  if (pendingAction !== null) return;
   clearError();
+  if (action) setActionBusy(action, message);
   try { render(await request()); } catch (error) { showError(error.message); }
+  finally { if (action) clearActionBusy(); }
 }
 
-$("random").onclick = () => loadState(() => api("/api/session/random", "POST", {scenario: $("scenario").value}));
-$("load").onclick = () => loadState(() => api("/api/session/load", "POST", {session_id: $("session-id").value}));
-$("next").onclick = () => loadState(() => api("/api/session/next", "POST"));
-$("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"));
+$("random").onclick = () => loadState(() => api("/api/session/random", "POST", {scenario: $("scenario").value}), "random", "Loading session…");
+$("find-miss").onclick = () => loadState(() => api("/api/session/find-next-miss", "POST", {scenario: $("scenario").value}), "find-miss", "Searching for a miss…");
+$("load").onclick = () => {
+  const sessionId = $("session-id").value.trim();
+  if (!sessionId) {
+    showError("Enter a session ID before selecting Load.");
+    return;
+  }
+  loadState(() => api("/api/session/load", "POST", {session_id: sessionId}), "load", "Loading session…");
+};
+$("next").onclick = () => loadState(() => api("/api/session/next", "POST"), "next", "Running turn…");
+$("run-end").onclick = () => loadState(() => api("/api/session/run-to-end", "POST"), "run-end", "Running session…");
 
 async function initialLoad() {
   try {
     const data = await api("/api/state");
     render(data);
     if (!data.interactive_mode && !data.session) {
-      await loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}));
+      await loadState(() => api("/api/session/random", "POST", {scenario: "ANY"}), "random", "Loading session…");
     }
   } catch (error) {
     showError(error.message);

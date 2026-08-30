@@ -4,7 +4,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from evaluator.debug_web import DebugWebController, SessionPool, STATIC_DIR
+from evaluator.debug_web import (
+    DebugWebController,
+    LocalEvaluatorSessionRunner,
+    SessionPool,
+    STATIC_DIR,
+)
 from evaluator.hard_evaluator import Manual400SessionRunner
 from evaluator.hard_evaluator import _debug_state_snapshot
 from starter.routing.constraints import ShoppingConstraints
@@ -136,6 +141,17 @@ class DebugWebTests(unittest.TestCase):
         self.assertEqual(pool.by_id("manual400_0003")["sample_id"], "manual400_0003")
         self.assertIsNone(pool.by_id("missing"))
 
+    def test_local_session_id_alias_loads_public_session(self) -> None:
+        pool = SessionPool([make_session("public_0001")], seed=3)
+        self.assertEqual(pool.by_id("public:public_0001")["sample_id"], "public_0001")
+        self.assertEqual(pool.by_id(" PUBLIC:PUBLIC_0001 ")["sample_id"], "public_0001")
+
+    def test_next_unseen_finishes_without_restarting_the_pool(self) -> None:
+        pool = SessionPool(self.sessions, seed=3)
+        seen = [pool.next_unseen()["sample_id"] for _ in self.sessions]
+        self.assertEqual(len(set(seen)), len(self.sessions))
+        self.assertIsNone(pool.next_unseen())
+
     def test_runner_advances_exactly_one_turn_and_keeps_target_out_of_agent(self) -> None:
         agent = FakeAgent()
         runner = Manual400SessionRunner(
@@ -168,6 +184,75 @@ class DebugWebTests(unittest.TestCase):
         runner.next_turn()
         self.assertEqual(agent.calls[2][1], "Actually, I want a new goal.")
         self.assertEqual([event["turn"] for event in runner.events], [1, 2, 3])
+
+    def test_local_runner_uses_public_set_initial_message_and_target_isolation(self) -> None:
+        agent = FakeAgent()
+        runner = LocalEvaluatorSessionRunner(
+            agent,
+            {
+                "sample_id": "public_0001",
+                "scenario_type": "buying",
+                "ground_truth": {"parent_asin": "TARGET"},
+                "user_profile": {},
+                "intent_card": {
+                    "hard_constraints": ["waterproof"],
+                    "soft_preferences": ["black"],
+                },
+                "behavior": {},
+            },
+            {"TARGET", "OTHER"},
+            {"TARGET": ["boots"]},
+            {
+                "TARGET": {
+                    "title": "Waterproof boots",
+                    "features": ["waterproof"],
+                    "details": {},
+                    "categories": ["boots"],
+                    "price": 50.0,
+                }
+            },
+        )
+
+        event = runner.next_turn()
+
+        self.assertEqual(event["sample_id"], "public_0001")
+        self.assertEqual(event["turn"], 1)
+        self.assertIn("waterproof", agent.calls[0][1])
+        self.assertNotIn("TARGET", repr(agent.calls[0]))
+
+    def test_local_runner_applies_public_override_on_configured_turn(self) -> None:
+        agent = FakeAgent()
+        runner = LocalEvaluatorSessionRunner(
+            agent,
+            {
+                "sample_id": "public_0002",
+                "scenario_type": "intent_override",
+                "ground_truth": {"parent_asin": "TARGET"},
+                "user_profile": {},
+                "intent_card": {
+                    "hard_constraints": ["waterproof"],
+                    "soft_preferences": ["black"],
+                },
+                "behavior": {
+                    "override": {
+                        "turn": 3,
+                        "new_value": "waterproof",
+                        "message": "Actually, I need waterproof boots.",
+                    }
+                },
+            },
+            {"TARGET"},
+            {"TARGET": ["boots"]},
+            {},
+        )
+
+        runner.next_turn()
+        runner.next_turn()
+        runner.next_turn()
+
+        self.assertEqual(agent.calls[2][1], "Actually, I need waterproof boots.")
+        self.assertFalse(runner.events[0]["override_applied"])
+        self.assertTrue(runner.events[2]["override_applied"])
 
     def test_controller_resets_and_runs_to_end_sequentially(self) -> None:
         agent = FakeAgent()
@@ -210,6 +295,38 @@ class DebugWebTests(unittest.TestCase):
             controller.load(selected)
             self.assertEqual(len(agent.reset_calls), 2)
             self.assertEqual(controller.state_payload()["turn"], 0)
+
+    def test_find_next_miss_leaves_the_failed_case_loaded(self) -> None:
+        agent = FakeAgent()
+        with patch(
+            "evaluator.debug_web._ranking_payload",
+            return_value={
+                "structured_rank": None,
+                "dense_rank": None,
+                "hybrid_rank": None,
+                "eligible": False,
+                "eligible_count": 0,
+                "global_count": 0,
+                "global_rank": None,
+                "global_rank_status": "AVAILABLE",
+                "structured_score": None,
+                "dense_score": None,
+                "final_score": None,
+                "top10": [],
+                "view_scores": None,
+            },
+        ):
+            controller = DebugWebController(agent, self.sessions, {"OTHER"}, seed=7)
+            state = controller.find_next_miss()
+
+        self.assertEqual(state["miss_search"]["status"], "found")
+        self.assertEqual(state["miss_search"]["searched"], 1)
+        self.assertTrue(state["done"])
+        self.assertEqual(len(state["turns"]), 10)
+        self.assertEqual(
+            state["session"]["session_id"],
+            state["miss_search"]["sample_id"],
+        )
 
     def test_static_debug_assets_exist(self) -> None:
         self.assertTrue((STATIC_DIR / "index.html").is_file())

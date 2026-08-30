@@ -6,6 +6,7 @@ import math
 import random
 import statistics
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -1367,6 +1368,7 @@ def debug_evaluate(
 
 
 def main() -> None:
+    started_at = time.perf_counter()
     parser = argparse.ArgumentParser(
         description="Evaluate starter.agent.Agent against the fixed GPTAnnotation sessions."
     )
@@ -1482,6 +1484,13 @@ def main() -> None:
     )
 
     print(json.dumps(rounded_summary(result), indent=2))
+    elapsed_seconds = time.perf_counter() - started_at
+    elapsed_minutes, remaining_seconds = divmod(elapsed_seconds, 60.0)
+    print(
+        "Total evaluation time: "
+        f"{elapsed_seconds:.2f} seconds "
+        f"({int(elapsed_minutes)}m {remaining_seconds:.2f}s)"
+    )
 
 
 if __name__ == "__main__":
