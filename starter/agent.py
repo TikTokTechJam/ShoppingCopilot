@@ -226,8 +226,10 @@ class Agent:
 
         delta: ShoppingConstraints = ShoppingConstraints()
         for field_name, values in (interpretation.updates or {}).items():
-            # Price and size remain deterministic fields.  The interpreter can
-            # describe them, but it cannot bypass the existing typed parser.
+            # Price and size remain deterministic fields. The interpreter can
+            # describe them, but it cannot bypass the existing typed parser;
+            # size remains a compatibility field rather than active structured
+            # evidence.
             if field_name in {"price_min", "price_max", "size"}:
                 continue
             if field_name not in CATEGORICAL_FIELDS:
@@ -252,8 +254,9 @@ class Agent:
         # Once the schema-guided interpreter is active, categorical extraction
         # comes from its current-turn delta.  The old exact dictionary would
         # otherwise still turn dialogue framing such as "exploring" into the
-        # canonical use_case value ``exploring``.  Numeric price and size stay
-        # with the deterministic parser as required by the slot schema.
+        # canonical use_case value ``exploring``. Numeric price and size stay
+        # with the deterministic parser as required by the slot schema; only
+        # price is promoted into the active structured view.
         deterministic = ShoppingConstraints(
             price_min=parsed.price_min,
             price_max=parsed.price_max,
@@ -561,6 +564,7 @@ class Agent:
                 candidates,
                 state.constraints,
                 clarification_asked,
+                semantic_constraints=getattr(state, "semantic_constraints", None),
                 mode=state.mode or "BROWSING",
                 profile_factor=affinity.factor if affinity is not None else None,
                 turn=state.turn,

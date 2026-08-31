@@ -19,8 +19,10 @@ canonical entry are preserved in `unmapped` rather than being forced onto the
 nearest vocabulary item.
 
 The generated attribute dictionary is the source of truth for categorical
-values. Price and size remain structured runtime fields; size is intentionally
-outside the semantic dictionary contract.
+values. Exact brand and price/budget are the active structured constraints.
+Category, color, material, style, feature, and use_case remain semantic
+constraints. Size remains a supported runtime field for compatibility but is not
+part of the active structured constraint view.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ CATEGORICAL_FIELDS: tuple[str, ...] = (
     "use_case",
 )
 STRUCTURED_CANONICAL_FIELDS: tuple[str, ...] = ("brand",)
-STRUCTURED_RUNTIME_FIELDS: tuple[str, ...] = ("size",)
+STRUCTURED_RUNTIME_FIELDS: tuple[str, ...] = ("price",)
 
 _PLAIN_NUMBER = r"\d[\d,]*(?:\.\d+)?"
 # Do not let a failed match on a decimal or thousands-formatted value backtrack
@@ -438,6 +440,16 @@ class ShoppingConstraints:
 
     def has_price(self) -> bool:
         return self.price_min is not None or self.price_max is not None
+
+    def structured_only(self) -> "ShoppingConstraints":
+        """Return the active Layer 1 view: exact brand and price only."""
+
+        return ShoppingConstraints(
+            brand=tuple(self.brand),
+            price_min=self.price_min,
+            price_max=self.price_max,
+            unmapped=self.unmapped,
+        )
 
     def populated_fields(self, *, exclude: tuple[str, ...] = ()) -> tuple[str, ...]:
         """Which constraint fields the customer actually filled in.
@@ -934,18 +946,19 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
         ]
 
     def structured_only(self) -> "CanonicalShoppingConstraints":
-        """Return Layer 1's exact canonical and structured runtime view.
+        """Return Layer 1's exact brand and structured price view.
 
-        Exact dictionary evidence is useful for every categorical field.  The
+        Category, color, material, style, feature, and use_case are semantic
+        constraints even when their dictionary match is lexically exact. The
         independent Layer 2 values remain available through
-        ``semantic_constraints`` and are deliberately excluded here.
+        ``semantic_constraints``.
         """
 
         structured_ids = {
             item.canonical_id
             for item in self.evidence
             if item.layer != "layer2"
-            and item.attribute in (*CATEGORICAL_FIELDS, "price")
+            and item.attribute in (*STRUCTURED_CANONICAL_FIELDS, "price")
         }
         values: dict[str, tuple[str, ...]] = {}
         for field_name in CATEGORICAL_FIELDS:
@@ -953,15 +966,20 @@ class CanonicalShoppingConstraints(ShoppingConstraints):
                 values[field_name] = tuple(
                     value
                     for value in getattr(self, field_name)
-                    if f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
+                    if field_name in STRUCTURED_CANONICAL_FIELDS
+                    and f"{field_name}:{_normalize_dictionary_text(value).replace(' ', '_')}"
                     in structured_ids
                 )
             else:
-                # Preserve compatibility for manually constructed constraint
-                # objects that have no provenance attached.
-                values[field_name] = tuple(getattr(self, field_name))
+                # Manual constraint objects without provenance still follow the
+                # active structured-field contract.
+                values[field_name] = (
+                    tuple(getattr(self, field_name))
+                    if field_name in STRUCTURED_CANONICAL_FIELDS
+                    else ()
+                )
         allowed_evidence_attributes = {
-            *CATEGORICAL_FIELDS,
+            *STRUCTURED_CANONICAL_FIELDS,
             "price",
         }
         return CanonicalShoppingConstraints(
@@ -1080,10 +1098,12 @@ def _dictionary_pattern_surface(value: str) -> str:
 def alias_pattern(field: str, *extra: str) -> re.Pattern[str]:
     """Build an intent-signal pattern from the generated dictionary.
 
-    ``size`` is a structured runtime field rather than a dictionary attribute,
-    so its callers supply the numeric/topic patterns explicitly. All other
-    attribute values come from the required generated registry. The optional
-    expressions are retained for attribute-topic and contextual signal words.
+    ``size`` remains a structured runtime compatibility field rather than a
+    dictionary attribute, so its callers supply the numeric/topic patterns
+    explicitly. All other attribute values come from the required generated
+    registry. Brand is consumed by the exact structured path; the remaining
+    dictionary attributes are semantic. The optional expressions are retained
+    for attribute-topic and contextual signal words.
     """
 
     if field == "size":
@@ -1441,7 +1461,8 @@ def _extract_dictionary_constraints(
     text = _normalise_known_phrases(message or "")
     # Only dictionary attributes can be narrowed. "budget", "size" and "other"
     # are structured or non-dictionary asks, and price/size parsing below stays
-    # unscoped either way so a budget answer is still read.
+    # unscoped either way so a budget answer is still read. Size remains a
+    # compatibility field but is not promoted into the active structured view.
     scoped_attribute = (
         asked_attribute if asked_attribute in _DICTIONARY_ATTRIBUTES else None
     )
@@ -1503,11 +1524,16 @@ def _extract_dictionary_constraints(
             continue
         if entry.value not in values[entry.attribute]:
             values[entry.attribute].append(entry.value)
-            evidence.append(
-                ConstraintEvidence(
-                    entry.canonical_id, entry.attribute, match.raw_text, "exact", 1.0
-                )
+            exact_evidence = ConstraintEvidence(
+                entry.canonical_id, entry.attribute, match.raw_text, "exact", 1.0
             )
+            evidence.append(exact_evidence)
+            if entry.attribute in _SEMANTIC_ATTRIBUTES:
+                # Exact lexical recognition still belongs to the semantic
+                # attribute state. Only brand and price are promoted into the
+                # active structured Layer 1 view.
+                semantic_values[entry.attribute].append(entry.value)
+                semantic_evidence.append(exact_evidence)
 
     semantic_text = _semantic_text(text)
     if semantic_text:
@@ -1589,8 +1615,9 @@ def extract_constraints(
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
-    Structured price/size parsing and exact dictionary matching run in their
-    own path. Independently, the same utterance is stopword-filtered into
+    Structured price parsing and exact brand matching run in the active
+    structured path. Size parsing remains a compatibility path. Independently,
+    the same utterance is stopword-filtered into
     deterministic 1/2/3-gram phrases for the Layer 2 semantic matcher; Layer 1
     exact-match claims do not remove text from that path.
     The generated dictionary is required for categorical extraction.
