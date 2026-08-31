@@ -112,38 +112,6 @@ function bm25Details(details) {
   </details>`;
 }
 
-function intentPanel(intent) {
-  if (!intent || !Object.keys(intent).length) return "";
-  if (intent.error) return `<div class="warning">Intent diagnostics unavailable: ${esc(intent.error)}</div>`;
-  const tierClass = intent.tier === "default" ? "warning" : intent.tier === "tags" ? "notice" : "ok";
-  const signals = (intent.signal_detail || []).map(item =>
-    `<span class="chip" title="${esc(item.evidence || "")} · weight ${item.weight}">${item.polarity > 0 ? "+" : "−"}${esc(item.name)}</span>`
-  ).join("");
-  return `<h3>Intent routing</h3>
-    <div class="kv"><span>Decision</span><b>${esc(intent.intent || "—")} @ ${score(intent.confidence)}${intent.weak ? " · weak" : ""}</b></div>
-    <div class="kv"><span>Tier</span><b class="${tierClass}">${esc(intent.tier || "—")}</b></div>
-    <div class="muted">${esc(intent.tier_meaning || "")}</div>
-    <div class="kv"><span>Margin</span><b>${score(intent.margin)}</b></div>
-    <div><span class="constraint-label">tags</span>${(intent.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("") || '<span class="muted">none</span>'}</div>
-    <div><span class="constraint-label">signals</span>${signals || '<span class="muted">none</span>'}</div>`;
-}
-
-function profilePanel(profile) {
-  if (!profile) return "";
-  if (!profile.enabled) return `<h3>User profile</h3><div class="muted">${esc(profile.reason || "disabled")}</div>`;
-  const tags = (profile.preference_tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("");
-  const rows = Object.entries(profile.factors || {}).map(([name, value]) => `
-    <div class="similarity-row"><code class="similarity-id">${esc(name)}</code><strong>${score(value)}</strong></div>`).join("");
-  const backendClass = profile.similarity_backend === "lexical" ? "warning" : "ok";
-  return `<h3>User profile</h3>
-    <div><span class="constraint-label">tags</span>${tags || '<span class="muted">none</span>'}</div>
-    <div class="kv"><span>Similarity backend</span><b class="${backendClass}">${esc(profile.similarity_backend || "—")}</b></div>
-    ${profile.backend_note ? `<div class="muted">${esc(profile.backend_note)}</div>` : ""}
-    ${profile.refused && profile.refused.length ? `<div class="kv"><span>Declined</span><b>${esc(profile.refused.join(", "))}</b></div>` : ""}
-    <h4>Answerability factors</h4>
-    <div class="similarity-list">${rows || '<span class="muted">none</span>'}</div>`;
-}
-
 function clarificationPanel(clarification) {
   if (!clarification) return "";
   const asked = `<div class="kv"><span>Asked this turn</span><b>${esc(clarification.next_asked || "none")}</b></div>`;
@@ -221,8 +189,6 @@ function renderState(data) {
   $("state").innerHTML = `
     ${interactiveHint}
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
-    ${intentPanel(lastTurn.intent)}
-    ${profilePanel(lastTurn.profile)}
     ${clarificationPanel(lastTurn.clarification)}
     <h3>Session</h3>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
