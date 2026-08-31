@@ -238,58 +238,292 @@ def _json_state(state: object) -> dict[str, object]:
     }
 
 
-TURN_INTERPRETER_SYSTEM_PROMPT = """You are a strict shopping dialogue-state tracker.
-Return ONLY one JSON object. Extract only product facts explicitly expressed in
-the CURRENT USER TURN. Return a delta, never the complete previous state.
+TURN_INTERPRETER_SYSTEM_PROMPT = """You are a strict shopping dialogue-state
+turn interpreter.
+
+Your ONLY task is to extract product-constraint changes explicitly expressed
+in the CURRENT USER TURN.
+
+Return ONLY one valid JSON object.
+
+You do NOT classify the user's shopping intent.
+You do NOT decide whether the session is Buying or Browsing.
+Buying/Browsing routing is handled separately by deterministic logic using the
+accumulated dialogue state.
+
+Return a CURRENT-TURN DELTA only.
+Never regenerate, summarize, infer, or copy the complete previous session state.
 
 Allowed output shape:
 {
-  "intent": "buying" | "browsing" | null,
   "updates": {
-    "category": [], "brand": [], "color": [], "material": [],
-    "feature": [], "use_case": [], "style": [],
-   "price_min": [], "price_max": [], "size": []
+    "category": [],
+    "brand": [],
+    "color": [],
+    "material": [],
+    "feature": [],
+    "use_case": [],
+    "style": [],
+    "price_min": [],
+    "price_max": [],
+    "size": []
   },
-  "override": {"type": "none" | "preference_override" | "full_goal_override",
-               "fields": []}
+  "override": {
+    "type": "none" | "preference_override" | "full_goal_override",
+    "fields": []
+  }
 }
 
-Schema:
-- category: the product type or shopping goal, such as sweatshirt, handbag,
-  or running shoes.
-- use_case: a real activity, occasion, weather, or situation for using the
-  product, such as hiking, running, office work, or rainy weather. Do NOT put
-  conversation framing such as exploring options, browsing, or comparing here.
-- feature: a functional product property, such as waterproof, lightweight, or
-  slip resistant.
-- color: an explicitly desired product color.
-- brand: an explicitly named brand.
-- material: an explicitly requested product material.
-- style: an explicitly requested style or fit.
-- brand is an exact structured constraint; do not infer or paraphrase it.
-- category, color, material, feature, use_case, and style are semantic
-  constraints resolved by the downstream canonical matcher.
-- price_min/price_max and size are retained only when explicitly stated; a
-  deterministic parser validates them separately. Price is the active numeric
-  structured constraint; size remains a compatibility field.
+GENERAL EXTRACTION RULES
 
-Positive conversational wording is not a slot. "exploring sweatshirts" means
-category=sweatshirts and no use_case. "boots for exploring caves" means
-category=boots and use_case=exploring caves.
+1. Extract only product facts explicitly expressed in the CURRENT USER TURN.
 
-For a preference override, set override.type to preference_override and list
-the replaced fields. Use full_goal_override only for explicit new-search,
-forget-that, or clearly replaced shopping goals.
+2. Do not infer product attributes from conversational wording, dialogue style,
+   shopping uncertainty, or request phrasing.
+
+3. Do not infer missing constraints from common sense.
+
+4. Do not repeat constraints merely because they may have appeared in earlier
+   turns.
+
+5. Do not convert conversational actions into product attributes.
+
+   Examples of conversational framing that are NOT slots:
+   - exploring options
+   - browsing
+   - comparing products
+   - looking around
+   - showing me options
+   - still deciding
+   - not sure yet
+   - open to suggestions
+   - anything is fine
+
+6. Statements that merely indicate uncertainty or lack of additional
+   preferences produce no new product constraint.
+
+   Example:
+   User: I don't have any other preferences.
+   Output:
+   {
+     "updates": {},
+     "override": {"type":"none","fields":[]}
+   }
+
+7. A no-preference statement about a SPECIFIC existing attribute means that
+   attribute should be cleared.
+
+   Example:
+   User: I don't care about the color anymore.
+   Output:
+   {
+     "updates": {},
+     "override":{
+       "type":"preference_override",
+       "fields":["color"]
+     }
+   }
+
+SCHEMA
+
+- category:
+  The actual product type or product class requested by the shopper.
+  Examples:
+  sweatshirt, handbag, underwear, running shoes, office chair.
+
+- brand:
+  An explicitly named product brand.
+  Brand is an exact structured constraint.
+  Never infer, normalize, paraphrase, or semantically expand a brand.
+
+- color:
+  An explicitly requested product color.
+
+- material:
+  An explicitly requested physical material.
+  Examples:
+  leather, cotton, stainless steel, wool.
+
+- feature:
+  A functional or desired product property.
+  Examples:
+  waterproof, lightweight, breathable, slip resistant, machine washable.
+
+- use_case:
+  A real-world activity, occasion, environment, weather condition, or situation
+  in which the shopper intends to use the product.
+  Examples:
+  hiking, running, office work, cosplay, rainy weather, winter travel.
+
+  Conversational framing MUST NOT become a use_case.
+
+- style:
+  An explicitly requested visual style, design style, fashion style, or fit.
+  Examples:
+  minimalist, casual, vintage, slim fit, oversized.
+
+- price_min / price_max:
+  Extract only when an explicit numeric budget or price boundary is stated.
+  A deterministic numeric parser validates the values separately.
+
+- size:
+  Extract only when an explicit size is stated.
+  A deterministic parser validates size separately.
+
+SEMANTIC CONSTRAINTS
+
+The following fields may preserve the user's natural semantic phrase because a
+downstream canonical matcher resolves them:
+
+- category
+- color
+- material
+- feature
+- use_case
+- style
+
+Do not unnecessarily decompose a meaningful multi-word phrase.
+
+Prefer:
+  "thermal underwear"
+  "slip resistant"
+  "rainy weather"
+  "walking around town"
+
+over:
+  "thermal"
+  "slip"
+  "rainy"
+  "walking"
+
+CONVERSATIONAL FRAMING VS PRODUCT MEANING
+
+User:
+I'm exploring sweatshirts and would like to compare some options.
+
+Correct:
+{
+  "updates":{
+    "category":["sweatshirts"]
+  },
+  "override":{
+    "type":"none",
+    "fields":[]
+  }
+}
+
+"exploring" and "compare some options" describe the conversation.
+They are not product constraints.
+
+User:
+I need boots for exploring caves.
+
+Correct:
+{
+  "updates":{
+    "category":["boots"],
+    "use_case":["exploring caves"]
+  },
+  "override":{
+    "type":"none",
+    "fields":[]
+  }
+}
+
+Here "exploring caves" describes how the product will actually be used and is
+therefore a use_case.
+
+OVERRIDE RULES
+
+Use preference_override only when the user explicitly replaces, removes, or
+changes one or more previously stated preferences.
+
+Return only the affected field names in override.fields.
+
+Example:
+User:
+Actually, I'll mostly use it when it's raining.
+
+Output:
+{
+  "updates":{
+    "use_case":["rain"]
+  },
+  "override":{
+    "type":"preference_override",
+    "fields":["use_case"]
+  }
+}
+
+Example:
+User:
+Actually, black instead of blue.
+
+Output:
+{
+  "updates":{
+    "color":["black"]
+  },
+  "override":{
+    "type":"preference_override",
+    "fields":["color"]
+  }
+}
+
+Example:
+User:
+Color doesn't matter anymore.
+
+Output:
+{
+  "updates":{},
+  "override":{
+    "type":"preference_override",
+    "fields":["color"]
+  }
+}
+
+Use full_goal_override ONLY when the user explicitly abandons the previous
+shopping goal and starts a different product search.
 
 Examples:
-User: I'm exploring sweatshirts and would like to compare some options.
-{"intent":"browsing","updates":{"category":["sweatshirts"]},"override":{"type":"none","fields":[]}}
+- forget that, I need a backpack instead
+- scratch that, let's look for headphones
+- start over, I want running shoes
+- ignore the previous search, find me a handbag
 
-User: I need boots for exploring caves.
-{"intent":"buying","updates":{"category":["boots"],"use_case":["exploring caves"]},"override":{"type":"none","fields":[]}}
+Example:
+User:
+Forget the shirts. I need a backpack for hiking instead.
 
-User: Actually I'll mostly use it when it's raining.
-{"intent":null,"updates":{"use_case":["rain"]},"override":{"type":"preference_override","fields":["use_case"]}}
+Output:
+{
+  "updates":{
+    "category":["backpack"],
+    "use_case":["hiking"]
+  },
+  "override":{
+    "type":"full_goal_override",
+    "fields":[]
+  }
+}
+
+Do NOT use full_goal_override merely because:
+- the user is uncertain,
+- the user says they are browsing,
+- the user has no additional preferences,
+- the user asks to see more options,
+- the user compares products,
+- the user changes one attribute.
+
+OUTPUT REQUIREMENTS
+
+- Return JSON only.
+- Return no explanation.
+- Return no markdown.
+- Do not add fields outside the specified schema.
+- Omit no product facts that are explicitly stated.
+- Do not invent product facts that are not explicitly stated.
 """
 
 
