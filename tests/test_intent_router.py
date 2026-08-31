@@ -361,14 +361,45 @@ class TwoPhaseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.router = TwoPhaseIntentRouter()
 
-    def test_two_tags_decide_buying_without_consulting_the_ledger(self) -> None:
+    def test_enough_values_decide_buying_without_consulting_the_ledger(self) -> None:
         result = self.router.classify("I'm looking for a Nike running shoe in size 10.")
         self.assertEqual(result.intent, BUYING)
         self.assertEqual(result.tier, "tags")
         self.assertEqual(result.signals, ())
-        self.assertGreaterEqual(len(result.tags), 2)
+        self.assertGreaterEqual(result.margin, lexicon.BUYING_TAG_THRESHOLD)
 
-    def test_one_tag_falls_through_to_the_ledger(self) -> None:
+    def test_phase_1_counts_values_not_slots(self) -> None:
+        """A second value in one slot is a second decision, and must count."""
+        one_use_case = extract_constraints("a black shoes for running")
+        two_use_cases = extract_constraints("a black shoes for running or hiking")
+        self.assertEqual(
+            len(one_use_case.populated_fields()),
+            len(two_use_cases.populated_fields()),
+        )
+        self.assertGreater(
+            two_use_cases.value_count(), one_use_case.value_count()
+        )
+
+    def test_category_counts_toward_the_threshold(self) -> None:
+        """Value counting retired the category exclusion."""
+        self.assertEqual(lexicon.TAG_COUNT_EXCLUDE, ())
+        constraints = extract_constraints("a black shoes for running or hiking")
+        self.assertIn("category", constraints.populated_fields())
+        self.assertGreaterEqual(
+            constraints.value_count(), lexicon.BUYING_TAG_THRESHOLD
+        )
+        self.assertEqual(
+            self.router.classify("a black shoes for running or hiking").tier, "tags"
+        )
+
+    def test_price_counts_once_however_many_bounds(self) -> None:
+        constraints = extract_constraints("a coat between $50 and $100")
+        self.assertEqual(
+            constraints.value_count(),
+            constraints.value_count(exclude=("price",)) + 1,
+        )
+
+    def test_too_few_values_fall_through_to_the_ledger(self) -> None:
         result = self.router.classify("I'm browsing running shoes and not sure what I want yet.")
         self.assertEqual(result.intent, BROWSING)
         self.assertNotEqual(result.tier, "tags")

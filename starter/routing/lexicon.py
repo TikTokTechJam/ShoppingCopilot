@@ -310,15 +310,20 @@ NO_CONTENT_CONFIDENCE = 0.55
 # it, telling issue #9 to blend retrieval tracks rather than fork.
 WEAK_CONFIDENCE = 0.70
 
-# Phase 1: how many distinct canonical constraint fields a message must fill
-# before it is routed BUYING without consulting the signal ledger. Two is the
-# measured optimum on the labelled sets; see the ADR for the sweep.
-BUYING_TAG_THRESHOLD = 2
+# Phase 1: how many distinct constraint *values* a message must supply before
+# it is routed BUYING without consulting the signal ledger.
+#
+# The count is over values, not slots, and category is included. "a black shoe
+# for running or hiking" supplies four -- shoes, black, running, hiking -- and
+# each is a separate decision the customer made, so a second use case is
+# evidence in a way that a second slot-of-the-same-kind is not.
+BUYING_TAG_THRESHOLD = 3
 
-# Category is excluded from the Phase 1 count on purpose. Naming a product
-# says which shelf the customer is at, not that they have decided -- the same
-# principle that gives category keywords zero weight in the ledger below.
-TAG_COUNT_EXCLUDE: tuple[str, ...] = ("category",)
+# Retained as an empty default so callers may still scope the count. Category
+# used to be excluded on the argument that naming a product only says which
+# shelf the customer is at; under value counting it is one value among several
+# and cannot carry a decision on its own, so the exclusion is no longer needed.
+TAG_COUNT_EXCLUDE: tuple[str, ...] = ()
 
 # Phase 1 asserts BUYING from the tag count alone, which is sound only while
 # extraction is precise. When the ledger reads the same message as browsing at

@@ -322,13 +322,16 @@ class SessionIntentTracker:
 class TwoPhaseIntentRouter:
     """Constraint tags first, signal ledger second, BROWSING if still unsure.
 
-    Phase 1 asks a factual question: how many distinct canonical constraint
-    fields did the customer actually fill in? A message carrying two or more
-    -- a colour and a price, a brand and a size -- has committed to enough
-    that no further reading is needed. The constraint extractor does the
-    work, and it is the cheapest evidence available -- but not an unarguable
-    one. The count is only as good as the extractor's precision, so Phase 1 is
-    vetoed when the ledger reads the same message as confidently exploratory.
+    Phase 1 asks a factual question: how many distinct constraint *values* did
+    the customer actually supply? A message carrying three or more -- a
+    category, a colour and a use case -- has committed to enough that no
+    further reading is needed. Values rather than slots, because filling one
+    slot twice is a second decision: "running or hiking" is more commitment
+    than "running" alone, and slot counting cannot see the difference. The
+    constraint extractor does the work, and it is the cheapest evidence
+    available -- but not an unarguable one. The count is only as good as the
+    extractor's precision, so Phase 1 is vetoed when the ledger reads the same
+    message as confidently exploratory.
 
     Phase 2 handles everything Phase 1 cannot settle, which is every message
     whose intent lives in *how* it is phrased rather than in what it names.
@@ -345,7 +348,7 @@ class TwoPhaseIntentRouter:
     def __init__(
         self,
         *,
-        tag_threshold: int | None = None,
+        tag_threshold: int | None = None,  # counted in values, not slots
         decision_confidence: float | None = None,
         rules: LexicalIntentRouter | None = None,
     ) -> None:
@@ -384,20 +387,25 @@ class TwoPhaseIntentRouter:
             else extract_constraints(message)
         )
         tags = constraints.populated_fields(exclude=lexicon.TAG_COUNT_EXCLUDE)
+        # The decision quantity is the value count; ``tags`` stays the slot
+        # list because it is the audit trail reported on every IntentResult.
+        value_count = constraints.value_count(exclude=lexicon.TAG_COUNT_EXCLUDE)
 
-        # -- Phase 1: enough named constraints is decisive on its own --------
-        if len(tags) >= self.tag_threshold:
+        # -- Phase 1: enough supplied values is decisive on its own ----------
+        if value_count >= self.tag_threshold:
             if self._browsing_veto(message):
                 self.phase1_vetoed += 1
             else:
                 self.phase1_decisions += 1
                 # Confidence grows with the evidence, saturating quickly: three
                 # constraints is not meaningfully surer than two.
-                confidence = min(0.99, 0.80 + 0.06 * (len(tags) - self.tag_threshold))
+                confidence = min(
+                    0.99, 0.80 + 0.06 * (value_count - self.tag_threshold)
+                )
                 return IntentResult(
                     intent=BUYING,
                     confidence=confidence,
-                    margin=float(len(tags)),
+                    margin=float(value_count),
                     signals=(),
                     weak=False,
                     tier="tags",

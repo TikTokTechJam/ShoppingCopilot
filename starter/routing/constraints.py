@@ -457,6 +457,27 @@ class ShoppingConstraints:
     def tag_count(self, *, exclude: tuple[str, ...] = ()) -> int:
         return len(self.populated_fields(exclude=exclude))
 
+    def value_count(self, *, exclude: tuple[str, ...] = ()) -> int:
+        """How many distinct constraint *values* the customer supplied.
+
+        ``populated_fields`` counts slots; this counts what went into them.
+        "black shoes for running or hiking" fills three slots but supplies
+        four values, and the fourth is real evidence of commitment -- naming a
+        second use case is a further decision, not a restatement of the first.
+
+        Price is the one exception and still counts once, for the same reason
+        it does in ``populated_fields``: "between $50 and $100" is a single
+        decision expressed with two bounds.
+        """
+        total = 0
+        for name in CATEGORICAL_FIELDS:
+            if name in exclude:
+                continue
+            total += len(getattr(self, name) or ())
+        if self.has_price() and "price" not in exclude:
+            total += 1
+        return total
+
 
 def _number(raw: str) -> float:
     return float(raw.replace(",", ""))
