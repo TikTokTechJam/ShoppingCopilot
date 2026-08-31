@@ -505,10 +505,19 @@ class BM25Index:
         return _query_ngrams(query_text)
 
     @classmethod
-    def query_expression(cls, query_text: str) -> str:
+    def query_expression(
+        cls,
+        query_text: str | Iterable[str],
+        *,
+        fields: Collection[str] | None = None,
+    ) -> str:
         """Return the exact FTS5 expression sent for a query."""
 
-        return _match_expression(cls.query_phrases(query_text))
+        if isinstance(query_text, str):
+            phrases = _query_ngrams(query_text)
+        else:
+            phrases = _phrase_ngrams(query_text)
+        return _match_expression(phrases, fields=fields)
 
     def search(
         self,

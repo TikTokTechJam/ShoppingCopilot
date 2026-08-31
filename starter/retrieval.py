@@ -1069,7 +1069,7 @@ class ProductRetriever:
             if not self.use_slot_bm25_groups:
                 return self._raw_bm25_scores(query_text, eligible_asins)
 
-            groups = self.bm25_query_compiler.compile_groups(
+            group_specs = self.bm25_query_compiler.compile_group_specs(
                 constraints,
                 semantic_constraints,
             )
@@ -1083,10 +1083,11 @@ class ProductRetriever:
             query_groups: list[dict[str, float]] = []
             if raw_scores:
                 query_groups.append(raw_scores)
-            for lexical_query in groups.values():
+            for group in group_specs.values():
                 scores = self.bm25_index.search(
-                    lexical_query,
+                    group.phrases,
                     allowed_asins=eligible_asins,
+                    fields=group.fields,
                 )
                 if scores:
                     query_groups.append(scores)
@@ -1168,8 +1169,18 @@ class ProductRetriever:
         )
         target = str(target_asin).strip() if target_asin is not None else None
 
-        def describe(label: str, search_text: str) -> dict[str, Any]:
-            scores = self.bm25_index.search(search_text, allowed_asins=allowed)
+        def describe(
+            label: str,
+            search_text: str | tuple[str, ...],
+            *,
+            display_query: str | None = None,
+            fields: tuple[str, ...] | None = None,
+        ) -> dict[str, Any]:
+            scores = self.bm25_index.search(
+                search_text,
+                allowed_asins=allowed,
+                fields=fields,
+            )
             rank_map = self._rank_map(
                 scores,
                 allowed,
@@ -1183,8 +1194,12 @@ class ProductRetriever:
                     target_score = float(raw_score)
             return {
                 "label": label,
-                "query": search_text,
-                "expression": self.bm25_index.query_expression(search_text),
+                "query": display_query if display_query is not None else search_text,
+                "expression": self.bm25_index.query_expression(
+                    search_text,
+                    fields=fields,
+                ),
+                "fields": list(fields) if fields is not None else None,
                 "match_count": len(scores),
                 "target_rank": rank_map.get(target) if target else None,
                 "target_score": target_score,
@@ -1196,13 +1211,18 @@ class ProductRetriever:
             "constraints": {},
         }
         if expanded:
-            groups = self.bm25_query_compiler.compile_groups(
+            group_specs = self.bm25_query_compiler.compile_group_specs(
                 constraints,
                 semantic_constraints,
             )
             result["constraints"] = {
-                field_name: describe(field_name, group_query)
-                for field_name, group_query in groups.items()
+                field_name: describe(
+                    field_name,
+                    group.phrases,
+                    display_query=group.query_text,
+                    fields=group.fields,
+                )
+                for field_name, group in group_specs.items()
             }
         return result
 
