@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -45,6 +46,27 @@ _OVERRIDE_ALIASES = {
     "full": "FULL_GOAL",
 }
 _OVERRIDE_FIELDS = frozenset((*TURN_FIELDS, "price"))
+
+
+def _log(message: str) -> None:
+    """Write an immediately visible diagnostic without using the prompt."""
+
+    print(f"[turn_interpreter] {message}", flush=True)
+
+
+def _compact_error(exc: BaseException, *secrets: object) -> str:
+    """Return bounded error text with configured secrets redacted."""
+
+    detail = " ".join(str(exc).split()) or type(exc).__name__
+    for secret in secrets:
+        value = str(secret or "")
+        if value:
+            detail = detail.replace(value, "<redacted>")
+    return detail[:500]
+
+
+def _configured(value: object) -> str:
+    return "set" if str(value or "").strip() else "unset"
 
 
 @dataclass(frozen=True)
@@ -325,25 +347,46 @@ class LocalTurnInterpreter:
     def interpret(self, message: str, state: object) -> TurnInterpretation | None:
         self.last_raw_response = None
         prompt = build_turn_prompt(message, state)
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=self.max_input_tokens,
+        started = time.perf_counter()
+        _log(
+            "local request start "
+            f"device={self.device} message_chars={len(message)} "
+            f"prompt_chars={len(prompt)}"
         )
-        inputs = {key: value.to(self.device) for key, value in inputs.items()}
-        with self._torch.inference_mode():
-            output = self.model.generate(
-                **inputs,
-                do_sample=False,
-                max_new_tokens=self.max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
+        try:
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self.max_input_tokens,
             )
-        prompt_length = inputs["input_ids"].shape[-1]
-        completion = output[0][prompt_length:]
-        text = self.tokenizer.decode(completion, skip_special_tokens=True)
-        self.last_raw_response = text
-        return parse_turn_interpretation(text)
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            with self._torch.inference_mode():
+                output = self.model.generate(
+                    **inputs,
+                    do_sample=False,
+                    max_new_tokens=self.max_new_tokens,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+            prompt_length = inputs["input_ids"].shape[-1]
+            completion = output[0][prompt_length:]
+            text = self.tokenizer.decode(completion, skip_special_tokens=True)
+            self.last_raw_response = text
+            parsed = parse_turn_interpretation(text)
+        except Exception as exc:
+            _log(
+                "local request failed "
+                f"elapsed={time.perf_counter() - started:.2f}s "
+                f"error_type={type(exc).__name__} "
+                f"error={_compact_error(exc)}"
+            )
+            raise
+        _log(
+            "local response "
+            f"elapsed={time.perf_counter() - started:.2f}s "
+            f"response_chars={len(text)} parsed={'yes' if parsed is not None else 'no'}"
+        )
+        return parsed
 
 
 class HostedTurnInterpreter:
@@ -373,9 +416,31 @@ class HostedTurnInterpreter:
 
     def interpret(self, message: str, state: object) -> TurnInterpretation | None:
         self.last_raw_response = None
-        response = self.client.annotate(build_turn_prompt(message, state))
-        self.last_raw_response = response
-        return parse_turn_interpretation(response)
+        prompt = build_turn_prompt(message, state)
+        started = time.perf_counter()
+        _log(
+            "hosted request start "
+            f"model={self.client.model} message_chars={len(message)} "
+            f"prompt_chars={len(prompt)} timeout={self.client.timeout:.1f}s"
+        )
+        try:
+            response = self.client.annotate(prompt)
+            self.last_raw_response = response
+            parsed = parse_turn_interpretation(response)
+        except Exception as exc:
+            _log(
+                "hosted request failed "
+                f"elapsed={time.perf_counter() - started:.2f}s "
+                f"error_type={type(exc).__name__} "
+                f"error={_compact_error(exc, self.client.api_key)}"
+            )
+            raise
+        _log(
+            "hosted response "
+            f"elapsed={time.perf_counter() - started:.2f}s "
+            f"response_chars={len(response)} parsed={'yes' if parsed is not None else 'no'}"
+        )
+        return parsed
 
 
 def build_turn_interpreter() -> TurnInterpreter | None:
@@ -388,6 +453,18 @@ def build_turn_interpreter() -> TurnInterpreter | None:
     remote_model = (
         os.environ.get("SHOPPING_TURN_INTERPRETER_REMOTE_MODEL", "").strip()
         or os.environ.get("ANNOTATION_MODEL", "").strip()
+    )
+    api_key = (
+        os.environ.get("SHOPPING_TURN_INTERPRETER_API_KEY")
+        or os.environ.get("ANNOTATION_API_KEY")
+    )
+    configured = os.environ.get("SHOPPING_TURN_INTERPRETER_MODEL", "").strip()
+    _log(
+        "configuration "
+        f"hosted_endpoint={_configured(endpoint)} "
+        f"hosted_model={_configured(remote_model)} "
+        f"api_key={_configured(api_key)} "
+        f"local_model={_configured(configured)}"
     )
     if endpoint and remote_model:
         try:
@@ -406,49 +483,60 @@ def build_turn_interpreter() -> TurnInterpreter | None:
             interpreter = HostedTurnInterpreter(
                 endpoint,
                 model=remote_model,
-                api_key=(
-                    os.environ.get("SHOPPING_TURN_INTERPRETER_API_KEY")
-                    or os.environ.get("ANNOTATION_API_KEY")
-                ),
+                api_key=api_key,
                 timeout=timeout,
                 max_tokens=max_tokens,
             )
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            print(
-                "[turn_interpreter] hosted backend unavailable: "
-                f"{type(exc).__name__}: {exc}; Agent turns will report an LLM extraction error",
-                flush=True,
+            _log(
+                "hosted backend initialization failed "
+                f"error_type={type(exc).__name__} "
+                f"error={_compact_error(exc, api_key)}; "
+                "Agent turns will report an LLM extraction error"
             )
             return None
-        print(
-            f"[turn_interpreter] using hosted model {remote_model} at {endpoint}",
-            flush=True,
+        _log(
+            "hosted backend ready "
+            f"model={remote_model} timeout={timeout:.1f}s max_tokens={max_tokens}"
         )
         return interpreter
 
-    configured = os.environ.get("SHOPPING_TURN_INTERPRETER_MODEL", "").strip()
+    if endpoint or remote_model:
+        _log(
+            "hosted backend not selected because configuration is incomplete "
+            f"endpoint={_configured(endpoint)} model={_configured(remote_model)}; "
+            "checking local model"
+        )
     if not configured:
+        _log(
+            "no usable turn interpreter configured; set hosted endpoint+model "
+            "or SHOPPING_TURN_INTERPRETER_MODEL"
+        )
         return None
     model_path = Path(configured).expanduser()
     if not model_path.is_dir():
-        print(
-            "[turn_interpreter] unavailable: local model directory does not exist "
-            f"({model_path}); Agent turns will report an LLM extraction error",
-            flush=True,
+        _log(
+            "local backend unavailable: model directory does not exist "
+            f"path={model_path}; Agent turns will report an LLM extraction error"
         )
         return None
+    started = time.perf_counter()
+    _log(f"local backend initialization start path={model_path}")
     try:
         interpreter = LocalTurnInterpreter(model_path)
     except Exception as exc:
-        print(
-            "[turn_interpreter] unavailable: "
-            f"{type(exc).__name__}: {exc}; Agent turns will report an LLM extraction error",
-            flush=True,
+        _log(
+            "local backend initialization failed "
+            f"elapsed={time.perf_counter() - started:.2f}s "
+            f"error_type={type(exc).__name__} "
+            f"error={_compact_error(exc)}; "
+            "Agent turns will report an LLM extraction error"
         )
         return None
-    print(
-        f"[turn_interpreter] loaded local model from {model_path} on {interpreter.device}",
-        flush=True,
+    _log(
+        "local backend ready "
+        f"path={model_path} device={interpreter.device} "
+        f"elapsed={time.perf_counter() - started:.2f}s"
     )
     return interpreter
 
