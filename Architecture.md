@@ -12,7 +12,7 @@ The architecture is intentionally split into explicit components so each stage c
                                 USER TURN
                                     ↓
                          LLM TURN INTERPRETER
-                    intent + slots + override delta
+                 current-turn slot delta + override
                                     ↓
                      DETERMINISTIC VALIDATION
                      price / budget + exact brand
@@ -28,7 +28,7 @@ The architecture is intentionally split into explicit components so each stage c
            BUYING                                      BROWSING
       precision-oriented                           discovery-oriented
               ↓                                           ↓
-               price eligibility                            active semantic intent
+               price eligibility                            active semantic state
               ↓                                           ↓
      BGE canonical expansion              Qwen3-Embedding-0.6B
               ↓                                   query embedding
@@ -50,6 +50,8 @@ The architecture is intentionally split into explicit components so each stage c
               OVER-GENERAL                        READY
                     ↓                               ↓
           strategic clarification                 Top-K
+                    │                               |
+                    │                               |
                     │                               │
                     └───────────────┬───────────────┘
                                     ↓
@@ -313,7 +315,6 @@ Example:
 ```text
 "I'm exploring sweatshirts and would like to compare some options."
 
-→ intent: browsing
 → category: sweatshirt
 → use_case: none
 ```
@@ -346,7 +347,6 @@ Contrastive examples should distinguish cases such as:
 
 References:
 - Lee et al., *Dialogue State Tracking with a Language Model using Schema-Driven Prompting*, EMNLP 2021.
-- Goo et al., *Slot-Gated Modeling for Joint Slot Filling and Intent Prediction*, NAACL 2018.
 - Li et al., *Large Language Models as Zero-shot Dialogue State Tracker through Function Calling*, ACL 2024.
 - Gupta et al., *Show, Don't Tell: Demonstrations Outperform Descriptions for Schema-Guided Task-Oriented Dialogue*, NAACL 2022.
 
@@ -379,7 +379,7 @@ category  → CARRYOVER
 color     → CARRYOVER
 use_case  → UPDATE sunny weather → rainy weather
 
-This follows the selective update principle used by **SOM-DST**, , where dialogue
+This follows the selective update principle used by **SOM-DST**, where dialogue
 state is maintained through operations such as carryover, update, and delete
 rather than regenerating the complete state on every turn.
 
@@ -451,9 +451,6 @@ Retrieval should be generated from active constraints / active goal context.
 
 ## 5. Adaptive intent orchestration
 
-````md
-## 5. Adaptive intent orchestration
-
 Buying/Browsing mode is derived from the accumulated active state rather than
 directly from the LLM turn interpreter.
 
@@ -467,7 +464,7 @@ BROWSING
 active constraints become sufficiently specific
         ↓
 BUYING
-````
+```
 
 The deterministic router considers:
 
@@ -524,9 +521,6 @@ Buying rank
 Candidate Pool
 ```
 
-Use this:
-
-````md
 ### 6.1 Structured constraints
 
 Structured logic currently owns:
@@ -535,7 +529,7 @@ Structured logic currently owns:
 price_min
 price_max
 brand (exact)
-````
+```
 
 When a budget is active:
 
@@ -568,8 +562,6 @@ Qwen product-card retrieval
 ```
 
 Price therefore acts as the primary numeric eligibility filter, while brand remains exact structured evidence.
-
-```
 
 ### 6.2 Slot-guided BM25 query compilation
 
@@ -614,9 +606,6 @@ C_use_case = {
 
 The system must **not** treat every synonym as an independent user requirement.
 
-These two sections are correct. I would tighten them slightly like this:
-
-````md
 ### 6.3 No Cartesian synonym enumeration
 
 Semantic expansions are grouped by active slot rather than combined through a
@@ -626,7 +615,7 @@ The system must not evaluate combinations such as:
 
 ```text
 20 × 20 × 20 × 20 × 20
-````
+```
 
 Instead, each active constraint contributes one small lexical concept group:
 
@@ -801,6 +790,9 @@ Retrieve a broad candidate set such as Top-100 before fusion.
 
 Browsing also runs a lexical route over the active goal text.
 
+The active-goal text contains only text associated with the current shopping
+goal; turns invalidated by overrides are excluded.
+
 This is an independent complement to dense retrieval, useful for exact names, rare terms, brands, model names, and lexical evidence that dense retrieval may blur.
 
 ### 7.4 Reciprocal Rank Fusion
@@ -822,7 +814,8 @@ RRF operates on rank positions rather than raw retrieval scores, allowing the
 dense and sparse candidate lists to be combined without explicit score
 calibration.
 
-Reference:
+References:
+- Cormack, Clarke & Büttcher, *Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods*, SIGIR 2009.
 - Lee et al., *On Complementarity Objectives for Hybrid Retrieval*, ACL 2023.
 
 ### 7.5 MMR diversity
@@ -878,7 +871,7 @@ facet distributions
         ↓
 question utility
         ↓
-clarify or recommend
+clarify or continue to ranking
 ```
 
 For each unresolved attribute, calculate:
@@ -1059,6 +1052,18 @@ soft long-term profile
 = stable preferences / tendencies used as weak priors
 ```
 
+Successful interaction / user feedback
+        ↓
+profile distillation
+        ↓
+long-term soft profile
+        ↓
+clarification + ranking priors
+
+Profile distillation records stable, repeated tendencies from successful
+interactions or explicit feedback. It does not require model retraining and
+must not promote a one-off request into a permanent preference.
+
 Long-term profile signals must never override explicit current-turn requirements.
 
 Good uses of profile priors include:
@@ -1082,7 +1087,6 @@ User:
 "black running shoes for wet weather under $100"
 
 Turn interpreter:
-intent = BUYING
 category = running shoes
 color = black
 use_case = wet weather
@@ -1106,7 +1110,6 @@ Buying rank
 Turn 1:
 "I'm exploring things for a beach holiday"
 
-intent = BROWSING
 use_case = beach holiday
         ↓
 Qwen3 dense + raw BM25
@@ -1208,7 +1211,8 @@ BGE
 
 BM25
 → efficient lexical product retrieval
-→ grouped expanded lexical signal for both modes
+→ Buying: BGE-expanded field-routed concept groups
+→ Browsing: raw/current-goal lexical complement
 
 Qwen3-Embedding-0.6B
 → product-level semantic retrieval for Browsing
@@ -1222,6 +1226,7 @@ MMR
 Candidate Pool Analyzer
 → compute facet statistics
 → decide whether another question is worth a turn
+
 ```
 
 ---
@@ -1242,7 +1247,6 @@ These rules should be preserved during implementation unless this document is ex
 10. **Over-generality can stop expensive computation and trigger clarification.**
 11. **Qwen3-Embedding-0.6B uses 1024 dimensions as the reference dense-product configuration.**
 12. **Long-term/profile context is a soft prior and never overrides explicit current intent.**
-13. **Product-level LLM reranking is optional, not part of the required core path unless benchmark evidence justifies it.**
 
 ---
 
@@ -1258,7 +1262,7 @@ Developers should implement toward this architecture in this order when gaps exi
 5. Browsing MMR diversity
 6. Adaptive BUYING ↔ BROWSING transitions
 7. Candidate-aware clarification / over-generality cutoff
-8. Profile priors and optional reranking only after core retrieval is benchmarked
+8. Profile priors after core retrieval is benchmarked
 ```
 
 Do not revive legacy retrieval stages merely because old code or artifacts still exist. If implementation and this document disagree, update the implementation to this architecture or deliberately revise this file first.
