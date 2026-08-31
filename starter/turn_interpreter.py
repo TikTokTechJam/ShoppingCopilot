@@ -399,7 +399,7 @@ class HostedTurnInterpreter:
         model: str,
         api_key: str | None = None,
         timeout: float = 60.0,
-        max_tokens: int = 512,
+        max_tokens: int = 4000,
     ) -> None:
         from annotation.client import HostedLLMClient
 
