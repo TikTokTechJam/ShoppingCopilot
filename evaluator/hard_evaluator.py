@@ -1023,6 +1023,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         except (TypeError, ValueError, RuntimeError):
             bm25_debug = {}
     return {
+        "mode": mode,
         "eligible": eligible,
         "global": global_ranking,
         "structured": structured,

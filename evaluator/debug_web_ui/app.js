@@ -79,22 +79,91 @@ function similarityRows(similarities) {
 function bm25Details(details) {
   if (!details || !details.available) return "";
   const raw = details.raw || {};
-  const groups = Object.entries(details.constraints || {});
-  const rows = groups.map(([field, item]) => `
-    <div class="bm25-query-row">
-      <span class="constraint-label">${esc(field)}</span>
-      <code title="${esc(item.expression || item.query || "")}">${esc(item.query || "")}</code>
-      <span>target #${item.target_rank ?? "MISS"}</span>
-      <strong>${item.target_score == null ? "N/A" : score(item.target_score)}</strong>
-    </div>`).join("");
-  return `<details class="bm25-details"><summary>BM25 query details</summary>
-    <div class="bm25-query-row raw"><span class="constraint-label">raw</span>
-      <code title="${esc(raw.expression || raw.query || "")}">${esc(raw.query || "")}</code>
-      <span>target #${raw.target_rank ?? "MISS"}</span>
-      <strong>${raw.target_score == null ? "N/A" : score(raw.target_score)}</strong>
-    </div>
-    ${rows || '<div class="muted">No constraint queries were active.</div>'}
+  const shareCell = (item) => item.target_contribution == null
+    ? '<span class="muted">—</span>'
+    : `<strong title="peak-normalised score / ${details.group_count} groups">${score(item.target_contribution)}</strong>`;
+  const groupRow = (label, item, extra) => `
+    <tr>
+      <td><span class="constraint-label">${esc(label)}</span></td>
+      <td><code title="${esc(item.expression || item.query || "")}">${esc(item.query || "")}</code>${extra || ""}</td>
+      <td>${Number(item.match_count || 0).toLocaleString()}</td>
+      <td>${item.target_rank ?? "MISS"}</td>
+      <td>${item.target_score == null ? "N/A" : score(item.target_score)}</td>
+      <td>${shareCell(item)}</td>
+    </tr>`;
+  const groups = Object.entries(details.constraints || {}).map(([field, item]) => {
+    const routed = (item.fields || []).map(column => {
+      const weight = (item.field_weights || {})[column];
+      return `<span class="chip" title="BM25 column weight ${weight ?? "?"}">${esc(column)}${weight == null ? "" : ` <span class="chip-score">${weight}</span>`}</span>`;
+    }).join("");
+    const terms = (item.terms || []).map(term => `<span class="chip">${esc(term)}</span>`).join("");
+    const extra = `<div class="bm25-group-meta"><div><span class="constraint-label">columns</span>${routed || '<span class="muted">none</span>'}</div>
+      <div><span class="constraint-label">terms</span>${terms || '<span class="muted">none</span>'}</div></div>`;
+    return groupRow(field, item, extra);
+  }).join("");
+  return `<details class="bm25-details" open><summary>BM25 concept groups — ${details.group_count || 0} active, each worth ${score(details.group_share)} of the fused score</summary>
+    <div class="table-wrap"><table class="ranking-table">
+      <thead><tr><th>Group</th><th>Query · routing · terms</th><th>Matches</th><th>Target #</th><th>Raw</th><th>Share</th></tr></thead>
+      <tbody>
+        ${groupRow("raw goal query", raw, "")}
+        ${groups || '<tr><td colspan=6 class="muted">No slot groups were active; only the raw query ran.</td></tr>'}
+      </tbody>
+    </table></div>
+    <div class="muted">Each group is peak-normalised independently, then averaged. A slot cannot dominate by having more synonym text — but a product matching one slot perfectly can lose to one matching every slot weakly.</div>
   </details>`;
+}
+
+function intentPanel(intent) {
+  if (!intent || !Object.keys(intent).length) return "";
+  if (intent.error) return `<div class="warning">Intent diagnostics unavailable: ${esc(intent.error)}</div>`;
+  const tierClass = intent.tier === "default" ? "warning" : intent.tier === "tags" ? "notice" : "ok";
+  const signals = (intent.signal_detail || []).map(item =>
+    `<span class="chip" title="${esc(item.evidence || "")} · weight ${item.weight}">${item.polarity > 0 ? "+" : "−"}${esc(item.name)}</span>`
+  ).join("");
+  return `<h3>Intent routing</h3>
+    <div class="kv"><span>Decision</span><b>${esc(intent.intent || "—")} @ ${score(intent.confidence)}${intent.weak ? " · weak" : ""}</b></div>
+    <div class="kv"><span>Tier</span><b class="${tierClass}">${esc(intent.tier || "—")}</b></div>
+    <div class="muted">${esc(intent.tier_meaning || "")}</div>
+    <div class="kv"><span>Margin</span><b>${score(intent.margin)}</b></div>
+    <div><span class="constraint-label">tags</span>${(intent.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("") || '<span class="muted">none</span>'}</div>
+    <div><span class="constraint-label">signals</span>${signals || '<span class="muted">none</span>'}</div>`;
+}
+
+function profilePanel(profile) {
+  if (!profile) return "";
+  if (!profile.enabled) return `<h3>User profile</h3><div class="muted">${esc(profile.reason || "disabled")}</div>`;
+  const tags = (profile.preference_tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("");
+  const rows = Object.entries(profile.factors || {}).map(([name, value]) => `
+    <div class="similarity-row"><code class="similarity-id">${esc(name)}</code><strong>${score(value)}</strong></div>`).join("");
+  const backendClass = profile.similarity_backend === "lexical" ? "warning" : "ok";
+  return `<h3>User profile</h3>
+    <div><span class="constraint-label">tags</span>${tags || '<span class="muted">none</span>'}</div>
+    <div class="kv"><span>Similarity backend</span><b class="${backendClass}">${esc(profile.similarity_backend || "—")}</b></div>
+    ${profile.backend_note ? `<div class="muted">${esc(profile.backend_note)}</div>` : ""}
+    ${profile.refused && profile.refused.length ? `<div class="kv"><span>Declined</span><b>${esc(profile.refused.join(", "))}</b></div>` : ""}
+    <h4>Answerability factors</h4>
+    <div class="similarity-list">${rows || '<span class="muted">none</span>'}</div>`;
+}
+
+function clarificationPanel(clarification) {
+  if (!clarification) return "";
+  const asked = `<div class="kv"><span>Asked this turn</span><b>${esc(clarification.next_asked || "none")}</b></div>`;
+  if (!clarification.attributes) {
+    return `<h3>Clarification</h3>${asked}<div class="muted">${esc(clarification.error || "No candidate pool was available for scoring.")}</div>`;
+  }
+  const rows = clarification.attributes.map(row => {
+    const chosen = row.attribute === clarification.next_asked;
+    const cells = row.eligible
+      ? `<td>${score(row.utility)}</td><td>${score(row.coverage)}</td><td>${score(row.gini)}</td><td>${row.values ?? "—"}</td><td>${(row.top_values || []).map(v => esc(v)).join(", ")}</td>`
+      : `<td colspan=5 class="muted">${esc(row.reason || "not eligible")}</td>`;
+    return `<tr class="${chosen ? "target-row" : row.eligible ? "" : "muted"}"><td>${chosen ? "→ " : ""}${esc(row.attribute)}</td>${cells}</tr>`;
+  }).join("");
+  return `<h3>Clarification</h3>${asked}
+    <div class="kv"><span>Pool</span><b>${Number(clarification.candidate_count || 0).toLocaleString()} candidates · ${clarification.pool_broad ? "broad" : `at or below ${clarification.broad_threshold}, no question`}</b></div>
+    <div class="kv"><span>Abstain floor</span><b>${score(clarification.floor)}</b></div>
+    <div class="table-wrap"><table class="ranking-table">
+      <thead><tr><th>Attribute</th><th>Utility</th><th>Coverage</th><th>Gini</th><th>Values</th><th>Top values</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
 }
 
 function renderBanner(data) {
@@ -138,6 +207,8 @@ function renderMissSearch(data) {
 function renderState(data) {
   const state = data.state;
   if (!state) { $("state").innerHTML = "—"; return; }
+  const turns = data.turns || [];
+  const lastTurn = turns[turns.length - 1] || {};
   const canonical = data.layer2 || {};
   const productDense = data.product_dense || {};
   const benchmark = data.benchmark || {};
@@ -151,6 +222,10 @@ function renderState(data) {
   $("state").innerHTML = `
     ${interactiveHint}
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
+    ${intentPanel(lastTurn.intent)}
+    ${profilePanel(lastTurn.profile)}
+    ${clarificationPanel(lastTurn.clarification)}
+    <h3>Session</h3>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
     <div class="kv"><span>Clarification cycle</span><b>${esc(state.clarification_cycle ?? 1)}</b></div>
     <div class="kv"><span>Ask counts</span><b><code>${esc(json(state.attribute_call_count || {}))}</code></b></div>
@@ -179,6 +254,62 @@ function renderState(data) {
     <div class="muted">${benchmark.complete ? "Final session score" : "Provisional until session completes"}</div>`;
 }
 
+const SIGNAL_LABELS = {
+  structured: "Structured", canonical: "Canonical BGE", dense: "Product dense",
+  bm25: "BM25 lexical", fusion: "RRF", mmr: "MMR",
+};
+
+function roleOf(r, key) {
+  return (r.signal_roles || {})[key] || "active";
+}
+
+function roleNote(r, key) {
+  const role = roleOf(r, key);
+  if (role === "active") return "";
+  if (role === "diagnostic") return "diagnostic only — never ranks in either mode";
+  const weight = (r.mode_weights || {})[key];
+  return `inactive in ${r.mode || "this mode"}${weight == null ? "" : ` (weight ${weight.toFixed(2)})`}`;
+}
+
+function signalCell(r, key, value, formatter) {
+  const role = roleOf(r, key);
+  const note = roleNote(r, key);
+  const shown = role === "active" ? formatter(value) : `<span class="muted">${formatter(value)}</span>`;
+  return `<div class="signal-${role}"><span>${SIGNAL_LABELS[key]}</span><b title="${esc(note || String(value ?? "N/A"))}">${shown}</b>${note ? `<small>${esc(note)}</small>` : ""}</div>`;
+}
+
+function rankGrid(r, prefix) {
+  const rank = (key) => r[`${prefix}${key}_rank`] ?? "N/A";
+  return `<div class="rank-grid">
+    ${signalCell(r, "structured", rank("structured"), String)}
+    ${signalCell(r, "canonical", rank("canonical"), String)}
+    ${signalCell(r, "dense", rank("dense"), String)}
+    ${signalCell(r, "bm25", rank("bm25"), String)}
+    <div class="signal-active"><span>Final</span><b>${r[`${prefix}hybrid_rank`] ?? "N/A"}</b></div>
+  </div>`;
+}
+
+function scoreGrid(r) {
+  return `<div class="score-grid">
+    ${signalCell(r, "structured", r.structured_score, score)}
+    ${signalCell(r, "canonical", r.canonical_score ?? r.semantic_score, score)}
+    ${signalCell(r, "dense", r.dense_score, score)}
+    ${signalCell(r, "bm25", r.bm25_score, score)}
+    ${signalCell(r, "fusion", r.fusion_score, score)}
+    ${signalCell(r, "mmr", r.mmr_score, score)}
+    <div class="signal-active"><span>Final</span><b>${score(r.final_score)}</b></div>
+  </div>`;
+}
+
+function signalLegend(r) {
+  const weights = r.mode_weights || {};
+  const active = Object.entries(r.signal_roles || {})
+    .filter(([, role]) => role === "active")
+    .map(([key]) => SIGNAL_LABELS[key]).join(" + ");
+  return `<div class="signal-legend"><b>${esc(r.mode || "—")}</b> ranks on <b>${esc(active || "nothing")}</b>
+    <small>structured ${(weights.structured ?? 0).toFixed(2)} · semantic ${(weights.semantic ?? 0).toFixed(2)} · dense ${(weights.dense ?? 0).toFixed(2)} · bm25 ${(weights.bm25 ?? 0).toFixed(2)}</small></div>`;
+}
+
 function renderDiagnostics(data) {
   const turns = data.turns || [];
   const turn = turns[turns.length - 1];
@@ -199,32 +330,14 @@ function renderDiagnostics(data) {
   $("diagnostics").innerHTML = `
     <div class="status">${status}</div>
     <div class="muted">Target status: <strong>${esc(targetStatus)}</strong> · eligible pool ${Number(r.eligible_count || 0).toLocaleString()} · diagnostic pool ${Number(r.global_count || 0).toLocaleString()}</div>
+    ${signalLegend(r)}
     <h3>Target position in eligible diagnostic ranking</h3>
-    <div class="rank-grid">
-      <div><span>Structured</span><b>${r.structured_rank ?? "N/A"}</b></div>
-      <div><span>Canonical</span><b>${r.canonical_rank ?? "N/A"}</b></div>
-      <div><span>Product dense</span><b>${r.dense_rank ?? "N/A"}</b></div>
-      <div><span>BM25</span><b>${r.bm25_rank ?? "N/A"}</b></div>
-      <div><span>Hybrid</span><b>${r.hybrid_rank ?? "N/A"}</b></div>
-    </div>
+    ${rankGrid(r, "")}
     <h3>Target position in unfiltered diagnostic ranking</h3>
-    <div class="rank-grid">
-      <div><span>Structured</span><b>${r.global_structured_rank ?? "N/A"}</b></div>
-      <div><span>Canonical</span><b>${r.global_canonical_rank ?? "N/A"}</b></div>
-      <div><span>Product dense</span><b>${r.global_dense_rank ?? "N/A"}</b></div>
-      <div><span>BM25</span><b>${r.global_bm25_rank ?? "N/A"}</b></div>
-      <div><span>Hybrid</span><b>${r.global_hybrid_rank ?? "N/A"}</b></div>
-    </div>
-    <div class="score-grid">
-      <div><span>Structured</span><strong title="${esc(r.structured_score ?? "N/A")}">${score(r.structured_score)}</strong></div>
-      <div><span>Canonical BGE</span><strong title="${esc(r.canonical_score ?? r.semantic_score ?? "N/A")}">${score(r.canonical_score ?? r.semantic_score)}</strong></div>
-      <div><span>Product dense</span><strong title="${esc(r.dense_score ?? "N/A")}">${score(r.dense_score)}</strong></div>
-      <div><span>BM25 lexical</span><strong title="${esc(r.bm25_score ?? "N/A")}">${score(r.bm25_score)}</strong></div>
-      <div><span>RRF</span><strong title="${esc(r.fusion_score ?? "N/A")}">${score(r.fusion_score)}</strong></div>
-      <div><span>MMR</span><strong title="${esc(r.mmr_score ?? "N/A")}">${score(r.mmr_score)}</strong></div>
-      <div><span>Final</span><strong title="${esc(r.final_score ?? "N/A")}">${score(r.final_score)}</strong></div>
-    </div>
-    <h3>Top 10 (reranker order)</h3>
+    ${rankGrid(r, "global_")}
+    <h3>Target scores</h3>
+    ${scoreGrid(r)}
+    <h3>Top 10 (final ranking)</h3>
     <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Struct.</th><th>Canonical</th><th>Dense</th><th>BM25</th><th>RRF</th><th>MMR</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=10>none</td></tr>"}</tbody></table></div>
     ${bm25Details(r.bm25_debug)}
     <h3>Override</h3>
@@ -241,6 +354,26 @@ function renderTarget(data) {
     <h3>Canonical facts</h3><div class="target-facts">${chips(target.facts || {})}</div>`;
 }
 
+function deltaRows(delta) {
+  const entries = Object.entries(delta || {});
+  if (!entries.length) return '<span class="muted">no change</span>';
+  const list = (values) => {
+    const items = Array.isArray(values) ? values : values == null ? [] : [values];
+    return items.length
+      ? items.map(v => `<span class="chip">${esc(typeof v === "object" ? JSON.stringify(v) : v)}</span>`).join("")
+      : '<span class="muted">∅</span>';
+  };
+  return `<div class="constraint-list">${entries.map(([field, change]) => {
+    // Older payloads sent the after-value alone; keep rendering those.
+    if (change == null || Array.isArray(change) || typeof change !== "object") {
+      return `<div class="constraint-row"><span class="constraint-label">${esc(field)}</span><div class="constraint-values">${list(change)}</div></div>`;
+    }
+    const removed = JSON.stringify(change.before) !== JSON.stringify(change.after) && (change.before || []).length;
+    return `<div class="constraint-row"><span class="constraint-label">${esc(field)}</span>
+      <div class="constraint-values">${removed ? `${list(change.before)}<span class="delta-arrow">→</span>` : ""}${list(change.after)}</div></div>`;
+  }).join("")}</div>`;
+}
+
 function renderConversation(data) {
   const turns = data.turns || [];
   if (!turns.length) { $("conversation").className = "conversation empty"; $("conversation").textContent = "No turns executed."; return; }
@@ -253,8 +386,8 @@ function renderConversation(data) {
     return `<article class="turn-card"><div class="turn-heading"><h3>Turn ${turn.turn}</h3>${status}</div>
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
-      <h4>Structured extracted this turn</h4><div>${chips(state.extracted_this_turn?.structured || {})}</div>
-      <h4>BGE canonical expansions this turn</h4><div>${chips(state.extracted_this_turn?.semantic || {}, state.semantic_constraints?.similarities)}</div>
+      <h4>Structured extracted this turn</h4><div>${deltaRows(state.extracted_this_turn?.structured || {})}</div>
+      <h4>BGE canonical expansions this turn</h4><div>${deltaRows(state.extracted_this_turn?.semantic || {})}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated BGE canonical expansions</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Retrieval query text</h4><details><summary>show query</summary><p class="query">${esc(state.retrieval_query_text || state.query_text || "")}</p></details>
