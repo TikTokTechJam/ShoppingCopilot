@@ -1220,24 +1220,13 @@ class ProductRetriever:
                     (phrase,),
                     allowed_asins=eligible_asins,
                 )
-                peak = max(
-                    (
-                        float(score)
-                        for score in scores.values()
-                        if math.isfinite(float(score))
-                    ),
-                    default=0.0,
-                )
-                if peak <= 0.0:
-                    continue
                 for asin, score in scores.items():
                     value = float(score)
                     if not math.isfinite(value) or value <= 0.0:
                         continue
-                    normalized = min(1.0, max(0.0, value / peak))
                     key = str(asin)
                     totals[key] = totals.get(key, 0.0) + (
-                        float(point_weight) * normalized
+                        float(point_weight) * value
                     )
             return totals
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
