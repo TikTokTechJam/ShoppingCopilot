@@ -31,6 +31,7 @@ class SentenceTransformerRetrievalEncoder:
         task: str | None = None,
         document_prompt_name: str | None = None,
         query_prompt_name: str | None = None,
+        query_instruction: str | None = None,
         batch_size: int = 32,
         show_progress_bar: bool = False,
     ) -> None:
@@ -51,6 +52,9 @@ class SentenceTransformerRetrievalEncoder:
         self.task = task
         self.document_prompt_name = document_prompt_name
         self.query_prompt_name = query_prompt_name
+        self.query_instruction = (
+            str(query_instruction).strip() if query_instruction else None
+        )
         self.batch_size = batch_size
         self.show_progress_bar = show_progress_bar
         self.supports_full_document_batch = True
@@ -72,7 +76,10 @@ class SentenceTransformerRetrievalEncoder:
         return self._encode(texts, prompt_name=self.document_prompt_name)
 
     def embed_query(self, text: str) -> Any:
-        return self._encode([text], prompt_name=self.query_prompt_name)
+        query = str(text)
+        if self.query_instruction:
+            query = f"Instruct: {self.query_instruction}\nQuery: {query}"
+        return self._encode([query], prompt_name=self.query_prompt_name)
 
 
 class HashEmbeddingModel:
@@ -139,6 +146,7 @@ def load_local_sentence_transformer(
     task: str | None = None,
     document_prompt_name: str | None = None,
     query_prompt_name: str | None = None,
+    query_instruction: str | None = None,
     trust_remote_code: bool = False,
     batch_size: int = 32,
     device: str | None = None,
@@ -191,6 +199,7 @@ def load_local_sentence_transformer(
         task=task,
         document_prompt_name=document_prompt_name,
         query_prompt_name=query_prompt_name,
+        query_instruction=query_instruction,
         batch_size=batch_size,
         show_progress_bar=show_progress_bar,
     )

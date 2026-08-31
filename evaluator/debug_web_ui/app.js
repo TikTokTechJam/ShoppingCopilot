@@ -389,6 +389,7 @@ function renderConversation(data) {
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated BGE canonical expansions</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
       <h4>Retrieval query text</h4><details><summary>show query</summary><p class="query">${esc(state.retrieval_query_text || state.query_text || "")}</p></details>
+      <h4>Qwen product query</h4><details><summary>show compiled query</summary><p class="query"><b>Instruct:</b> ${esc(state.dense_query_instruction || "")}<br><b>Query:</b><br>${esc(state.dense_query_text || "—")}</p></details>
       <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
   }).join("");
 }
