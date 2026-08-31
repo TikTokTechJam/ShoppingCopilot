@@ -1087,7 +1087,7 @@ class ProductRetriever:
                 semantic_constraints,
             )
             raw_scores = self._raw_bm25_scores(query_text, eligible_asins)
-            if not groups and not raw_scores:
+            if not group_specs and not raw_scores:
                 return {}
 
             # Include the raw current-goal query even when no structured slot
