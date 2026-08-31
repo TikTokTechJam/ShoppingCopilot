@@ -62,7 +62,7 @@ structured state, and `category`, `color`, `material`, `style`, `feature`, and
 segments, price, and size. The local Qwen adapter formats the query as:
 
 ```text
-Instruct: Given an open-ended shopping request, retrieve products that best match the shopper's use case, preferences, and desired attributes.
+Instruct: Retrieve products that best match the shopper's product type, intended use, desired features, and preferences.
 Query: category: jumpsuit
 feature: lightweight
 use_case: cosplay
