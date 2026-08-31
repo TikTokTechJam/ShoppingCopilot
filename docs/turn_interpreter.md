@@ -48,4 +48,4 @@ and does not download a model.
 
 The model should be an instruction-following causal language model that can
 return JSON. The current repository does not include a generative turn model;
-the existing Jina/BGE encoders and Qwen reranker are not suitable substitutes.
+the existing Jina/BGE encoders are not suitable substitutes.

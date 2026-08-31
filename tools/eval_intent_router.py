@@ -1,10 +1,9 @@
 """Score the intent router against the labelled sets.
 
-    python -m tools.eval_intent_router              # rules tier only
-    python -m tools.eval_intent_router --model      # rules + reranker cascade
+    python -m tools.eval_intent_router
 
-Reports accuracy, macro-F1 and a confidence-band calibration table, plus a
-per-tier breakdown when the reranker is enabled.
+Reports accuracy, macro-F1, a confidence-band calibration table and a
+per-tier breakdown.
 
 This tool deliberately does not read the generated benchmark sessions. Any
 labelled set built from templated sessions teaches a classifier the template;
@@ -22,7 +21,6 @@ from pathlib import Path
 from starter.routing import (
     BROWSING,
     BUYING,
-    CascadingIntentRouter,
     LexicalIntentRouter,
     TwoPhaseIntentRouter,
 )
@@ -104,7 +102,6 @@ def calibration(rows: list[tuple[str, str, float]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", action="store_true", help="enable the reranker tier")
     parser.add_argument("--ledger-only", action="store_true",
                         help="skip Phase 1 and the BROWSING default")
     parser.add_argument("--sweep", action="store_true",
@@ -112,33 +109,17 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.sweep:
-        sweep(args.model)
+        sweep()
         return
 
-    if args.model:
-        from starter.routing.local_model import QwenRerankerBackend
-
-        backend = QwenRerankerBackend()
-        missing = backend.missing_requirements()
-        if missing:
-            print("reranker unavailable:")
-            for item in missing:
-                print("   ", item)
-            print("  see requirements-reranker.txt and tools/fetch_reranker.py")
-            return
-        backend_obj = backend
-    else:
-        backend_obj = None
-
     if args.ledger_only:
-        router = CascadingIntentRouter(backend=backend_obj)
-        label = "signal ledger only" + (" + reranker" if backend_obj else "")
+        router = LexicalIntentRouter()
+        label = "signal ledger only"
     else:
-        router = TwoPhaseIntentRouter(backend=backend_obj)
+        router = TwoPhaseIntentRouter()
         label = (
             f"two-phase (tags >= {router.tag_threshold}, "
             f"default BROWSING below {router.decision_confidence})"
-            + (" + reranker" if backend_obj else "")
         )
 
     print("=" * 72)
@@ -155,21 +136,10 @@ def main() -> None:
     if isinstance(router, TwoPhaseIntentRouter):
         print(f"  phase 1 (tags)      {router.phase1_decisions:4d}  ({router.phase1_decisions / total:.1%})")
         print(f"  defaulted BROWSING  {router.defaulted:4d}  ({router.defaulted / total:.1%})")
-    print(f"  escalated to model  {router.escalations:4d}  ({router.escalations / total:.1%})"
-          f"   failures: {router.backend_failures}")
 
 
-def sweep(use_model: bool) -> None:
+def sweep() -> None:
     """Tag threshold against accuracy, so the choice of 2 is a measured one."""
-    backend = None
-    if use_model:
-        from starter.routing.local_model import QwenRerankerBackend
-
-        backend = QwenRerankerBackend()
-        if backend.missing_requirements():
-            print("reranker unavailable; sweeping without it")
-            backend = None
-
     rows = load(GOLDEN) + load(DEV)
     print(f"{'config':44} {'correct':>9}  {'macro-F1':>8}  {'phase1':>7}  {'default':>8}")
     print("-" * 84)
@@ -177,7 +147,7 @@ def sweep(use_model: bool) -> None:
     for threshold in (1, 2, 3, 4):
         for decision in (0.50, 0.70):
             router = TwoPhaseIntentRouter(
-                backend=backend, tag_threshold=threshold, decision_confidence=decision
+                tag_threshold=threshold, decision_confidence=decision
             )
             pairs = [(r["intent"], router.classify(r["message"]).intent) for r in rows]
             correct = sum(1 for g, p in pairs if g == p)

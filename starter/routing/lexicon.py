@@ -306,9 +306,8 @@ LOGISTIC_K = 1.60
 # honest answer is "explore, but I have no evidence".
 NO_CONTENT_CONFIDENCE = 0.55
 
-# Below this the rules tier does not trust itself. Two things key off it: the
-# `weak` flag that tells issue #9 to blend retrieval tracks rather than fork,
-# and escalation to the reranker.
+# Below this the rules tier does not trust itself. The `weak` flag keys off
+# it, telling issue #9 to blend retrieval tracks rather than fork.
 WEAK_CONFIDENCE = 0.70
 
 # Phase 1: how many distinct canonical constraint fields a message must fill
@@ -333,11 +332,6 @@ BROWSING_VETO_CONFIDENCE = 0.70
 # retrieval plus a clarifying question still converges, whereas a wrongly
 # confident BUYING narrows onto constraints the customer never gave.
 DECISION_CONFIDENCE = 0.70
-
-# The reranker only overrides the rules tier when it is this sure. Below it,
-# the rules answer stands: an unsure second opinion is not worth discarding a
-# deterministic first one for.
-RERANKER_ACCEPT_CONFIDENCE = 0.80
 
 # A flip after the session has started needs more evidence than the first
 # decision did, so ordinary answer turns cannot rock the router back and forth.

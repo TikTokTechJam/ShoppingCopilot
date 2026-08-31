@@ -4,18 +4,12 @@ The router answers exactly one question: should the current user message be
 treated as a targeted purchase or as open-ended exploration? It knows nothing
 about retrieval, ranking, conversation state, or clarification policy.
 
-Three pieces live here:
+Two pieces live here:
 
 `LexicalIntentRouter`
     A pure function over one message. Scores the signal ledger in
     `lexicon.py`, turns the signed margin into a confidence, and returns an
     auditable `IntentResult`. Standard library only, microseconds per call.
-
-`CascadingIntentRouter`
-    Runs the lexical tier first and escalates only low-confidence messages to
-    a local reranker (`local_model.QwenRerankerBackend`). Confidence therefore
-    does real work: it decides whether the cheap path is trusted. If the model
-    is unavailable for any reason, the lexical answer stands.
 
 `SessionIntentTracker`
     Seeds a decision on the first turn and re-runs the router only on
@@ -47,7 +41,7 @@ Intent = Literal["BUYING", "BROWSING"]
 
 # Which implementation produced a result. Recorded so a regression can be
 # attributed to a tier rather than to "the router".
-Tier = Literal["tags", "rules", "reranker", "rules_fallback", "default"]
+Tier = Literal["tags", "rules", "default"]
 
 
 @dataclass(frozen=True)
@@ -188,89 +182,6 @@ class LexicalIntentRouter:
                 # are not three times the evidence of one.
                 found.append((spec, match))
         return found
-
-
-class CascadingIntentRouter:
-    """Rules first; the reranker only when the rules tier does not trust itself.
-
-    The escalation band is narrow and the tracker below fires the router once
-    or twice per session, so a model costing tens of milliseconds is
-    affordable where one costing that on every turn would not be.
-    """
-
-    def __init__(
-        self,
-        backend: "object | None" = None,
-        *,
-        threshold: float | None = None,
-        rules: LexicalIntentRouter | None = None,
-    ) -> None:
-        self.rules = rules or LexicalIntentRouter()
-        self.backend = backend
-        self.threshold = (
-            lexicon.WEAK_CONFIDENCE if threshold is None else float(threshold)
-        )
-        self.escalations = 0
-        self.backend_failures = 0
-
-    def classify(self, message: str) -> IntentResult:
-        base = self.rules.classify(message)
-        if self.backend is None or base.confidence >= self.threshold:
-            return base
-        if self.rules.is_contentless(message):
-            # There is nothing in a greeting for a model to read. Escalating
-            # it only invites a confident answer about no evidence.
-            return base
-
-        self.escalations += 1
-        try:
-            scored = self.backend.score(message)
-        except Exception:
-            # An optional model must never take the router down with it.
-            self.backend_failures += 1
-            return IntentResult(
-                intent=base.intent,
-                confidence=base.confidence,
-                margin=base.margin,
-                signals=base.signals,
-                weak=True,
-                tier="rules_fallback",
-            )
-
-        if scored is None:
-            return IntentResult(
-                intent=base.intent,
-                confidence=base.confidence,
-                margin=base.margin,
-                signals=base.signals,
-                weak=True,
-                tier="rules_fallback",
-            )
-
-        intent, confidence = scored
-        if (
-            intent != base.intent
-            and confidence < lexicon.RERANKER_ACCEPT_CONFIDENCE
-        ):
-            # An unsure disagreement is not enough to discard a deterministic
-            # answer. Keep the rules verdict, flagged weak either way.
-            return IntentResult(
-                intent=base.intent,
-                confidence=base.confidence,
-                margin=base.margin,
-                signals=base.signals,
-                weak=True,
-                tier="rules_fallback",
-            )
-
-        return IntentResult(
-            intent=intent,
-            confidence=confidence,
-            margin=base.margin,
-            signals=base.signals,
-            weak=confidence < lexicon.WEAK_CONFIDENCE,
-            tier="reranker",
-        )
 
 
 @dataclass
@@ -421,8 +332,7 @@ class TwoPhaseIntentRouter:
 
     Phase 2 handles everything Phase 1 cannot settle, which is every message
     whose intent lives in *how* it is phrased rather than in what it names.
-    That is the signal ledger, optionally refined by the reranker on the
-    messages the ledger itself is unsure about.
+    That is the signal ledger.
 
     The terminal rule is deliberate asymmetry: anything still undecided is
     routed BROWSING. The two errors are not symmetric. A Browsing session that
@@ -435,11 +345,9 @@ class TwoPhaseIntentRouter:
     def __init__(
         self,
         *,
-        backend: "object | None" = None,
         tag_threshold: int | None = None,
         decision_confidence: float | None = None,
         rules: LexicalIntentRouter | None = None,
-        escalation_threshold: float | None = None,
     ) -> None:
         self.rules = rules or LexicalIntentRouter()
         self.tag_threshold = (
@@ -450,27 +358,12 @@ class TwoPhaseIntentRouter:
             if decision_confidence is None
             else float(decision_confidence)
         )
-        self.cascade = CascadingIntentRouter(
-            backend=backend, threshold=escalation_threshold, rules=self.rules
-        )
         self.phase1_decisions = 0
         self.phase1_vetoed = 0
         self.defaulted = 0
 
-    @property
-    def escalations(self) -> int:
-        return self.cascade.escalations
-
-    @property
-    def backend_failures(self) -> int:
-        return self.cascade.backend_failures
-
     def _browsing_veto(self, message: str) -> bool:
-        """Whether the ledger reads this message as confidently exploratory.
-
-        Deliberately the pure lexical tier, not the cascade: a veto must stay
-        a cheap pure-function check and must never escalate to the reranker.
-        """
+        """Whether the ledger reads this message as confidently exploratory."""
         result = self.rules.classify(message)
         return (
             result.intent == BROWSING
@@ -512,8 +405,8 @@ class TwoPhaseIntentRouter:
                     constraints=constraints,
                 )
 
-        # -- Phase 2: fall back to the signal ledger (and the reranker) ------
-        result = self.cascade.classify(message)
+        # -- Phase 2: fall back to the signal ledger -------------------------
+        result = self.rules.classify(message)
 
         # -- Terminal rule: undecided means BROWSING -------------------------
         if result.confidence < self.decision_confidence and result.intent != BROWSING:

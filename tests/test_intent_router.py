@@ -9,7 +9,6 @@ from evaluator.hard_evaluator import customer_sentence
 from starter.routing import (
     BROWSING,
     BUYING,
-    CascadingIntentRouter,
     IntentResult,
     LexicalIntentRouter,
     SessionIntentTracker,
@@ -21,7 +20,6 @@ from starter.routing.constraints import (
     CATEGORICAL_FIELDS,
     _load_default_dictionary,
 )
-from starter.routing.local_model import LABEL_QUERIES, QwenRerankerBackend
 
 
 ROOT = Path(__file__).parents[1]
@@ -32,21 +30,6 @@ DEV_PATH = ROOT / "data" / "derived" / "intent" / "dev_set.jsonl"
 def load_jsonl(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
-
-
-class StubBackend:
-    """Stands in for the reranker so the cascade is testable without 1.2 GB."""
-
-    def __init__(self, result=None, *, raises: BaseException | None = None) -> None:
-        self.result = result
-        self.raises = raises
-        self.calls: list[str] = []
-
-    def score(self, message: str):
-        self.calls.append(message)
-        if self.raises is not None:
-            raise self.raises
-        return self.result
 
 
 # ---------------------------------------------------------------------------
@@ -157,64 +140,13 @@ class AmbiguityTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# The cascade
+# The rules tier
 # ---------------------------------------------------------------------------
 
 
-class CascadeTest(unittest.TestCase):
-    CONFIDENT = "I need black waterproof hiking boots under $100."
-    UNCERTAIN = "Show me belts, I'm just getting a feel for the range."
-
-    def test_confident_messages_do_not_reach_the_model(self) -> None:
-        backend = StubBackend((BROWSING, 0.99))
-        router = CascadingIntentRouter(backend=backend)
-        result = router.classify(self.CONFIDENT)
-        self.assertEqual(result.tier, "rules")
-        self.assertEqual(backend.calls, [])
-        self.assertEqual(router.escalations, 0)
-
-    def test_uncertain_messages_escalate(self) -> None:
-        backend = StubBackend((BROWSING, 0.95))
-        router = CascadingIntentRouter(backend=backend)
-        result = router.classify(self.UNCERTAIN)
-        self.assertEqual(result.tier, "reranker")
-        self.assertEqual(result.intent, BROWSING)
-        self.assertEqual(len(backend.calls), 1)
-
-    def test_contentless_messages_are_not_escalated(self) -> None:
-        """A greeting holds nothing for a model to read."""
-        backend = StubBackend((BUYING, 0.99))
-        router = CascadingIntentRouter(backend=backend)
-        result = router.classify("hi")
-        self.assertEqual(backend.calls, [])
-        self.assertEqual(result.intent, BROWSING)
-
-    def test_unsure_disagreement_does_not_override_the_rules(self) -> None:
-        rules_says = LexicalIntentRouter().classify(self.UNCERTAIN)
-        backend = StubBackend(
-            (BROWSING if rules_says.intent == BUYING else BUYING, 0.55)
-        )
-        router = CascadingIntentRouter(backend=backend)
-        result = router.classify(self.UNCERTAIN)
-        self.assertEqual(result.intent, rules_says.intent)
-        self.assertEqual(result.tier, "rules_fallback")
-        self.assertTrue(result.weak)
-
-    def test_backend_exception_falls_back_to_rules(self) -> None:
-        backend = StubBackend(raises=RuntimeError("model exploded"))
-        router = CascadingIntentRouter(backend=backend)
-        expected = LexicalIntentRouter().classify(self.UNCERTAIN)
-        result = router.classify(self.UNCERTAIN)
-        self.assertEqual(result.intent, expected.intent)
-        self.assertEqual(result.tier, "rules_fallback")
-        self.assertEqual(router.backend_failures, 1)
-
-    def test_backend_returning_none_falls_back_to_rules(self) -> None:
-        router = CascadingIntentRouter(backend=StubBackend(None))
-        self.assertEqual(router.classify(self.UNCERTAIN).tier, "rules_fallback")
-
-    def test_absent_backend_is_pure_rules(self) -> None:
-        router = CascadingIntentRouter(backend=None)
+class RulesTierTest(unittest.TestCase):
+    def test_the_golden_set_is_settled_by_the_rules_tier(self) -> None:
+        router = LexicalIntentRouter()
         for row in load_jsonl(GOLDEN_PATH):
             result = router.classify(row["message"])
             self.assertEqual(result.tier, "rules")
@@ -582,14 +514,13 @@ class SessionFlowTest(unittest.TestCase):
 
 
 class DevSetTest(unittest.TestCase):
-    def test_pipeline_floor_without_the_model(self) -> None:
-        """The pipeline must stay usable if the reranker is never installed."""
+    def test_pipeline_floor(self) -> None:
         router = TwoPhaseIntentRouter()
         rows = load_jsonl(DEV_PATH)
         correct = sum(1 for r in rows if router.classify(r["message"]).intent == r["intent"])
         self.assertGreaterEqual(correct / len(rows), 0.90, f"{correct}/{len(rows)}")
 
-    def test_golden_set_holds_without_the_model(self) -> None:
+    def test_golden_set_holds(self) -> None:
         router = TwoPhaseIntentRouter()
         rows = load_jsonl(GOLDEN_PATH)
         correct = sum(1 for r in rows if router.classify(r["message"]).intent == r["intent"])
@@ -615,8 +546,8 @@ class DevSetTest(unittest.TestCase):
     def test_misses_are_flagged_weak(self) -> None:
         """A wrong answer must at least not be a confident one.
 
-        This is the property the cascade depends on: everything the rules tier
-        gets wrong has to land in the band that escalates.
+        Everything the rules tier gets wrong has to land in the weak band, so
+        downstream retrieval blends tracks rather than forking on it.
         """
         router = LexicalIntentRouter()
         confident_misses = [
@@ -725,73 +656,6 @@ class LexiconHygieneTest(unittest.TestCase):
         names = {spec.name for spec in lexicon.SIGNALS}
         for attribute, signal in lexicon.ATTRIBUTE_SIGNALS.items():
             self.assertIn(signal, names, attribute)
-
-    def test_label_queries_cover_exactly_the_two_intents(self) -> None:
-        self.assertEqual(set(LABEL_QUERIES), {BUYING, BROWSING})
-
-
-# ---------------------------------------------------------------------------
-# The real model, when it is installed
-# ---------------------------------------------------------------------------
-
-
-class RerankerTest(unittest.TestCase):
-    """Skipped unless `requirements-reranker.txt` and the weights are present."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.backend = QwenRerankerBackend()
-        missing = cls.backend.missing_requirements()
-        if missing:
-            raise unittest.SkipTest(f"reranker unavailable: {missing}")
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.backend.close()
-
-    def test_scores_the_ambiguity_cases_the_rules_tier_cannot(self) -> None:
-        cases = [
-            ("Show me belts, I'm just getting a feel for the range.", BROWSING),
-            ("I might want a raincoat, still weighing it up.", BROWSING),
-            ("I'm looking for cardigans.", BUYING),
-        ]
-        for message, expected in cases:
-            scored = self.backend.score(message)
-            self.assertIsNotNone(scored, message)
-            self.assertEqual(scored[0], expected, message)
-
-    def test_confidence_is_a_probability(self) -> None:
-        scored = self.backend.score("I need running shoes.")
-        self.assertIsNotNone(scored)
-        self.assertGreaterEqual(scored[1], 0.5)
-        self.assertLessEqual(scored[1], 0.99)
-
-    def test_empty_message_scores_nothing(self) -> None:
-        self.assertIsNone(self.backend.score("   "))
-
-    def test_scoring_is_deterministic(self) -> None:
-        message = "I'd like to see a range before I narrow anything down."
-        first = self.backend.score(message)
-        self.backend._score_cached.cache_clear()
-        self.assertEqual(self.backend.score(message), first)
-
-    def test_cascade_beats_rules_alone_on_the_dev_set(self) -> None:
-        """The reason to accept the dependency at all."""
-        rows = load_jsonl(DEV_PATH) + load_jsonl(GOLDEN_PATH)
-        rules = LexicalIntentRouter()
-        cascade = CascadingIntentRouter(backend=self.backend)
-
-        rules_correct = sum(
-            1 for r in rows if rules.classify(r["message"]).intent == r["intent"]
-        )
-        cascade_correct = sum(
-            1 for r in rows if cascade.classify(r["message"]).intent == r["intent"]
-        )
-        self.assertGreater(
-            cascade_correct,
-            rules_correct,
-            f"cascade {cascade_correct} vs rules {rules_correct} of {len(rows)}",
-        )
 
 
 if __name__ == "__main__":
