@@ -245,6 +245,12 @@ def build_v5_attribute_embeddings(
     dictionary = Path(dictionary_dir)
     output = Path(output_dir)
     rows_by_attribute = _load_dictionary_rows(dictionary)
+    if "style" in selected_attributes and not rows_by_attribute["style"]:
+        raise RuntimeError(
+            "style embedding requested but the V5 dictionary has no style values; "
+            "rebuild it from data/derived/annotations/v5/annotations.jsonl "
+            "after style.jsonl has been aggregated"
+        )
     model_path = _resolve_model_path(model)
     _log(f"dictionary: {dictionary}")
     _log(f"model: {model_path} (local_files_only=True)")

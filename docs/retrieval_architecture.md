@@ -42,7 +42,8 @@ the resulting product score is retained for diagnostics only.
 ### V5 product-card vectors
 
 Browsing uses a separate product-level artifact built from the title and V5
-facts (`category`, `brand`, `color`, `material`, `feature`, and `use_case`):
+facts (`category`, `brand`, `color`, `material`, `style`, `feature`, and
+`use_case`):
 
 ```text
 V5 annotations + catalog title
@@ -163,6 +164,23 @@ data/derived/annotations/v5/dictionary/
 The V5 product-card artifact contains `product_embeddings.npy`,
 `product_embedding_metadata.json`, `product_cards.jsonl`, and `manifest.json`
 under `data/derived/product_embeddings_v5/`.
+
+The standalone `style.jsonl` annotations are included in the aggregated V5
+facts before canonical dictionary generation. The per-attribute BGE build then
+writes the style vectors to `attribute_embeddings/style_embeddings.npy`.
+Rebuild the dictionary first, then build the six semantic attribute matrices:
+
+```bash
+python -m scripts.build_attribute_dictionary \
+  --input data/derived/annotations/v5/annotations.jsonl \
+  --input-format v5 \
+  --output-dir data/derived/annotations/v5/dictionary \
+  --no-embeddings
+python -m scripts.build_v5_attribute_embeddings \
+  --dictionary-dir data/derived/annotations/v5/dictionary \
+  --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings \
+  --model models/bge-small-en-v1.5
+```
 
 Build the V5 product-card artifact after placing a compatible local Qwen model
 on disk:
