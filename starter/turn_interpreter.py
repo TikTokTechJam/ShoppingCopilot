@@ -41,9 +41,6 @@ _OVERRIDE_ALIASES = {
     "null": "NONE",
     "preference": "PREFERENCE",
     "preference_override": "PREFERENCE",
-    "full_goal": "FULL_GOAL",
-    "full_goal_override": "FULL_GOAL",
-    "full": "FULL_GOAL",
 }
 _OVERRIDE_FIELDS = frozenset((*TURN_FIELDS, "price"))
 
@@ -282,7 +279,7 @@ Allowed output shape:
 "size": []
 },
 "override": {
-"type": "none" | "preference_override" | "full_goal_override",
+"type": "none" | "preference_override",
 "fields": []
 }
 }
@@ -385,9 +382,6 @@ use_case=exploring caves.
 
 For a preference override, set override.type to preference_override and list
 the replaced fields.
-
-Use full_goal_override only for explicit new-search, forget-that, or clearly
-replaced shopping goals.
 
 Examples:
 

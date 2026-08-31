@@ -1352,7 +1352,7 @@ class DebugWebController:
             "target_facts": _debug_target_facts(self.agent, target),
             "ranking": ranking,
             "override": {
-                "detected": override_kind in {"FULL_GOAL", "PREFERENCE"},
+                "detected": override_kind == "PREFERENCE",
                 "kind": override_kind,
                 "old_mode": before_state.get("mode"),
                 "new_mode": after_state.get("mode"),

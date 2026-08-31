@@ -27,7 +27,6 @@ class OverrideKind(str, Enum):
     """Scope of an explicit change to the active shopping request."""
 
     NONE = "NONE"
-    FULL_GOAL = "FULL_GOAL"
     PREFERENCE = "PREFERENCE"
 
 
@@ -415,9 +414,8 @@ def detect_override_kind(
     if not lexicon.OVERRIDE_MARKER.search(text):
         return OverrideKind.NONE
 
-    if lexicon.FULL_GOAL_OVERRIDE_MARKER.search(text):
-        return OverrideKind.FULL_GOAL
-
+    # Lexical markers only identify a possible preference change. Override
+    # scope is not inferred by this helper from a second hardcoded vocabulary.
     # Marker-only messages are not enough to mutate state. A preference
     # override must carry at least one extracted current-turn fact.
     if delta.populated_fields():
@@ -451,32 +449,6 @@ class SessionManager:
             return self._sessions[session_id]
         except KeyError as exc:
             raise RuntimeError("reset must be called before respond") from exc
-
-    def reset_goal(self, session_id: str) -> SessionState:
-        """Clear stale shopping state while retaining the session profile."""
-
-        state = self.get(session_id)
-        state.mode = None
-        state.constraints = ShoppingConstraints()
-        state.asked_attributes.clear()
-        state.no_preference_attributes.clear()
-        state.attribute_call_count = _fresh_attribute_call_count()
-        state.clarification_cycle = 1
-        state.clarification_stopped = False
-        state.last_recommendations = ()
-        state.excluded_recommendations.clear()
-        state.last_user_message = None
-        state.turn = 0
-        state.messages.clear()
-        state.retrieval_messages.clear()
-        state.llm_summary_messages.clear()
-        state.last_asked = None
-        state.constraint_provenance.clear()
-        state.semantic_constraints = SemanticShoppingConstraints()
-        state.semantic_constraint_provenance.clear()
-        state.last_override_kind = None
-        state.last_override_delta = None
-        return state
 
     def reset_preference(
         self,

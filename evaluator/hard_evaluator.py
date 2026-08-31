@@ -1176,7 +1176,7 @@ class InteractiveDebugPrinter:
         scenario = str(session["scenario_type"])
         override_turn = session.get("override_turn")
         override_kind = getattr(state, "last_override_kind", None)
-        override_detected = override_kind in {"FULL_GOAL", "PREFERENCE"}
+        override_detected = override_kind == "PREFERENCE"
 
         print()
         print("=" * 60)

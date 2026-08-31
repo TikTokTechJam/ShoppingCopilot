@@ -200,7 +200,7 @@ class RecommendationExclusionTests(unittest.TestCase):
             self.assertEqual(state.excluded_recommendations, set())
             self.assertEqual(state.last_recommendations, tuple(override_ids))
 
-    def test_reset_and_reset_goal_clear_both_recommendation_histories(self) -> None:
+    def test_reset_clears_both_recommendation_histories(self) -> None:
         manager = SessionManager()
         state = manager.reset("session", {"preference": "outdoors"})
         manager.set_recommendations("session", ["A", "B"])
@@ -208,7 +208,7 @@ class RecommendationExclusionTests(unittest.TestCase):
         self.assertEqual(state.last_recommendations, ("A", "B"))
         self.assertEqual(state.excluded_recommendations, {"A", "B"})
 
-        manager.reset_goal("session")
+        manager.reset("session", {})
         state = manager.get("session")
         self.assertEqual(state.last_recommendations, ())
         self.assertEqual(state.excluded_recommendations, set())

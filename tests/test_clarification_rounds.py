@@ -88,23 +88,6 @@ class SessionClarificationStateTests(unittest.TestCase):
         self.assertEqual(state.mode, "BUYING")
         self.assertFalse(state.clarification_stopped)
 
-    def test_full_goal_reset_clears_round_state(self) -> None:
-        manager = SessionManager()
-        manager.reset("session", {})
-        state = manager.get("session")
-        state.no_preference_attributes.add("color")
-        state.attribute_call_count["material"] = 1
-        state.clarification_cycle = 3
-        state.clarification_stopped = True
-
-        manager.reset_goal("session")
-        state = manager.get("session")
-
-        self.assertEqual(state.clarification_cycle, 1)
-        self.assertTrue(all(value == 0 for value in state.attribute_call_count.values()))
-        self.assertEqual(state.no_preference_attributes, set())
-        self.assertFalse(state.clarification_stopped)
-
 
 class AgentClarificationRoundTests(unittest.TestCase):
     def _patch_extraction(self, mapping: dict[str, ShoppingConstraints]):

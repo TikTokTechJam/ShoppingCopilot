@@ -39,7 +39,7 @@ The LLM receives a fixed shopping schema and extracts only supported semantic fi
     "style": []
   },
   "override": {
-    "type": "none | preference | full_goal",
+    "type": "none | preference",
     "fields": []
   }
 }
