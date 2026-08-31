@@ -63,10 +63,22 @@ non-excluded products with:
 
 ```text
 1.00 * structured_score
-+ 0.20 * canonical_expansion_score
 + 1.00 * expanded_bm25_score
 + rating tie-break
 ```
+
+BGE contributes no score of its own. It earns its place in the pipeline by
+expanding each active slot into lexical alternatives inside the BM25 concept
+groups, so its evidence is already counted once, in `expanded_bm25_score`.
+Two former BGE terms have been removed:
+
+- `0.20 * canonical_expansion_score`, which scored the same canonical postings
+  a second time; and
+- the per-field cosine that scaled `structured_score`, so a matched field now
+  contributes its full configured weight.
+
+The canonical score is still computed and surfaced as
+`Candidate.semantic_score` for diagnostics only.
 
 The expanded BM25 signal contains the active-goal raw query plus bounded BGE
 canonical/user-surface expansions. The BM25 score is normalized per query
