@@ -79,6 +79,10 @@ pre { max-width: 100%; overflow: auto; overflow-wrap: anywhere; }
 .bm25-group-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
 .bm25-group-meta .constraint-label { margin-right: 5px; }
 .delta-arrow { color: var(--muted); margin: 0 5px; }
+.llm-return { border: 1px solid var(--line); border-radius: 6px; padding: 8px 9px; background: #1d2431; overflow: hidden; }
+.llm-return .status-line { margin-bottom: 4px; }
+.llm-return details { margin-top: 5px; }
+.llm-return pre { margin: 6px 0 0; }
 
 /* The .ranking-table column widths are positional and tuned for the Top 10
    table (rank / ASIN / title / scores). These tables reuse its base styling

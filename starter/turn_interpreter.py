@@ -5,8 +5,9 @@ causal language model.  It returns only a validated *current-turn delta*;
 session state remains owned and mutated by :mod:`starter.session`.
 
 No model is loaded unless ``SHOPPING_TURN_INTERPRETER_MODEL`` points at a local
-model directory.  When it is absent or unusable, the Agent keeps using its
-existing deterministic extraction path.
+model directory. When it is absent or unusable, the Agent reports an
+interpretation error instead of silently substituting deterministic categorical
+extraction.
 """
 
 from __future__ import annotations
@@ -317,10 +318,12 @@ class LocalTurnInterpreter:
         )
         self.model.to(self.device)
         self.model.eval()
+        self.last_raw_response: object | None = None
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
     def interpret(self, message: str, state: object) -> TurnInterpretation | None:
+        self.last_raw_response = None
         prompt = build_turn_prompt(message, state)
         inputs = self.tokenizer(
             prompt,
@@ -339,6 +342,7 @@ class LocalTurnInterpreter:
         prompt_length = inputs["input_ids"].shape[-1]
         completion = output[0][prompt_length:]
         text = self.tokenizer.decode(completion, skip_special_tokens=True)
+        self.last_raw_response = text
         return parse_turn_interpretation(text)
 
 
@@ -365,9 +369,12 @@ class HostedTurnInterpreter:
             json_mode=True,
             thinking=False,
         )
+        self.last_raw_response: object | None = None
 
     def interpret(self, message: str, state: object) -> TurnInterpretation | None:
+        self.last_raw_response = None
         response = self.client.annotate(build_turn_prompt(message, state))
+        self.last_raw_response = response
         return parse_turn_interpretation(response)
 
 

@@ -371,6 +371,22 @@ function deltaRows(delta) {
   }).join("")}</div>`;
 }
 
+function llmReturnPanel(value) {
+  if (!value) return '<span class="muted">not recorded</span>';
+  const status = String(value.status || "unknown");
+  const statusClass = status === "success" ? "ok" : status === "skipped" ? "muted" : "warning";
+  const formatValue = (item) => typeof item === "string"
+    ? item
+    : JSON.stringify(item ?? {}, null, 2);
+  const parsed = value.parsed === undefined ? "" : `
+    <details open><summary>parsed return</summary><pre>${esc(formatValue(value.parsed))}</pre></details>`;
+  const raw = value.raw === undefined ? "" : `
+    <details><summary>raw model response</summary><pre>${esc(formatValue(value.raw))}</pre></details>`;
+  const error = value.error ? `<div class="warning">${esc(value.error)}</div>` : "";
+  const details = parsed || raw || '<div class="muted">No structured updates returned.</div>';
+  return `<div class="llm-return"><div class="${statusClass} status-line">Status: ${esc(status)}</div>${error}${details}</div>`;
+}
+
 function renderConversation(data) {
   const turns = data.turns || [];
   if (!turns.length) { $("conversation").className = "conversation empty"; $("conversation").textContent = "No turns executed."; return; }
@@ -383,6 +399,8 @@ function renderConversation(data) {
     return `<article class="turn-card"><div class="turn-heading"><h3>Turn ${turn.turn}</h3>${status}</div>
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
+      ${turn.error ? `<div class="llm-return"><div class="warning status-line">Agent turn error: ${esc(turn.error.type || "Error")}</div><div>${esc(turn.error.message || "")}</div></div>` : ""}
+      <h4>LLM return</h4><div>${llmReturnPanel(state.llm_return)}</div>
       <h4>Structured extracted this turn</h4><div>${deltaRows(state.extracted_this_turn?.structured || {})}</div>
       <h4>BGE canonical expansions this turn</h4><div>${deltaRows(state.extracted_this_turn?.semantic || {})}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>

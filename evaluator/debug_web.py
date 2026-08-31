@@ -441,6 +441,9 @@ def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
                 getattr(state, "semantic_constraints", None),
             ),
             "dense_query_instruction": BROWSING_QWEN_INSTRUCTION,
+            "llm_return": _json_safe(
+                getattr(state, "last_llm_return", None)
+            ),
         }
     )
     return snapshot
@@ -875,6 +878,7 @@ class LocalEvaluatorSessionRunner:
 
         turn = self.next_turn_number
         user_message = self.user_message
+        error: dict[str, str] | None = None
         try:
             raw_response = self.agent.respond(
                 self.session_id,
@@ -882,7 +886,8 @@ class LocalEvaluatorSessionRunner:
                 turn,
                 TOP_K,
             )
-        except Exception:
+        except Exception as exc:
+            error = {"type": type(exc).__name__, "message": str(exc)}
             raw_response = None
         if not isinstance(raw_response, dict) or not isinstance(
             raw_response.get("message"), str
@@ -910,6 +915,7 @@ class LocalEvaluatorSessionRunner:
             "turn": turn,
             "user_message": user_message,
             "response": response,
+            "error": error,
             "ranked": ranked,
             "override_applied": self.override_applied,
             "pre_override_hit": bool(target_in_top10 and not self.override_applied),
