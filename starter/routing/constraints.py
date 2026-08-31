@@ -1047,9 +1047,8 @@ COMMON_BRAND_COLLISION_TERMS = frozenset(
 )
 
 
-# Backward-compatible local name used by the extraction path. The actual
-# policy is owned by dictionary.registry so semantic filtering cannot diverge
-# between query text construction and registry n-gram matching.
+# Kept for standalone query-cleanup compatibility. The Agent extraction path
+# does not build or send stopword-filtered n-gram queries to BGE.
 _RESIDUAL_STOPWORDS = _SEMANTIC_QUERY_STOPWORDS
 
 
@@ -1079,8 +1078,8 @@ def _load_default_dictionary() -> _AttributeDictionary | None:
                         load_bge_attribute_encoder(model_path)
                     )
                 except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-                    # Exact Layer 1 matching remains usable when the optional
-                    # local BGE model is not installed.
+                    # Exact dictionary matching remains usable when the
+                    # optional local BGE model is not installed.
                     pass
             return dictionary
         except (OSError, ValueError, json.JSONDecodeError):
@@ -1457,6 +1456,7 @@ def _extract_dictionary_constraints(
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
     asked_attribute: str | None = None,
+    semantic_source: str | None = None,
 ) -> CanonicalShoppingConstraints:
     text = _normalise_known_phrases(message or "")
     # Only dictionary attributes can be narrowed. "budget", "size" and "other"
@@ -1535,25 +1535,25 @@ def _extract_dictionary_constraints(
                 semantic_values[entry.attribute].append(entry.value)
                 semantic_evidence.append(exact_evidence)
 
-    semantic_text = _semantic_text(text)
-    if semantic_text:
+    # BGE is intentionally restricted to complete values supplied by the
+    # schema-guided LLM. Raw conversational text must not be turned into
+    # semantic 1/2/3-gram candidates.
+    if semantic_source == "llm_state" and text:
         semantic_matches: tuple[_SemanticCandidate, ...] = ()
         if semantic_matcher is None and dictionary.semantic_available:
             semantic_matches = _semantic_items_from_result(
-                dictionary.semantic_match_ngrams(
-                    semantic_text,
+                dictionary.semantic_match(
+                    text,
                     allowed_attribute=scoped_attribute,
-                    stopwords=_RESIDUAL_STOPWORDS,
-                    max_ngram=3,
+                    top_k=max(1, len(dictionary.values)),
                     min_similarity=semantic_threshold,
                 ),
-                semantic_text,
+                text,
             )
         elif semantic_matcher is not None:
-            semantic_items: list[_SemanticCandidate] = []
-            for phrase in _semantic_ngrams(semantic_text, max_ngram=3):
-                semantic_items.extend(_semantic_items(semantic_matcher, phrase))
-            semantic_matches = _dedupe_semantic_items(semantic_items)
+            semantic_matches = _dedupe_semantic_items(
+                _semantic_items(semantic_matcher, text)
+            )
 
         accepted = [
             item for item in semantic_matches if item.score >= semantic_threshold
@@ -1574,7 +1574,7 @@ def _extract_dictionary_constraints(
                 entry.canonical_id,
                 entry.attribute,
                 item.phrase,
-                f"semantic_{len(item.phrase.split())}gram",
+                "semantic",
                 item.score,
                 "layer2",
             )
@@ -1582,7 +1582,7 @@ def _extract_dictionary_constraints(
             semantic_evidence.append(item_evidence)
             accepted_count += 1
         if accepted_count == 0:
-            unmapped.add(semantic_text)
+            unmapped.add(text)
 
     for word in ATTRIBUTE_TOPIC.findall(text):
         field_name = _TOPIC_FIELD.get(word.lower(), "")
@@ -1612,15 +1612,16 @@ def extract_constraints(
     semantic_matcher: SemanticMatcher | None = None,
     semantic_threshold: float = _DEFAULT_MIN_SIMILARITY,
     asked_attribute: str | None = None,
+    semantic_source: str | None = None,
 ) -> ShoppingConstraints:
     """Extract constraints using the generated dictionary and exact lookup.
 
     Structured price parsing and exact brand matching run in the active
-    structured path. Size parsing remains a compatibility path. Independently,
-    the same utterance is stopword-filtered into
-    deterministic 1/2/3-gram phrases for the Layer 2 semantic matcher; Layer 1
-    exact-match claims do not remove text from that path.
-    The generated dictionary is required for categorical extraction.
+    structured path. Size parsing remains a compatibility path. BGE semantic
+    matching is opt-in for complete values supplied by the schema-guided LLM
+    with ``semantic_source="llm_state"``; raw conversational text is never
+    expanded into semantic n-grams. The generated dictionary is required for
+    categorical extraction.
 
     ``asked_attribute`` narrows both the exact and the semantic pass to the
     attribute the shopper was asked about, so an answer is read as an answer
@@ -1639,4 +1640,5 @@ def extract_constraints(
         semantic_matcher=semantic_matcher,
         semantic_threshold=semantic_threshold,
         asked_attribute=asked_attribute,
+        semantic_source=semantic_source,
     )
