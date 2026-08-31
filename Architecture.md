@@ -65,25 +65,38 @@ The key architectural rule is that **Buying and Browsing are genuinely different
 
 ## 2. Offline preprocessing and indexes
 
-The online Agent should not repeatedly reconstruct expensive catalog representations. Catalog understanding and dense product indexing are prepared offline.
+The online Agent should not repeatedly reconstruct expensive catalog
+representations. Catalog understanding and retrieval indexes are prepared
+offline.
 
 ```text
-Amazon catalog (~50k products)
-          ↓
-   V5 semantic annotation
-          ↓
- ┌────────┼───────────────────────────────┐
- ↓        ↓                               ↓
-Canonical facts                     Product cards
- ↓                                      ↓
-Canonical dictionary             Qwen3-Embedding-0.6B
- ↓                                      ↓
-BGE attribute matrices           normalized dense matrix
- │                                      │
- └──────────────┐              ┌────────┘
-                │              │
-Raw catalog ───→ SQLite FTS5 BM25 index
-```
+                     Amazon catalog (~50k products)
+                                ↓
+                       V5 semantic annotation
+                                ↓
+             ┌──────────────────┼──────────────────┐
+             ↓                  ↓                  ↓
+      Canonical facts      Semantic product     Raw catalog text
+                                cards
+             ↓                  ↓                  ↓
+    Canonical dictionary   Qwen3-Embedding     SQLite FTS5
+             ↓                -0.6B             BM25 index
+    BGE attribute              ↓
+       matrices         normalized dense
+                            product matrix
+
+BGE attribute matrices
+→ semantic normalization / canonical expansion of extracted slots
+→ primarily used by the Buying path
+
+SQLite FTS5 BM25 index
+→ lexical product retrieval
+→ Buying: field-routed semantic slot groups
+→ Browsing: raw/current-goal lexical retrieval
+
+Qwen dense product matrix
+→ product-level semantic retrieval
+→ primarily used by the Browsing path
 
 ### 2.1 V5 semantic facts
 
@@ -139,8 +152,7 @@ Target model:
 BAAI/bge-small-en-v1.5
 ```
 
-BGE searches canonical values for the semantic product attributes that are not
-handled as structured constraints:
+BGE semantically matches extracted slot phrases against canonical values for the semantic product attributes that are not handled as structured constraints:
 
 ```text
 category
@@ -154,6 +166,12 @@ use_case
 These six categorical attributes are semantic constraints in the current architecture. Brand is handled as an exact structured constraint, and price/budget is the numeric structured constraint.
 
 BGE is **not** the product-level dense retrieval path.
+
+`BAAI/bge-small-en-v1.5` belongs to the BGE embedding family introduced in C-Pack, which uses contrastive learning to produce general-purpose semantic representations for retrieval and matching.
+
+Reference:
+
+- Xiao et al., *C-Pack: Packaged Resources To Advance General Chinese Embedding*, 2023 — https://arxiv.org/abs/2309.07597
 
 ### 2.3 BM25 index
 
@@ -203,11 +221,12 @@ Target full embedding dimension:
 1024
 ```
 
-Use L2-normalized vectors so cosine similarity can be implemented as a matrix dot product.
+Both product and query vectors are L2-normalized so cosine similarity can be
+computed efficiently as a matrix dot product.
 
 For ~50k products, 1024-dimensional float32 embeddings are small enough to keep as the quality baseline. Smaller Matryoshka dimensions may be benchmarked later, but 1024 is the reference configuration.
 
-This representation follows the intent-aware retrieval direction in recent e-commerce work, where semantic query/product intent attributes are embedded instead of relying only on raw product text. Price remains a separate numeric eligibility field, while brand remains an exact structured field.
+This representation follows the intent-aware dense retrieval direction in recent e-commerce work such as INSPIRE, which augments dense query and product representations with structured intent attributes. Our V5 product-card serialization is an implementation choice inspired by that direction rather than a reproduction of INSPIRE's exact representation. Price remains a separate numeric eligibility field, while brand remains an exact structured field.
 
 The Browsing query side uses the same Qwen model with this query-only
 instruction:
@@ -242,14 +261,16 @@ References:
 
 The runtime uses a small local/self-hosted LLM as a **schema-guided turn interpreter**.
 
-Its job is language understanding only:
+Its responsibility is limited to understanding the current user turn and
+returning a structured **state delta**:
 
 ```text
 User utterance
       ↓
 LLM turn interpreter
       ↓
-       current-turn semantic delta + price delta
+current-turn constraint delta
++ override operation
       ↓
 deterministic validation
       ↓
@@ -264,7 +285,6 @@ Conceptually:
 
 ```json
 {
-  "intent": "buying | browsing | null",
   "updates": {
     "category": [],
     "brand": [],
@@ -277,7 +297,7 @@ Conceptually:
     "price_max": null
   },
   "override": {
-    "type": "none | preference_override | full_goal_override",
+    "type": "none | preference_override",
     "fields": []
   }
 }
@@ -298,18 +318,30 @@ Example:
 → use_case: none
 ```
 
-This prevents dialogue framing words such as `exploring` or `compare` from becoming false product attributes.
+This prevents conversational framing such as exploring, browsing,
+comparing, or looking around from becoming false product attributes.
 
 Contrastive examples should distinguish cases such as:
 
 ```text
 "I'm exploring sweatshirts."
-→ browsing intent
+
 → category: sweatshirt
+→ use_case: none
 
 "I need boots for exploring caves."
+
 → category: boots
 → use_case: exploring caves
+
+"Actually, black instead of blue."
+
+→ updates:
+    color: black
+
+→ override:
+    type: preference_override
+    fields: color
 ```
 
 References:
@@ -322,26 +354,34 @@ References:
 
 ## 4. Dependency-aware selective dialogue state
 
-The Agent preserves valid accumulated preferences instead of rebuilding the entire state each turn.
+The Agent preserves valid accumulated preferences instead of rebuilding the
+entire dialogue state on every turn.
+
+Each LLM turn interpretation produces only a current-turn delta. The
+`SessionManager` applies that delta selectively to the existing state.
 
 Example:
 
 ```text
-Current:
+Current state:
+
 category = shirt
 use_case = sunny weather
 color = black
 
 User:
+
 "Actually I need it for rainy weather."
 
-Operations:
-category → CARRYOVER
-color    → CARRYOVER
-use_case → UPDATE sunny → rainy
-```
+State operations:
 
-This follows the selective update principle used by **SOM-DST**.
+category  → CARRYOVER
+color     → CARRYOVER
+use_case  → UPDATE sunny weather → rainy weather
+
+This follows the selective update principle used by **SOM-DST**, , where dialogue
+state is maintained through operations such as carryover, update, and delete
+rather than regenerating the complete state on every turn.
 
 Reference:
 - Kim et al., *Efficient Dialogue State Tracking by Selectively Overwriting Memory*, ACL 2020.
@@ -367,7 +407,8 @@ category: shirt [explicit]
 color: black [explicit]
 ```
 
-If `sunny weather` is overridden, the dependent inferred `UV protection` may be removed while `shirt` and `black` remain.
+If `sunny weather` is overridden, the dependent inferred `UV protection` may be removed automatically, while independent explicit
+constraints such as `shirt` and `black` remain unchanged.
 
 This is a lightweight truth-maintenance / dependency-aware belief-revision mechanism.
 
@@ -376,17 +417,20 @@ Reference:
 
 ### 4.2 Dependency graph
 
-Dependencies represent **derivation**, not ranking importance.
+The SessionManager maintains a lightweight dependency graph between constraint
+types so that preference overrides invalidate only state that logically depends
+on the changed constraint.
 
-Example:
+Current dependency structure:
 
 ```text
 category
-├─ use_case
-│  ├─ feature
-│  ├─ material
-│  └─ style
-└─ style
+├── use_case
+│   ├── feature
+│   ├── material
+│   └── style
+├── size
+└── style
 ```
 
 Brand, color, and price/budget are generally independent unless explicit provenance says otherwise. Brand is exact structured evidence; color is semantic evidence. The graph describes semantic derivation and does not turn semantic attributes into structured filters.
@@ -394,8 +438,6 @@ Brand, color, and price/budget are generally independent unless explicit provena
 ### 4.3 Retrieval context must follow active state
 
 Visible conversation history and retrieval state are different concepts.
-
-After an override, obsolete text must not continue to influence retrieval simply because it remains in the transcript.
 
 ```text
 visible transcript
@@ -409,9 +451,11 @@ Retrieval should be generated from active constraints / active goal context.
 
 ## 5. Adaptive intent orchestration
 
-Intent is not permanently fixed after the first turn.
+````md
+## 5. Adaptive intent orchestration
 
-The system maintains session intent and allows controlled transitions:
+Buying/Browsing mode is derived from the accumulated active state rather than
+directly from the LLM turn interpreter.
 
 ```text
 "I'm exploring things for a beach holiday"
@@ -420,23 +464,39 @@ BROWSING
 
 "Make it a black dress under $70"
         ↓
+active constraints become sufficiently specific
+        ↓
 BUYING
-```
+````
 
-The router should consider:
+The deterministic router considers:
 
 ```text
-current turn intent
-+ active constraint specificity
+active constraint specificity
++ number and strength of explicit constraints
++ structured constraints such as brand / price
 + previous mode
 + whether the turn is a clarification answer
++ deterministic browsing-language cues
 ```
 
-Use hysteresis so weak signals do not cause random mode flipping.
+Use hysteresis so weak signals do not cause unstable mode switching.
 
-A normal answer to the Agent's own clarification question should generally update state without being treated as an unrelated intent switch.
+A normal answer to the Agent's own clarification question should primarily
+update state rather than trigger an unrelated intent transition.
 
----
+```text
+LLM current-turn delta
+        ↓
+SessionManager
+        ↓
+updated active state
+        ↓
+deterministic intent router
+        ↓
+BUYING or BROWSING
+```
+
 
 ## 6. Buying retrieval path
 
@@ -445,40 +505,76 @@ Buying is precision-oriented.
 ```text
 Active Buying State
         ↓
-price eligibility
-exact brand
-semantic evidence
+deterministic structured constraints
+price eligibility + exact brand
         ↓
-BGE semantic expansion
+active semantic constraints
+category / color / material / style / feature / use_case
         ↓
-slot / concept groups
+BGE canonical expansion
         ↓
-grouped field-weighted BM25
+per-attribute slot / concept groups
         ↓
-per-group normalization / coverage
+field-routed weighted BM25
+        ↓
+per-group normalization + constraint coverage
         ↓
 Buying rank
         ↓
 Candidate Pool
 ```
 
+Use this:
+
+````md
 ### 6.1 Structured constraints
 
-Structured logic currently owns two constraints:
+Structured logic currently owns:
 
 ```text
 price_min
 price_max
 brand (exact)
+````
+
+When a budget is active:
+
+```text
+known satisfying price → eligible
+known violating price → excluded
+null price → excluded
 ```
 
-Known satisfying prices are eligible; known violating prices and null prices are excluded when a budget is active. Exact brand is preserved as structured evidence. No category, color, material, style, feature, use-case, or size value is currently a structured constraint.
+Brand is preserved as an exact structured constraint and is not semantically expanded.
 
-Non-brand categorical values remain semantic evidence for BGE expansion, product-card retrieval, and BM25 ranking.
+The following attributes are not treated as structured hard constraints:
+
+```text
+category
+color
+material
+style
+feature
+use_case
+size
+```
+
+These categorical values remain semantic evidence for:
+
+```text
+BGE canonical expansion
+BM25 retrieval
+Qwen product-card retrieval
+```
+
+Price therefore acts as the primary numeric eligibility filter, while brand remains exact structured evidence.
+
+```
 
 ### 6.2 Slot-guided BM25 query compilation
 
-BM25 queries come from **active slots**, not blindly concatenated full conversation history.
+Buying BM25 queries are constructed from **active slots**, not from blindly
+concatenated conversation history.
 
 Example:
 
@@ -518,27 +614,57 @@ C_use_case = {
 
 The system must **not** treat every synonym as an independent user requirement.
 
+These two sections are correct. I would tighten them slightly like this:
+
+````md
 ### 6.3 No Cartesian synonym enumeration
 
-Do not evaluate combinations such as:
+Semantic expansions are grouped by active slot rather than combined through a
+Cartesian product.
+
+The system must not evaluate combinations such as:
 
 ```text
 20 × 20 × 20 × 20 × 20
+````
+
+Instead, each active constraint contributes one small lexical concept group:
+
+```text
+C_category
+C_color
+C_material
+C_feature
+C_use_case
 ```
 
-Maintain one small lexical group per active slot/concept.
+Each group represents one user requirement with multiple accepted lexical
+realizations.
 
 ### 6.4 Conservative expansion
 
-Use only a small high-confidence BGE expansion set, e.g. top candidates satisfying a similarity threshold and margin from the best match.
+BGE expansion is deliberately conservative.
 
-The explicit user value remains the strongest evidence.
+For each semantic slot, retain only a small set of high-confidence canonical
+matches using:
 
-Uncontrolled expansion can cause query drift.
+```text
+top-K
++ minimum similarity threshold
++ margin from the strongest match
+```
+
+The original explicit slot phrase remains the primary evidence; BGE matches
+serve only as controlled lexical alternatives.
+
+Unrestricted expansion can introduce unrelated terms and cause query drift.
 
 References:
-- Crimp & Trotman, *Automatic Term Reweighting for Query Expansion*, 2017.
-- Dai et al., *End-to-End Query Term Weighting (TW-BERT)*, 2023.
+
+* Crimp & Trotman, *Automatic Term Reweighting for Query Expansion*, 2017.
+* Dai et al., *End-to-End Query Term Weighting (TW-BERT)*, 2023.
+
+```
 
 ### 6.5 Buying ranking invariant
 
@@ -546,21 +672,13 @@ The target Buying flow is:
 
 ```text
 price eligibility
-exact brand
-semantic evidence
-          +
-BGE-expanded grouped BM25 evidence
-          +
-profile-aware rating tie-break
++ exact brand evidence
++ semantic constraint coverage
++ BGE-expanded grouped BM25 evidence
++ profile-aware rating tie-break
 ```
 
 **BGE does not contribute a second direct product posting-list score.**
-
-There is no architectural term such as:
-
-```text
-+ 0.20 × canonical BGE posting-list score
-```
 
 BGE's production role in Buying is to improve the lexical query that BM25 searches.
 
@@ -605,7 +723,8 @@ use_case   ✓✓✓✓✓
 Product A should normally receive stronger overall evidence.
 
 References:
-- Voskarides et al., *Query Resolution for Conversational Search with Limited Supervision (QuReTeC)*, SIGIR 2020.
+
+- Crimp & Trotman, *Automatic Term Reweighting for Query Expansion*, 2017.
 - Robertson, Zaragoza & Taylor, *Simple BM25 Extension to Multiple Weighted Fields*, CIKM 2004.
 
 ---
@@ -638,25 +757,25 @@ Dense Top-N from V5 product matrix
 
 ### 7.1 Dense query representation
 
-The dense query should be constructed from the **active semantic state**, not stale full transcript text.
+The dense query is constructed from the **active semantic state**, not stale
+full-transcript text.
 
 Recommended serialization:
 
 ```text
-running shoes
-; color: black
-; feature: slip resistant
-; feature: lightweight
-; use_case: hiking
-; use_case: wet weather
+category: running shoes
+color: black
+feature: slip resistant, lightweight
+use_case: hiking, wet weather
 ```
 
-With Qwen3, use an instruction oriented toward product suitability, for example:
-
+With Qwen3-Embedding, the Browsing query uses a task-specific query instruction:
 ```text
-Retrieve products that best satisfy the shopper's intended scenario,
-product type, desired features, use case and preferences.
-Prioritize semantic suitability even when wording differs.
+Instruct: Retrieve products that best match the shopper's product type, intended use, desired features, and preferences.
+Query: category: running shoes
+color: black
+feature: slip resistant, lightweight
+use_case: hiking, wet weather
 ```
 
 The product side uses the V5 semantic product card built offline. Brand can
@@ -666,11 +785,15 @@ also contribute exact structured evidence independently of the semantic card.
 
 Use L2-normalized 1024-dimensional Qwen3 embeddings.
 
-Runtime dense retrieval can initially be exact matrix-vector cosine search over ~50k products:
+Runtime dense retrieval initially uses exact matrix-vector similarity over the
+~50k-product V5 dense matrix:
 
 ```text
 product_matrix @ query_vector
 ```
+
+Because both query and product vectors are L2-normalized, the dot product is
+equivalent to cosine similarity.
 
 Retrieve a broad candidate set such as Top-100 before fusion.
 
@@ -682,9 +805,10 @@ This is an independent complement to dense retrieval, useful for exact names, ra
 
 ### 7.4 Reciprocal Rank Fusion
 
-Do not directly add raw cosine and SQLite BM25 scores because they have unrelated scales.
+Do not directly add raw cosine-similarity and SQLite BM25 scores because they
+operate on unrelated score scales.
 
-Fuse ranked lists with **Reciprocal Rank Fusion (RRF)**.
+Fuse the dense and BM25 ranked lists using **Reciprocal Rank Fusion (RRF)**.
 
 Conceptually:
 
@@ -694,18 +818,25 @@ RRF(product)
 + contribution from BM25 rank
 ```
 
+RRF operates on rank positions rather than raw retrieval scores, allowing the
+dense and sparse candidate lists to be combined without explicit score
+calibration.
+
 Reference:
 - Lee et al., *On Complementarity Objectives for Hybrid Retrieval*, ACL 2023.
 
 ### 7.5 MMR diversity
 
-Browsing should avoid returning ten near-identical products.
+Browsing should avoid returning highly redundant or near-identical products.
 
-After fusion, apply **Maximal Marginal Relevance (MMR)** over a manageable fused candidate pool.
+After RRF fusion, apply **Maximal Marginal Relevance (MMR)** over a manageable
+candidate pool to balance relevance and diversity.
+
+Conceptually:
 
 ```text
 MMR
-= relevance
+= relevance to the shopping intent
 - redundancy with already-selected products
 ```
 
@@ -716,7 +847,8 @@ Reference:
 
 ### 7.6 Browsing benchmark focus
 
-Dense retrieval should justify itself by recovering useful products missed by the strengthened lexical path.
+Dense retrieval should justify its additional complexity by recovering relevant
+products that the strengthened lexical path misses.
 
 Track at least:
 
@@ -726,9 +858,11 @@ Browsing Hit@50
 Browsing Hit@100
 MRR
 latency
-dense-only recovery@100 when BM25 misses
+dense-only recovery@100
 ```
 
+This metric is important because the value of the dense Browsing path comes from
+its complementarity with BM25, not only from its standalone retrieval quality.
 ---
 
 ## 8. Candidate-aware clarification
