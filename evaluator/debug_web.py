@@ -215,8 +215,16 @@ def _clarification_payload(
         return base
 
     constraints_known = set(after_state.get("constraints_populated", ()))
-    asked = set(after_state.get("asked_attributes", ()) or ())
-    asked.update(after_state.get("no_preference_attributes", ()) or ())
+    before_counts = before_state.get("attribute_call_count")
+    if isinstance(before_counts, Mapping):
+        asked = {
+            attribute
+            for attribute in clarification.NORMAL_CLARIFICATION_ATTRIBUTES
+            if int(before_counts.get(attribute, 0)) > 0
+        }
+    else:
+        asked = set(before_state.get("asked_attributes", ()) or ())
+    asked.update(before_state.get("no_preference_attributes", ()) or ())
     affinity = getattr(agent, "_profile_affinity", {}).get(session_id)
     profile_factor = affinity.factor if affinity is not None else None
     turn = after_state.get("turn")

@@ -334,9 +334,9 @@ function renderConversation(data) {
     const status = turn.hit ? `<span class="hit">HIT</span>` : turn.pre_override_hit ? '<span class="pre-hit">PRE-OVERRIDE HIT — NOT SCOREABLE</span>' : '<span class="miss">MISS</span>';
     const overrideBox = override.detected ? `<div class="override-box">INTENT OVERRIDE DETECTED · ${esc(override.kind)}<br><small>Old mode: ${esc(override.old_mode || "—")} → New mode: ${esc(override.new_mode || "—")}</small></div>` : "";
     return `<article class="turn-card"><div class="turn-heading"><h3>Turn ${turn.turn}</h3>${status}</div>
+      ${clarificationPanel(turn.clarification)}
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
-      ${clarificationPanel(turn.clarification)}
       ${turn.error ? `<div class="llm-return"><div class="warning status-line">Agent turn error: ${esc(turn.error.type || "Error")}</div><div>${esc(turn.error.message || "")}</div></div>` : ""}
       <h4>Structured extracted this turn</h4><div>${deltaRows(state.extracted_this_turn?.structured || {})}</div>
       <h4>BGE canonical expansions this turn</h4><div>${deltaRows(state.extracted_this_turn?.semantic || {})}</div>
