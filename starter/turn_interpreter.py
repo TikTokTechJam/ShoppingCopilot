@@ -65,6 +65,17 @@ def _compact_error(exc: BaseException, *secrets: object) -> str:
     return detail[:500]
 
 
+def _compact_text(value: object, *, limit: int = 2000) -> str:
+    """Keep a model response readable on one console line."""
+
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "<empty>"
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
+
+
 def _configured(value: object) -> str:
     return "set" if str(value or "").strip() else "unset"
 
@@ -384,7 +395,8 @@ class LocalTurnInterpreter:
         _log(
             "local response "
             f"elapsed={time.perf_counter() - started:.2f}s "
-            f"response_chars={len(text)} parsed={'yes' if parsed is not None else 'no'}"
+            f"response_chars={len(text)} parsed={'yes' if parsed is not None else 'no'} "
+            f"llm_response={_compact_text(text)}"
         )
         return parsed
 
@@ -438,7 +450,8 @@ class HostedTurnInterpreter:
         _log(
             "hosted response "
             f"elapsed={time.perf_counter() - started:.2f}s "
-            f"response_chars={len(response)} parsed={'yes' if parsed is not None else 'no'}"
+            f"response_chars={len(response)} parsed={'yes' if parsed is not None else 'no'} "
+            f"llm_response={_compact_text(response)}"
         )
         return parsed
 

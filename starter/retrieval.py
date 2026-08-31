@@ -42,6 +42,19 @@ from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
 FACT_FIELDS = tuple(CATEGORICAL_FIELDS)
+
+
+def _compact_log_text(value: object, *, limit: int = 1600) -> str:
+    """Keep BM25 diagnostics readable without changing the query itself."""
+
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "<empty>"
+    if len(text) > limit:
+        return text[:limit] + "...<truncated>"
+    return text
+
+
 DEFAULT_FACT_PATHS = (
     Path("data/derived/annotations/v5/annotations.jsonl"),
     Path("data/derived/annotations/v4/annotations.jsonl"),
@@ -1102,6 +1115,11 @@ class ProductRetriever:
                 constraints,
                 semantic_constraints,
             )
+            print(
+                "[retrieval] BM25 query groups "
+                f"count={len(group_specs)} include_raw={include_raw}",
+                flush=True,
+            )
             raw_scores = (
                 self._raw_bm25_scores(query_text, eligible_asins)
                 if include_raw
@@ -1118,6 +1136,14 @@ class ProductRetriever:
                     group.phrases,
                     allowed_asins=eligible_asins,
                     fields=group.fields,
+                )
+                print(
+                    "[retrieval] BM25 query "
+                    f"field={group.field_name} "
+                    f"terms={_compact_log_text(' OR '.join(group.match_phrases))!r} "
+                    f"expression={_compact_log_text(group.query_text)!r} "
+                    f"fields={','.join(group.fields)} matches={len(scores)}",
+                    flush=True,
                 )
                 if scores:
                     query_groups.append(scores)
