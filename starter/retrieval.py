@@ -88,12 +88,12 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    # Buying uses structured evidence and BM25.  BGE contributes no score of
-    # its own: it earns its place in the pipeline by expanding each active
-    # slot into lexical alternatives inside the BM25 concept groups, so its
-    # effect is already counted once, in ``bm25``.  Scoring the same canonical
-    # postings a second time under ``semantic`` counted it twice.
-    "BUYING": {"structured": 1.00, "semantic": 0.00, "dense": 0.00, "bm25": 1.00},
+    # Buying is field-aware BM25 alone.  Structured constraints reach the
+    # ranking through that one route: their values and BGE expansions are
+    # compiled into the per-slot concept groups, and price is applied earlier
+    # as numeric eligibility.  Adding a separate structured term scored the
+    # same constraints twice, once lexically and once by posting list.
+    "BUYING": {"structured": 0.00, "semantic": 0.00, "dense": 0.00, "bm25": 1.00},
     # Browsing is fused by rank below, not by adding cosine and BM25 values.
     "BROWSING": {"structured": 0.00, "semantic": 0.00, "dense": 1.00, "bm25": 1.00},
 }
@@ -238,25 +238,26 @@ def _encoder_dimension(encoder: object | None) -> int | None:
 
 def _final_score(
     mode: str,
-    structured_score: float,
     dense_score: float,
     bm25_score: float = 0.0,
     browsing_fusion_score: float | None = None,
 ) -> float:
     """Combine the scoring signals for one candidate.
 
-    There is no canonical/BGE term.  BGE expands active slots into lexical
-    alternatives inside the BM25 concept groups, so whatever it contributes
-    is already in ``bm25_score``; adding a separate canonical term scored the
-    same evidence twice.
+    Neither a structured nor a canonical/BGE term appears here.  Constraints
+    reach the ranking through the field-aware BM25 concept groups, which carry
+    each active slot's value and its bounded BGE expansions, and through the
+    numeric price filter applied before scoring.  Scoring the same constraints
+    again by posting list counted that evidence twice.
+
+    ``structured_score`` remains on the Candidate as ``constraint_score`` for
+    diagnostics and for the matched/violated constraint labels.
     """
     if mode == "BROWSING" and browsing_fusion_score is not None:
         return float(browsing_fusion_score)
     weights = MODE_SCORE_WEIGHTS[mode]
     return float(
-        weights["structured"] * structured_score
-        + weights["dense"] * dense_score
-        + weights.get("bm25", 0.0) * bm25_score
+        weights["dense"] * dense_score + weights.get("bm25", 0.0) * bm25_score
     )
 
 
@@ -1289,7 +1290,6 @@ class ProductRetriever:
             if ranking_override is not None
             else _final_score(
                 mode,
-                structured_score,
                 dense_score,
                 bm25_score,
                 browsing_fusion_score=fusion_score if mode == "BROWSING" else None,
@@ -1602,17 +1602,11 @@ class ProductRetriever:
         ranking_overrides: dict[str, float] = {}
         mmr_scores: dict[str, float] = {}
         if mode == "BUYING":
-            # Structured evidence plus BM25.  BGE reaches the score only
-            # through the expanded BM25 concept groups; ``canonical_scores``
-            # is still computed, but purely as retained diagnostics on the
-            # Candidate, never as a ranking term.
+            # Field-aware BM25 alone.  ``structured_score`` and
+            # ``canonical_scores`` are still computed, but purely as retained
+            # diagnostics on the Candidate, never as ranking terms.
             base_scores = {
-                asin: _final_score(
-                    mode,
-                    structured_score(asin),
-                    0.0,
-                    bm25_scores.get(asin, 0.0),
-                )
+                asin: _final_score(mode, 0.0, bm25_scores.get(asin, 0.0))
                 for asin in eligible_asins
             }
             ranked_asins = _select(eligible_asins, base_scores.__getitem__)

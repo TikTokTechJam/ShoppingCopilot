@@ -248,7 +248,13 @@ class HardEvaluatorDebugTests(unittest.TestCase):
                 apply_budget=True,
             )
 
-            self.assertEqual([item.parent_asin for item in global_ranking], ["S0", "S1"])
+            # The global view keeps both products because it does not apply
+            # the budget. Their relative order is not asserted: price is a
+            # numeric eligibility filter and contributes no score, so with the
+            # budget off it cannot separate them.
+            self.assertEqual(
+                sorted(item.parent_asin for item in global_ranking), ["S0", "S1"]
+            )
             self.assertEqual([item.parent_asin for item in eligible_ranking], ["S0"])
             self.assertNotIn("S1", [item.parent_asin for item in eligible_ranking])
 
