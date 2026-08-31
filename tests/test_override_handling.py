@@ -128,9 +128,6 @@ class OverrideHandlingTests(unittest.TestCase):
             ):
                 agent.respond("session", "shoes in red, casual", 1, 3)
                 agent.respond("session", "nylon", 2, 3)
-                excluded_before_override = set(
-                    agent.sessions.get("session").excluded_recommendations
-                )
                 agent.respond(
                     "session",
                     "Actually, my priority changed. Pockets matter.",
@@ -150,7 +147,7 @@ class OverrideHandlingTests(unittest.TestCase):
                 state.query_text,
                 "shoes in red, casual nylon Actually, my priority changed. Pockets matter.",
             )
-            self.assertEqual(state.excluded_recommendations, excluded_before_override)
+            self.assertEqual(state.excluded_recommendations, set())
             self.assertEqual(state.last_override_kind, "PREFERENCE")
 
     def test_preference_transition_restarts_clarification_without_clearing_goal_state(self) -> None:
@@ -190,8 +187,8 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertEqual(state.attribute_call_count["material"], 0)
         self.assertEqual(state.clarification_cycle, 1)
         self.assertIsNone(state.last_asked)
-        self.assertEqual(state.last_recommendations, ("A", "B"))
-        self.assertEqual(state.excluded_recommendations, {"A", "B"})
+        self.assertEqual(state.last_recommendations, ())
+        self.assertEqual(state.excluded_recommendations, set())
 
     def test_actually_field_correction_is_not_a_full_reset(self) -> None:
         current = ShoppingConstraints(category=("shoes",), color=("red",))

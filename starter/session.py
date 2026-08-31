@@ -620,9 +620,16 @@ class SessionManager:
             state.semantic_constraint_provenance
         )
 
-        # The goal and its recommendation exclusions remain active.  Only the
-        # clarification cursor is restarted so the new preference can be
-        # collected without erasing independent state.
+        # An override starts a new ranking context.  Re-open products that were
+        # excluded under the previous preference context so a product shown
+        # before the override can re-enter the leaderboard after the new
+        # preference is applied.  This does not clear constraints, transcript
+        # history, or the accumulated LLM summary above.
+        state.excluded_recommendations.clear()
+        state.last_recommendations = ()
+
+        # Only the clarification cursor is restarted so the new preference can
+        # be collected without erasing independent constraint state.
         state.asked_attributes.clear()
         state.attribute_call_count = _fresh_attribute_call_count()
         state.clarification_cycle = 1
