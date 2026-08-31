@@ -435,6 +435,11 @@ def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
                 "retrieval_query_text",
                 getattr(state, "query_text", ""),
             ),
+            "dense_query_text": build_browsing_query(
+                getattr(state, "constraints", None),
+                getattr(state, "semantic_constraints", None),
+            ),
+            "dense_query_instruction": BROWSING_QWEN_INSTRUCTION,
         }
     )
     return snapshot
