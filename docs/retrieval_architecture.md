@@ -13,7 +13,7 @@ user turn
   -> budget eligibility and recommendation exclusions
   ->
      BUYING: field-aware BM25 with accepted canonical expansions
-     BROWSING: Qwen product-card Top100 + raw BM25 Top100
+     BROWSING: Qwen product-card Top100 + slot BM25 Top100
   ->
      BUYING: BM25 score
      BROWSING: reciprocal-rank fusion, then product-card MMR
@@ -103,16 +103,17 @@ match. Neither is a ranking term.
 Note that `size` has no posting-list route left and is not a BM25 query field,
 so it currently contributes nothing to Buying rank. Price still filters.
 
-The expanded BM25 signal contains the active-goal raw query plus bounded BGE
-canonical/user-surface expansions. The BM25 score is normalized per query
-group before the groups are averaged, so a slot cannot dominate merely by
-having more synonym text.
+For Buying, the expanded BM25 signal contains only active per-slot values plus
+bounded BGE canonical/user-surface expansions. The raw current-goal query is
+not a Buying scoring group. The BM25 score is normalized per query group before
+the groups are averaged, so a slot cannot dominate merely by having more
+synonym text.
 
 Browsing searches the full eligible catalog through both independent signals:
 
 ```text
 dense_top100 = Qwen product-card cosine ranking
-bm25_top100  = raw current-goal BM25 ranking
+bm25_top100  = field-routed slot BM25 ranking
 rrf(p) = 1 / (60 + dense_rank) + 1 / (60 + bm25_rank)
 ```
 
@@ -120,15 +121,16 @@ The union is sorted by RRF and truncated to a fused Top-50 pool. When the
 V5 product index and query encoder are available, Browsing then applies MMR
 using product-card cosine similarity (`lambda = 0.80`) to reduce near-duplicate
 results before the requested recommendation limit. Buying does not use MMR. If
-product vectors are unavailable, Browsing retains its raw BM25 RRF arm and
-skips product-vector MMR.
+product vectors are unavailable, Browsing retains its field-routed slot BM25
+RRF arm and skips product-vector MMR.
 
 `Candidate.score` is the score used by the final ordering, including the
 rating tie-break. `Candidate.dense_score` means the V5 product-vector score;
 `Candidate.semantic_score` means BGE canonical posting evidence;
 `Candidate.fusion_score` is the Browsing RRF score; and `Candidate.mmr_score`
-is the diversity score when Browsing MMR is active. The debug evaluator also
-shows the raw FTS expression and target rank for each active BM25 slot query.
+is the diversity score when Browsing MMR is active. The debug evaluator shows
+the FTS expression and target rank for each active BM25 slot query; raw
+current-goal BM25 is not part of the runtime flow.
 
 ## State and hard filters
 

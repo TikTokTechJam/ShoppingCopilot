@@ -75,6 +75,6 @@ Diagnostics show the structured state and BGE canonical-expansion state
 separately. Canonical evidence contains accepted attribute values and cosine
 similarities. Product-dense scores come only from the V5 Qwen product-card
 index. Buying displays structured, canonical, and expanded-BM25 evidence;
-Browsing displays product-dense Top100, raw-BM25 Top100, RRF, and the
+Browsing displays product-dense Top100, slot-BM25 Top100, RRF, and the
 Browsing-only MMR ordering. The target rank and scores are calculated by the
 same `ProductRetriever` path used for production recommendations.

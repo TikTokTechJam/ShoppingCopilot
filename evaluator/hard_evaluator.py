@@ -1018,6 +1018,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
                 eligible_asins=allowed_asins,
                 target_asin=target,
                 expanded=True,
+                include_raw=False,
             )
         except (TypeError, ValueError, RuntimeError):
             bm25_debug = {}
@@ -1344,12 +1345,6 @@ class InteractiveDebugPrinter:
         if bm25_debug:
             print()
             print("BM25 QUERIES")
-            raw_query = bm25_debug.get("raw") or {}
-            print(
-                f"  raw: {raw_query.get('query', '')} "
-                f"target_rank={raw_query.get('target_rank') or 'MISS'} "
-                f"target_score={raw_query.get('target_score') if raw_query.get('target_score') is not None else 'N/A'}"
-            )
             for field_name, detail in (bm25_debug.get("constraints") or {}).items():
                 print(
                     f"  {field_name}: {detail.get('query', '')} "

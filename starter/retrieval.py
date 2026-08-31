@@ -1079,33 +1079,39 @@ class ProductRetriever:
         eligible_asins: Collection[str],
         constraints: object | None = None,
         semantic_constraints: object | None = None,
+        *,
+        include_raw: bool = False,
     ) -> dict[str, float]:
         """Return BM25 scores with canonical BGE expansions.
 
-        This is the expanded lexical signal for both Buying and Browsing.
-        Browsing combines it with product-vector retrieval through rank fusion;
-        the lexical expansion remains a separate retrieval signal.
+        Slot-group BM25 is the expanded lexical signal for both modes. The raw
+        current-goal query is disabled in the normal retrieval flow.
         """
 
         if self.bm25_index is None:
             return {}
         try:
             if not self.use_slot_bm25_groups:
-                return self._raw_bm25_scores(query_text, eligible_asins)
+                return (
+                    self._raw_bm25_scores(query_text, eligible_asins)
+                    if include_raw
+                    else {}
+                )
 
             group_specs = self.bm25_query_compiler.compile_group_specs(
                 constraints,
                 semantic_constraints,
             )
-            raw_scores = self._raw_bm25_scores(query_text, eligible_asins)
+            raw_scores = (
+                self._raw_bm25_scores(query_text, eligible_asins)
+                if include_raw
+                else {}
+            )
             if not group_specs and not raw_scores:
                 return {}
 
-            # Include the raw current-goal query even when no structured slot
-            # has been extracted. Expanded slot queries are additional lexical
-            # evidence, not a replacement for the user's words.
             query_groups: list[dict[str, float]] = []
-            if raw_scores:
+            if include_raw and raw_scores:
                 query_groups.append(raw_scores)
             for group in group_specs.values():
                 scores = self.bm25_index.search(
@@ -1153,7 +1159,10 @@ class ProductRetriever:
         query_text: str,
         eligible_asins: Collection[str],
     ) -> dict[str, float]:
-        """Search the current-goal text without canonical slot expansion."""
+        """Search raw goal text for explicit diagnostic/compatibility callers.
+
+        Normal retrieval does not call this path.
+        """
 
         if self.bm25_index is None or not str(query_text).strip():
             return {}
@@ -1174,8 +1183,9 @@ class ProductRetriever:
         eligible_asins: Collection[str] | None = None,
         target_asin: str | None = None,
         expanded: bool = True,
+        include_raw: bool = False,
     ) -> dict[str, Any]:
-        """Describe raw and per-slot BM25 searches for evaluator diagnostics.
+        """Describe the BM25 searches used by the selected retrieval mode.
 
         This method only observes the same search calls used by retrieval. It
         never changes candidate state and is intentionally kept outside the
@@ -1240,7 +1250,12 @@ class ProductRetriever:
 
         result: dict[str, Any] = {
             "available": True,
-            "raw": describe("raw", str(query_text or "")),
+            "raw": (
+                describe("raw", str(query_text or ""))
+                if include_raw
+                else None
+            ),
+            "raw_enabled": bool(include_raw),
             "constraints": {},
         }
         if not expanded:
@@ -1271,7 +1286,11 @@ class ProductRetriever:
         # Buying ranks on the fused BM25 score alone, so the share each group
         # contributes is the whole explanation of a Buying rank. Mirror the
         # peak-normalize-then-average in ``_bm25_scores``.
-        active = [result["raw"], *result["constraints"].values()]
+        active = [
+            item
+            for item in [result["raw"], *result["constraints"].values()]
+            if item is not None
+        ]
         contributing = [item for item in active if item["match_count"]]
         group_count = len(contributing)
         result["group_count"] = group_count
@@ -1582,6 +1601,7 @@ class ProductRetriever:
                 eligible_set,
                 constraints,
                 semantic_constraints,
+                include_raw=False,
             )
         )
 
