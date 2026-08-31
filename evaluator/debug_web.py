@@ -456,19 +456,8 @@ def _candidate_payload(
         "parent_asin": asin,
         "title": product.get("title", ""),
         "price": product.get("price"),
-        "structured_score": float(candidate.constraint_score),
         "dense_score": (
             float(candidate.dense_score) if dense_available else None
-        ),
-        "semantic_score": (
-            float(getattr(candidate, "semantic_score", candidate.dense_score))
-            if canonical_available
-            else None
-        ),
-        "canonical_score": (
-            float(getattr(candidate, "semantic_score", 0.0))
-            if canonical_available
-            else None
         ),
         "bm25_score": (
             float(getattr(candidate, "bm25_score", 0.0))
@@ -536,10 +525,7 @@ def _ranking_payload(
                     "parent_asin": asin,
                     "title": _product_payload(agent, asin).get("title", ""),
                     "price": _product_payload(agent, asin).get("price"),
-                    "structured_score": None,
                     "dense_score": None,
-                    "semantic_score": None,
-                    "canonical_score": None,
                     "bm25_score": None,
                     "fusion_score": None,
                     "mmr_score": None,
@@ -594,40 +580,19 @@ def _ranking_payload(
         # that carries zero weight is not shown as though it decided anything.
         "mode": mode,
         "signal_roles": {
-            "structured": "diagnostic",
-            "canonical": "diagnostic",
             "dense": "active" if weights["dense"] else "inactive",
             "bm25": "active" if weights.get("bm25", 0.0) else "inactive",
             "fusion": "active" if mode == "BROWSING" else "inactive",
             "mmr": "active" if mode == "BROWSING" else "inactive",
         },
         "mode_weights": dict(weights),
-        "structured_rank": _debug_rank(snapshot["structured"], target),
         "dense_rank": (
             _debug_rank(snapshot["dense"], target) if dense_available else None
-        ),
-        "canonical_rank": (
-            _debug_rank(snapshot["canonical"], target)
-            if canonical_available
-            else None
         ),
         "bm25_rank": (
             _debug_rank(snapshot["bm25"], target) if bm25_available else None
         ),
         "hybrid_rank": _debug_rank(snapshot["hybrid"], target),
-        "global_structured_rank": _debug_rank(
-            snapshot["global_structured"], target
-        ),
-        "global_canonical_rank": (
-            _debug_rank(snapshot["global_canonical"], target)
-            if canonical_available
-            else None
-        ),
-        "global_dense_rank": (
-            _debug_rank(snapshot["global_dense"], target)
-            if dense_available
-            else None
-        ),
         "global_bm25_rank": (
             _debug_rank(snapshot["global_bm25"], target)
             if bm25_available
@@ -643,24 +608,9 @@ def _ranking_payload(
         "global_rank_status": (
             "AVAILABLE" if target_global is not None else "NOT_FOUND"
         ),
-        "structured_score": (
-            float(score_candidate.constraint_score)
-            if score_candidate is not None
-            else None
-        ),
         "dense_score": (
             float(score_candidate.dense_score)
             if score_candidate is not None and dense_available
-            else None
-        ),
-        "semantic_score": (
-            float(getattr(score_candidate, "semantic_score", score_candidate.dense_score))
-            if score_candidate is not None and canonical_available
-            else None
-        ),
-        "canonical_score": (
-            float(getattr(score_candidate, "semantic_score", 0.0))
-            if score_candidate is not None and canonical_available
             else None
         ),
         "bm25_score": (
@@ -1557,10 +1507,9 @@ def _print_interactive_turn(record: Mapping[str, Any]) -> None:
     print(f"Asked: {agent.get('ask_attribute') or 'none'}")
     print(
         "Target ranks: "
-        f"structured={ranking.get('structured_rank', 'N/A')} "
         f"dense={ranking.get('dense_rank', 'N/A')} "
         f"bm25={ranking.get('bm25_rank', 'N/A')} "
-        f"hybrid={ranking.get('hybrid_rank', 'N/A')}"
+        f"final={ranking.get('hybrid_rank', 'N/A')}"
     )
     print("Top 10:")
     for item in ranking.get("top10", ()):

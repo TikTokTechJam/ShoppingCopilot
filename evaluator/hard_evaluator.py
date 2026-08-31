@@ -986,13 +986,12 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
             ),
         )
 
-    structured = sort_by(eligible, "constraint_score")
-    canonical = sort_by(eligible, "semantic_score")
+    # Structured and canonical order nothing in either mode, so no consumer
+    # asks for those views any more. Sorting the full catalog by them was
+    # pure cost.
     dense = sort_by(eligible, "dense_score")
     bm25 = sort_by(eligible, "bm25_score")
     hybrid = sort_by(eligible, "ranking_score")
-    global_structured = sort_by(global_ranking, "constraint_score")
-    global_canonical = sort_by(global_ranking, "semantic_score")
     global_dense = sort_by(global_ranking, "dense_score")
     global_bm25 = sort_by(global_ranking, "bm25_score")
     global_hybrid = sort_by(global_ranking, "score")
@@ -1026,15 +1025,9 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         "mode": mode,
         "eligible": eligible,
         "global": global_ranking,
-        "structured": structured,
-        "canonical": canonical,
-        "semantic": canonical,
         "dense": dense,
         "bm25": bm25,
         "hybrid": hybrid,
-        "global_structured": global_structured,
-        "global_canonical": global_canonical,
-        "global_semantic": global_canonical,
         "global_dense": global_dense,
         "global_bm25": global_bm25,
         "global_hybrid": global_hybrid,
@@ -1298,8 +1291,6 @@ class InteractiveDebugPrinter:
         ranking = _debug_ranking_snapshot(agent, session_id, target)
         eligible = ranking["eligible"]
         global_ranking = ranking["global"]
-        structured_ranking = ranking["structured"]
-        canonical_ranking = ranking["canonical"]
         dense_ranking = ranking["dense"]
         bm25_ranking = ranking["bm25"]
         hybrid_ranking = ranking["hybrid"]
@@ -1328,8 +1319,6 @@ class InteractiveDebugPrinter:
             print(f"Eligible rank: {eligible_rank} / {len(eligible)}")
         target_candidate = target_eligible or target_global
         if target_candidate is not None:
-            print(f"Structured score: {target_candidate.constraint_score:.4f}")
-            print(f"Canonical expansion score: {target_candidate.semantic_score:.4f}")
             print(f"Product dense score: {target_candidate.dense_score:.4f}")
             print(f"BM25 score: {target_candidate.bm25_score:.4f}")
             print(f"RRF score: {target_candidate.fusion_score:.4f}")
@@ -1342,9 +1331,10 @@ class InteractiveDebugPrinter:
             print(f"Final score: {target_candidate.ranking_score:.4f}")
         else:
             print("Target score: N/A")
+        # Only signals that order a ranking get a rank line. Structured and
+        # canonical score nothing in either mode, so a position derived from
+        # sorting by them described a ranking that does not exist.
         print("Target ranks (eligible products):")
-        print(f"  Structured rank: {_debug_rank(structured_ranking, target) or 'MISS'}")
-        print(f"  Canonical expansion rank: {_debug_rank(canonical_ranking, target) or 'MISS'}")
         print(f"  Product dense rank: {_debug_rank(dense_ranking, target) or 'MISS'}")
         print(f"  BM25 rank: {_debug_rank(bm25_ranking, target) or 'MISS'}")
         print(f"  Hybrid rank: {_debug_rank(hybrid_ranking, target) or 'MISS'}")
@@ -1382,8 +1372,6 @@ class InteractiveDebugPrinter:
             )
             print(
                 f"{index}. {asin} score={candidate.ranking_score:.4f} "
-                f"structured={candidate.constraint_score:.4f} "
-                f"canonical={candidate.semantic_score:.4f} "
                 f"product_dense={candidate.dense_score:.4f} "
                 f"bm25={candidate.bm25_score:.4f} "
                 f"rrf={candidate.fusion_score:.4f} mmr={mmr_text}"
