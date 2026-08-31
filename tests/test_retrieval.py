@@ -169,16 +169,20 @@ class ProductRetrieverTests(unittest.TestCase):
                 style=("high waisted",),
             )
             ranked = retriever.retrieve("BUYING", "", constraints, limit=5)
+            best = next(item for item in ranked if item.parent_asin == "A")
 
-            self.assertEqual(ranked[0].parent_asin, "A")
-            self.assertEqual(ranked[0].matched_constraints[:4], (
+            # Buying ranks on BM25 alone, so structured points no longer
+            # decide the order. They remain on the Candidate as diagnostics,
+            # and the matched-constraint labels still come from the exact
+            # posting-list match.
+            self.assertEqual(best.matched_constraints[:4], (
                 "category:shoes",
                 "brand:new balance",
                 "material:high quality mesh",
                 "style:high waisted",
             ))
             self.assertGreater(
-                ranked[0].constraint_score,
+                best.constraint_score,
                 next(item for item in ranked if item.parent_asin == "C").constraint_score,
             )
 
@@ -195,8 +199,15 @@ class ProductRetrieverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             retriever = self.make_retriever(Path(directory))
             for constraints in cases:
-                ranked = retriever.retrieve("BUYING", "", constraints, limit=2)
-                self.assertEqual(ranked[0].parent_asin, "A")
+                ranked = retriever.retrieve("BUYING", "", constraints, limit=5)
+                best = next(item for item in ranked if item.parent_asin == "A")
+                # The tier ordering now lives in the structured *points*, which
+                # are diagnostics. Buying rank itself is decided by BM25.
+                for other in ranked:
+                    if other.parent_asin != "A":
+                        self.assertGreaterEqual(
+                            best.constraint_score, other.constraint_score
+                        )
 
             self.assertGreater(STRUCTURED_FIELD_WEIGHTS["brand"], STRUCTURED_FIELD_WEIGHTS["style"])
             self.assertGreater(STRUCTURED_FIELD_WEIGHTS["color"], STRUCTURED_FIELD_WEIGHTS["style"])

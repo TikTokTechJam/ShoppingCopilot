@@ -12,10 +12,10 @@ user turn
   -> session state (structured values, BGE evidence, active-goal query text)
   -> budget eligibility and recommendation exclusions
   ->
-     BUYING: BM25 with accepted canonical expansions + exact structured points
+     BUYING: field-aware BM25 with accepted canonical expansions
      BROWSING: Qwen product-card Top100 + raw BM25 Top100
   ->
-     BUYING: weighted score
+     BUYING: BM25 score
      BROWSING: reciprocal-rank fusion, then product-card MMR
   -> Top10
 ```
@@ -35,8 +35,9 @@ scoped and uses the existing stopword-filtered one-, two-, and three-gram
 matcher. Brand remains exact-only.
 
 These canonical matches are sparse posting-list evidence. They are not
-product-vector dense retrieval. In Buying, their product score is an optional
-small supporting term alongside structured points and BM25.
+product-vector dense retrieval, and they are not a ranking term. Their role is
+to supply the bounded expansions the BM25 concept groups are compiled from;
+the resulting product score is retained for diagnostics only.
 
 ### V5 product-card vectors
 
@@ -62,23 +63,29 @@ Buying applies budget eligibility first. It then ranks all eligible,
 non-excluded products with:
 
 ```text
-1.00 * structured_score
-+ 1.00 * expanded_bm25_score
+1.00 * expanded_bm25_score
 + rating tie-break
 ```
 
-BGE contributes no score of its own. It earns its place in the pipeline by
-expanding each active slot into lexical alternatives inside the BM25 concept
-groups, so its evidence is already counted once, in `expanded_bm25_score`.
-Two former BGE terms have been removed:
+Buying is field-aware BM25 alone. Every constraint reaches the ranking through
+one route: the per-slot concept groups, which carry each active slot's value
+and its bounded BGE expansions. Price is applied before scoring, as numeric
+eligibility. Three terms that scored the same constraints a second time have
+been removed:
 
-- `0.20 * canonical_expansion_score`, which scored the same canonical postings
-  a second time; and
-- the per-field cosine that scaled `structured_score`, so a matched field now
-  contributes its full configured weight.
+- `0.20 * canonical_expansion_score`, which scored the canonical postings
+  again after they had already been compiled into the concept groups;
+- the per-field cosine that scaled `structured_score`; and
+- `1.00 * structured_score` itself, which scored by posting list what the
+  concept groups already score lexically.
 
-The canonical score is still computed and surfaced as
-`Candidate.semantic_score` for diagnostics only.
+`structured_score` and the canonical score are still computed and surfaced as
+`Candidate.constraint_score` and `Candidate.semantic_score` for diagnostics,
+and the matched/violated constraint labels still come from the structured
+match. Neither is a ranking term.
+
+Note that `size` has no posting-list route left and is not a BM25 query field,
+so it currently contributes nothing to Buying rank. Price still filters.
 
 The expanded BM25 signal contains the active-goal raw query plus bounded BGE
 canonical/user-surface expansions. The BM25 score is normalized per query
