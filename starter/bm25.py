@@ -15,14 +15,13 @@ from dataclasses import dataclass
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
-from dictionary.registry import normalize_text, semantic_query_tokens
+from dictionary.registry import normalize_text
 
 
 # These are the original raw-catalog columns and weights.  Keep this tuple
 # stable for callers that use the raw BM25 compatibility path.
 BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
-MAX_QUERY_NGRAM = 3
 
 # The compiler supplies each active slot with a deliberately small number of
 # semantic surface forms.  The retriever searches those slot groups separately
@@ -100,41 +99,22 @@ def _text(value: object) -> str:
 
 
 def _query_terms(text: str) -> tuple[str, ...]:
-    """Use the existing semantic tokenizer and stopword policy for BM25."""
+    """Normalize a raw text query into unique terms without stopword filtering."""
 
-    return tuple(dict.fromkeys(semantic_query_tokens(text)))[:MAX_QUERY_TERMS]
-
-
-def _query_ngrams(text: str, *, max_ngram: int = MAX_QUERY_NGRAM) -> tuple[str, ...]:
-    """Return cleaned contiguous 1-, 2-, and 3-word phrases for BM25.
-
-    The phrases deliberately overlap.  For example, ``black rain boots``
-    produces the unigrams, ``black rain`` and ``rain boots``, and
-    ``black rain boots``.  The existing semantic tokenizer removes
-    conversational stopwords before the phrase windows are built.
-    """
-
-    terms = _query_terms(text)
-    if not terms:
-        return ()
-    width_limit = max(1, min(int(max_ngram), MAX_QUERY_NGRAM))
-    phrases: list[str] = []
-    for width in range(1, width_limit + 1):
-        for start in range(0, len(terms) - width + 1):
-            phrases.append(" ".join(terms[start : start + width]))
-    return tuple(dict.fromkeys(phrases))
+    normalized = normalize_text(str(text))
+    return tuple(dict.fromkeys(normalized.split()))[:MAX_QUERY_TERMS]
 
 
-def _phrase_ngrams(phrases: Iterable[str]) -> tuple[str, ...]:
-    """Expand each OR alternative without creating phrases across alternatives."""
+def _normalized_phrases(phrases: Iterable[str]) -> tuple[str, ...]:
+    """Normalize and deduplicate caller-selected phrases without expansion."""
 
     result: list[str] = []
     seen: set[str] = set()
     for phrase in phrases:
-        for candidate in _query_ngrams(str(phrase)):
-            if candidate not in seen:
-                seen.add(candidate)
-                result.append(candidate)
+        normalized = normalize_text(str(phrase))
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
     return tuple(result)
 
 
@@ -247,15 +227,9 @@ class BM25QueryGroup:
 
     @property
     def match_phrases(self) -> tuple[str, ...]:
-        """Return OR alternatives, including the existing bounded n-grams.
+        """Return the normalized OR alternatives selected by the caller."""
 
-        N-grams are generated independently for each alternative.  This keeps
-        an expansion such as ``rainy weather`` separate from the next
-        alternative instead of accidentally creating terms like
-        ``weather lightweight`` across two BGE surfaces.
-        """
-
-        return _phrase_ngrams(self.phrases)
+        return _normalized_phrases(self.phrases)
 
     @property
     def query_text(self) -> str:
@@ -300,14 +274,11 @@ class BM25QueryCompiler:
         text = str(value).strip()
         if not text:
             return
-        # Use the same semantic normalization as the normal BM25 query path
-        # for de-duplication, while retaining the readable surface in the
-        # compiled query.  BM25Index will apply the final tokenizer cleanup.
-        key = " ".join(semantic_query_tokens(text))
-        if not key or key in seen:
+        normalized = normalize_text(text)
+        if not normalized or normalized in seen:
             return
-        seen.add(key)
-        terms.append(text)
+        seen.add(normalized)
+        terms.append(normalized)
 
     def compile_group_specs(
         self,
@@ -500,9 +471,9 @@ class BM25Index:
 
     @staticmethod
     def query_phrases(query_text: str) -> tuple[str, ...]:
-        """Return the normalized 1/2/3-gram phrases used by ``search``."""
+        """Return the normalized individual terms used by raw ``search``."""
 
-        return _query_ngrams(query_text)
+        return _query_terms(query_text)
 
     @classmethod
     def query_expression(
@@ -514,9 +485,9 @@ class BM25Index:
         """Return the exact FTS5 expression sent for a query."""
 
         if isinstance(query_text, str):
-            phrases = _query_ngrams(query_text)
+            phrases = _query_terms(query_text)
         else:
-            phrases = _phrase_ngrams(query_text)
+            phrases = _normalized_phrases(query_text)
         return _match_expression(phrases, fields=fields)
 
     def search(
@@ -530,9 +501,9 @@ class BM25Index:
         # always supplies an explicit route that may include V5 fact columns.
         selected_fields = BM25_RAW_COLUMNS if fields is None else fields
         if isinstance(query_text, str):
-            phrases = _query_ngrams(query_text)
+            phrases = _query_terms(query_text)
         else:
-            phrases = _phrase_ngrams(query_text)
+            phrases = _normalized_phrases(query_text)
         expression = _match_expression(phrases, fields=selected_fields)
         if not expression:
             return {}
