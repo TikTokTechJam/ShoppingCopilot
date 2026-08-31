@@ -809,7 +809,8 @@ References:
 
 ## 9. Over-generality cutoff
 
-An over-general request should control **computation**, not necessarily return nothing.
+An over-general request should control **what the Agent asks**, and ideally
+also **what it spends**. The first is implemented; the second is not.
 
 Example:
 
@@ -817,25 +818,98 @@ Example:
 "I need some clothes"
 ```
 
-Do not automatically run every expensive stage over thousands of nearly equivalent products.
+### 9.1 Implemented: breadth decides whether to ask
 
-Preferred flow:
+Every turn analyses the candidate pool by facet, and pool size gates the
+clarification question:
 
 ```text
-cheap broad retrieval
-        ↓
-large ambiguous pool
-        ↓
-candidate facet analysis
-        ↓
-STOP unnecessary expensive ranking
-        ↓
-ask highest-value clarification
+                        retrieval
+                            ↓
+                 candidate facet analysis
+                            ↓
+              is the pool still broad (over 50)?
+                            │
+                 ┌──────────┴──────────┐
+                 ↓                     ↓
+                no                    yes
+          recommend only    score every askable attribute
+                                       ↓
+                          does the best clear the abstain floor?
+                                       │
+                            ┌──────────┴──────────┐
+                            ↓                     ↓
+                           no                    yes
+                     recommend only     ask that attribute
 ```
 
-If the evaluator requires recommendations every turn, a cheap broad Top-K may still be returned alongside the clarification question.
+Below the breadth threshold, another question is worth less than the turn it
+costs, so the Agent recommends instead. Above it, the attribute is chosen by
+the Section 8 utility and must still clear the abstain floor.
 
-This mechanism is part of adaptive orchestration: the system should spend more computation only when the state is sufficiently specific for that computation to be useful.
+Recommendations are returned on every turn regardless, alongside any
+question, because the evaluator scores a list each turn.
+
+### 9.2 Not implemented: breadth does not yet control computation
+
+The current order of work is:
+
+```text
+                        active session state
+                                 │
+             ┌───────────────────┴───────────────────┐
+             ↓                                       ↓
+      recommendation ranking                  clarification pool
+      top-K, diversified                      broad, undiversified
+             │                                       ↓
+             │                              candidate facet analysis
+             │                                       ↓
+             │                                  breadth test
+             │                                       │
+             │                            ┌──────────┴──────────┐
+             │                            ↓                     ↓
+             │                       ask nothing        ask an attribute
+             │                            │                     │
+             └───────────────┬────────────┴─────────────────────┘
+                             ↓
+                recommendations + optional question
+```
+
+Both branches run on every turn, and neither is conditional on the other. The
+breadth test reads only the right-hand branch.
+
+The second retrieval is deliberate and correct in itself. Clarification needs
+a broad distribution of product facts, which the small diversified Browsing
+recommendation pool would truncate, and the broad pool is already the cheaper
+of the two because it skips diversification.
+
+So the breadth threshold currently gates *conversation*, not *computation*.
+
+### 9.3 What closing the gap would require
+
+Reordering, not new components. The broad clarification pool is already the
+cheap retrieval the design asks for, so running it first would let the
+breadth test decide whether the full ranking is worth doing at all:
+
+```text
+                     cheap broad retrieval
+                             ↓
+                  candidate facet analysis
+                             ↓
+                        breadth test
+                             │
+                  ┌──────────┴──────────┐
+                  ↓                     ↓
+                 yes                   no
+        cheap top-K from the      full ranking
+        pool + clarification      as today
+```
+
+This removes the duplicate retrieval rather than adding a stage. It is
+unmeasured: the saving is proportional to the share of turns that are
+actually broad, which has not been instrumented, and any change to how the
+recommendation list is produced on broad turns affects the scored metric
+directly.
 
 ---
 
@@ -903,9 +977,9 @@ use_case = beach holiday
         ↓
 Qwen3 dense + raw BM25
         ↓
-RRF
+       RRF
         ↓
-MMR
+       MMR
         ↓
 diverse cross-category ideas
 
@@ -934,7 +1008,7 @@ brand = Columbia             [explicit]
 
 User:
 "Actually I'll mostly use it in rainy weather"
-
+        ↓
 UPDATE:
 use_case sunny → rainy
 
@@ -946,9 +1020,9 @@ category jacket
 color black
 brand Columbia
 
-            ↓
+        ↓
 regenerate retrieval from active state
-            ↓
+        ↓
 Buying path
 ```
 
@@ -976,7 +1050,7 @@ use_case has highest question utility
 ```text
 LLM Turn Interpreter
 → understand current user language
-→ intent + slots + override delta
+→ slots + override delta
 
 Structured validators
 → parse / validate price/budget
@@ -995,13 +1069,12 @@ Adaptive Intent Orchestrator
 → stop unnecessary computation for over-general state
 
 BGE
-→ canonical semantic expansion for Buying lexical retrieval
-→ NOT an independent direct Buying product score
+→ canonical semantic expansion for lexical retrieval
+→ NOT an independent direct product score
 
 BM25
 → efficient lexical product retrieval
-→ grouped expanded queries for Buying
-→ raw lexical complement for Browsing
+→ grouped expanded lexical signal for both modes
 
 Qwen3-Embedding-0.6B
 → product-level semantic retrieval for Browsing
@@ -1025,24 +1098,23 @@ These rules should be preserved during implementation unless this document is ex
 
 1. **Buying and Browsing use different retrieval strategies.**
 2. **BGE is semantic/canonical query expansion for Buying, not a separate direct product-ranking score.**
-3. **No `0.20 × BGE posting-list score` belongs in the target Buying ranker.**
-4. **Buying uses price eligibility, exact brand evidence, and BGE-expanded slot/concept-group BM25 semantic evidence.**
-5. **Browsing uses Qwen3 product-level dense retrieval plus an independent raw BM25 complement.**
-6. **Browsing sparse/dense fusion uses rank fusion such as RRF, not raw cosine + raw BM25 addition.**
-7. **MMR/diversity is primarily a Browsing concern.**
-8. **Retrieval is derived from active state, not blindly from stale full conversation history.**
-9. **Preference overrides preserve independent explicit constraints and remove only invalidated dependent state.**
-10. **Clarification is candidate-aware and should maximize useful search-space reduction.**
-11. **Over-generality can stop expensive computation and trigger clarification.**
-12. **Qwen3-Embedding-0.6B uses 1024 dimensions as the reference dense-product configuration.**
-13. **Long-term/profile context is a soft prior and never overrides explicit current intent.**
-14. **Product-level LLM reranking is optional, not part of the required core path unless benchmark evidence justifies it.**
+3. **Buying uses price eligibility, exact brand evidence, and BGE-expanded slot/concept-group BM25 semantic evidence.**
+4. **Browsing uses Qwen3 product-level dense retrieval plus an independent raw BM25 complement.**
+5. **Browsing sparse/dense fusion uses rank fusion such as RRF, not raw cosine + raw BM25 addition.**
+6. **MMR/diversity is primarily a Browsing concern.**
+7. **Retrieval is derived from active state, not blindly from stale full conversation history.**
+8. **Preference overrides preserve independent explicit constraints and remove only invalidated dependent state.**
+9. **Clarification is candidate-aware and should maximize useful search-space reduction.**
+10. **Over-generality can stop expensive computation and trigger clarification.**
+11. **Qwen3-Embedding-0.6B uses 1024 dimensions as the reference dense-product configuration.**
+12. **Long-term/profile context is a soft prior and never overrides explicit current intent.**
+13. **Product-level LLM reranking is optional, not part of the required core path unless benchmark evidence justifies it.**
 
 ---
 
 ## 14. Implementation priority
 
-Codex should implement toward this architecture in this order when gaps exist:
+Developers should implement toward this architecture in this order when gaps exist:
 
 ```text
 1. Correct active-state / override semantics
