@@ -19,8 +19,8 @@ from product_embeddings.pipeline import (
 
 
 BROWSING_QWEN_INSTRUCTION = (
-    "Given an open-ended shopping request, retrieve products that best match "
-    "the shopper's use case, preferences, and desired attributes."
+    "Retrieve products that best match the shopper's product type, intended "
+    "use, desired features, and preferences."
 )
 
 
