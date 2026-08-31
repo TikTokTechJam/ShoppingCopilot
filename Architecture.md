@@ -347,7 +347,6 @@ Contrastive examples should distinguish cases such as:
 
 References:
 - Lee et al., *Dialogue State Tracking with a Language Model using Schema-Driven Prompting*, EMNLP 2021.
-- Goo et al., *Slot-Gated Modeling for Joint Slot Filling and Intent Prediction*, NAACL 2018.
 - Li et al., *Large Language Models as Zero-shot Dialogue State Tracker through Function Calling*, ACL 2024.
 - Gupta et al., *Show, Don't Tell: Demonstrations Outperform Descriptions for Schema-Guided Task-Oriented Dialogue*, NAACL 2022.
 
@@ -790,6 +789,9 @@ Retrieve a broad candidate set such as Top-100 before fusion.
 ### 7.3 BM25 lexical complement
 
 Browsing also runs a lexical route over the active goal text.
+
+The active-goal text contains only text associated with the current shopping
+goal; turns invalidated by overrides are excluded.
 
 This is an independent complement to dense retrieval, useful for exact names, rare terms, brands, model names, and lexical evidence that dense retrieval may blur.
 
