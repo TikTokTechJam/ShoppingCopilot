@@ -431,7 +431,7 @@ function render(data) {
     : evaluator === "interactive"
       ? "One real Agent turn at a time — replies entered in the console."
       : "One real Agent turn at a time — Manual400 benchmark mode.";
-  renderBanner(data); renderMissSearch(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
+  renderBanner(data); renderMissSearch(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
   syncActionButtons();
   updateInteractivePolling(data);
 }
