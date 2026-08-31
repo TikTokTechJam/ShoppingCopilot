@@ -14,8 +14,8 @@ The architecture is intentionally split into explicit components so each stage c
                          LLM TURN INTERPRETER
                     intent + slots + override delta
                                     ↓
-                    DETERMINISTIC VALIDATION
-                     price / size / canonical checks
+                     DETERMINISTIC VALIDATION
+                           price / budget only
                                     ↓
                  DEPENDENCY-AWARE SESSION STATE
                active constraints + provenance + profile
@@ -28,7 +28,7 @@ The architecture is intentionally split into explicit components so each stage c
            BUYING                                      BROWSING
       precision-oriented                           discovery-oriented
               ↓                                           ↓
- structured eligibility / evidence              active semantic intent
+               price eligibility                            active semantic intent
               ↓                                           ↓
      BGE canonical expansion              Qwen3-Embedding-0.6B
               ↓                                   query embedding
@@ -139,10 +139,11 @@ Target model:
 BAAI/bge-small-en-v1.5
 ```
 
-BGE searches canonical values for semantic attributes such as:
+BGE searches canonical values for all semantic product attributes:
 
 ```text
 category
+brand
 color
 material
 style
@@ -150,7 +151,7 @@ feature
 use_case
 ```
 
-Brand remains exact-oriented unless benchmark evidence justifies semantic brand matching.
+These seven categorical attributes are semantic constraints in the current architecture, including category and brand. Price/budget is the only structured constraint.
 
 BGE is **not** the product-level dense retrieval path.
 
@@ -206,7 +207,7 @@ Use L2-normalized vectors so cosine similarity can be implemented as a matrix do
 
 For ~50k products, 1024-dimensional float32 embeddings are small enough to keep as the quality baseline. Smaller Matryoshka dimensions may be benchmarked later, but 1024 is the reference configuration.
 
-This representation follows the intent-aware retrieval direction in recent e-commerce work, where structured query/product intent attributes are embedded instead of relying only on raw product text.
+This representation follows the intent-aware retrieval direction in recent e-commerce work, where semantic query/product intent attributes are embedded instead of relying only on raw product text. Price remains a separate numeric eligibility field.
 
 References:
 - Qwen3 Embedding, 2025 — https://arxiv.org/abs/2506.05176
@@ -225,7 +226,7 @@ User utterance
       ↓
 LLM turn interpreter
       ↓
-current-turn structured delta
+       current-turn semantic delta + price delta
       ↓
 deterministic validation
       ↓
@@ -250,8 +251,7 @@ Conceptually:
     "use_case": [],
     "style": [],
     "price_min": null,
-    "price_max": null,
-    "size": []
+    "price_max": null
   },
   "override": {
     "type": "none | preference_override | full_goal_override",
@@ -259,6 +259,11 @@ Conceptually:
   }
 }
 ```
+
+The categorical fields in `updates` are semantic constraints. `price_min` and
+`price_max` are the only structured constraint in the current architecture and
+remain a numeric eligibility rule. Size is not part of the current structured
+constraint contract.
 
 Example:
 
@@ -358,11 +363,10 @@ category
 │  ├─ feature
 │  ├─ material
 │  └─ style
-├─ size
 └─ style
 ```
 
-Brand, color, and budget are generally independent unless explicit provenance says otherwise.
+Brand, color, and price/budget are generally independent unless explicit provenance says otherwise. The graph describes semantic derivation; it does not turn those attributes into structured filters.
 
 ### 4.3 Retrieval context must follow active state
 
@@ -418,7 +422,8 @@ Buying is precision-oriented.
 ```text
 Active Buying State
         ↓
-structured eligibility / exact evidence
+price eligibility
+semantic evidence
         ↓
 BGE semantic expansion
         ↓
@@ -433,20 +438,19 @@ Buying rank
 Candidate Pool
 ```
 
-### 6.1 Structured constraints
+### 6.1 Structured constraint
 
-Structured logic owns typed constraints such as:
+Structured logic currently owns only the typed price/budget constraint:
 
 ```text
 price
-size
-exact brand
-other validated exact values
+price_min
+price_max
 ```
 
-Budget and other genuinely hard requirements should be enforced as eligibility filters where semantically safe.
+Known satisfying prices are eligible; known violating prices and null prices are excluded when a budget is active. No category, brand, color, material, style, feature, use-case, or size value is currently a structured constraint.
 
-Exact categorical matches remain useful ranking evidence even when they are not used as universal hard filters.
+Categorical values remain semantic evidence for BGE expansion, product-card retrieval, and BM25 ranking.
 
 ### 6.2 Slot-guided BM25 query compilation
 
@@ -517,7 +521,8 @@ References:
 The target Buying flow is:
 
 ```text
-structured exact / typed evidence
+price eligibility
+semantic evidence
           +
 BGE-expanded grouped BM25 evidence
           +
@@ -629,7 +634,7 @@ product type, desired features, use case and preferences.
 Prioritize semantic suitability even when wording differs.
 ```
 
-The product side uses the structured V5 product card built offline.
+The product side uses the V5 semantic product card built offline.
 
 ### 7.2 Dense retrieval
 
@@ -850,7 +855,7 @@ use_case = wet weather
 price_max = 100
 
             ↓
-structured budget eligibility
+price budget eligibility
             ↓
 BGE expansion
   running shoes → trail running shoes ...
@@ -947,8 +952,11 @@ LLM Turn Interpreter
 → understand current user language
 → intent + slots + override delta
 
-Deterministic validators
-→ parse / validate price, size, canonical values
+Price validator
+→ parse / validate the numeric price/budget constraint
+
+Semantic matcher
+→ resolve category, brand, color, material, style, feature, and use_case
 
 SessionManager
 → own state and provenance
@@ -991,7 +999,7 @@ These rules should be preserved during implementation unless this document is ex
 1. **Buying and Browsing use different retrieval strategies.**
 2. **BGE is semantic/canonical query expansion for Buying, not a separate direct product-ranking score.**
 3. **No `0.20 × BGE posting-list score` belongs in the target Buying ranker.**
-4. **Buying uses BGE-expanded slot/concept-group BM25 plus structured evidence.**
+4. **Buying uses price eligibility plus BGE-expanded slot/concept-group BM25 semantic evidence.**
 5. **Browsing uses Qwen3 product-level dense retrieval plus an independent raw BM25 complement.**
 6. **Browsing sparse/dense fusion uses rank fusion such as RRF, not raw cosine + raw BM25 addition.**
 7. **MMR/diversity is primarily a Browsing concern.**
@@ -1011,7 +1019,7 @@ Codex should implement toward this architecture in this order when gaps exist:
 
 ```text
 1. Correct active-state / override semantics
-2. Buying = structured + BGE-expanded grouped BM25
+2. Buying = price eligibility + BGE-expanded grouped BM25
 3. Browsing V5 Qwen3 dense index/query path
 4. Browsing BM25 complement + RRF
 5. Browsing MMR diversity
