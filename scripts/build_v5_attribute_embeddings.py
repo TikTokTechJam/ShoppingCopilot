@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from dictionary.registry import ATTRIBUTE_FIELDS, AttributeDictionary, normalize_text
+from dictionary.registry import ATTRIBUTE_FIELDS, normalize_text
 from product_embeddings.pipeline import load_local_sentence_transformer
 
 
@@ -68,13 +68,46 @@ def _load_dictionary_rows(
 ) -> dict[str, list[dict[str, str]]]:
     """Load canonical values referenced by the V5 normalized lookup."""
 
+    registry_path = dictionary_dir / "canonical_values.json"
     try:
-        dictionary = AttributeDictionary.load(dictionary_dir)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        registry_payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            f"unable to load V5 dictionary from {dictionary_dir}: {exc}"
+            f"unable to read V5 canonical dictionary: {registry_path}"
         ) from exc
-    values_by_id = {value.canonical_id: value for value in dictionary.values}
+    if isinstance(registry_payload, list):
+        registry_records = registry_payload
+    elif (
+        isinstance(registry_payload, Mapping)
+        and isinstance(registry_payload.get("values"), Mapping)
+    ):
+        registry_records = [
+            {"canonical_id": str(value_id), **dict(record)}
+            for value_id, record in registry_payload["values"].items()
+        ]
+    else:
+        raise RuntimeError(
+            "canonical_values.json must contain a values object or record list"
+        )
+    values_by_id: dict[str, dict[str, Any]] = {}
+    for record in registry_records:
+        if not isinstance(record, Mapping):
+            raise RuntimeError("canonical_values.json contains an invalid record")
+        try:
+            canonical_id = str(record["canonical_id"])
+            attribute = str(record["attribute"])
+            value = str(record["value"])
+            normalized = str(record["normalized"])
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                "canonical_values.json contains an incomplete record"
+            ) from exc
+        values_by_id[canonical_id] = {
+            "canonical_id": canonical_id,
+            "attribute": attribute,
+            "value": value,
+            "normalized": normalized,
+        }
 
     lookup_path = dictionary_dir / "normalized_lookup.json"
     try:
@@ -116,7 +149,7 @@ def _load_dictionary_rows(
                         f"normalized lookup references unknown canonical ID: {value_id!r}"
                     )
                 value = values_by_id[value_id]
-                if value.attribute != attribute or value.normalized != surface:
+                if value["attribute"] != attribute or value["normalized"] != surface:
                     raise ValueError(
                         f"normalized lookup disagrees with canonical value: {value_id}"
                     )
@@ -126,10 +159,10 @@ def _load_dictionary_rows(
         rows_by_attribute[attribute] = [
             {
                 "canonical_id": value_id,
-                "attribute": values_by_id[value_id].attribute,
-                "value": values_by_id[value_id].value,
-                "normalized": values_by_id[value_id].normalized,
-                "embedding_text": values_by_id[value_id].normalized,
+                "attribute": values_by_id[value_id]["attribute"],
+                "value": values_by_id[value_id]["value"],
+                "normalized": values_by_id[value_id]["normalized"],
+                "embedding_text": values_by_id[value_id]["normalized"],
             }
             for value_id in sorted(attribute_ids)
         ]
@@ -155,6 +188,111 @@ def _resolve_model_path(model: str | None) -> str:
         if path.is_dir():
             return path.as_posix()
     return DEFAULT_MODEL_NAME
+
+
+def _model_identity(value: object) -> str:
+    """Return a stable local/model-id label for compatibility checks."""
+
+    text = str(value).replace("\\", "/").rstrip("/")
+    return text.rsplit("/", 1)[-1].casefold()
+
+
+def _load_preserved_attributes(
+    output: Path,
+    rows_by_attribute: Mapping[str, Sequence[Mapping[str, str]]],
+    selected_attributes: Sequence[str],
+    *,
+    model_path: str,
+    dimension: int,
+) -> dict[str, dict[str, Any]]:
+    """Load compatible, already-built matrices for unselected attributes.
+
+    An attribute-only build must not make the other existing matrices
+    disappear from the runtime registry. Preserve them only when their rows,
+    model, dimension, and matrix shape still match the current dictionary.
+    """
+
+    metadata_path = output / "metadata.json"
+    if not metadata_path.exists():
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"unable to read existing attribute embedding metadata: {metadata_path}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise RuntimeError(
+            "existing attribute embedding metadata must contain an object"
+        )
+
+    previous_model = payload.get("model", payload.get("model_path"))
+    if (
+        previous_model is not None
+        and _model_identity(previous_model) != _model_identity(model_path)
+    ):
+        raise RuntimeError(
+            "cannot preserve existing attribute embeddings generated by a different "
+            f"model ({previous_model!r}); rebuild all attributes with {model_path!r}"
+        )
+    previous_dimension = payload.get("dimension")
+    if previous_dimension != dimension:
+        raise RuntimeError(
+            "cannot preserve existing attribute embeddings with a different "
+            f"dimension ({previous_dimension!r}); expected {dimension}"
+        )
+
+    attributes = payload.get("attributes")
+    if not isinstance(attributes, Mapping):
+        raise RuntimeError(
+            "existing attribute embedding metadata is missing attributes"
+        )
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError(
+            "embedding generation requires NumPy; install requirements-embeddings.txt"
+        ) from exc
+
+    selected = set(selected_attributes)
+    preserved: dict[str, dict[str, Any]] = {}
+    for attribute in ATTRIBUTE_EMBEDDING_FIELDS:
+        if attribute in selected or attribute not in attributes:
+            continue
+        spec = attributes[attribute]
+        if not isinstance(spec, Mapping):
+            raise RuntimeError(
+                f"existing attribute embedding metadata for {attribute} is invalid"
+            )
+        expected_rows = list(rows_by_attribute[attribute])
+        if spec.get("rows") != expected_rows:
+            raise RuntimeError(
+                f"cannot preserve {attribute} embeddings because the dictionary "
+                "rows changed; rebuild the affected attribute matrices"
+            )
+        embedding_file = spec.get("embedding_file", f"{attribute}_embeddings.npy")
+        expected_file = f"{attribute}_embeddings.npy"
+        if embedding_file != expected_file:
+            raise RuntimeError(
+                f"existing {attribute} embedding metadata must use {expected_file}"
+            )
+        matrix_path = output / expected_file
+        if not matrix_path.is_file():
+            raise RuntimeError(
+                f"missing existing attribute embedding matrix: {matrix_path}"
+            )
+        try:
+            matrix = np.load(matrix_path, allow_pickle=False, mmap_mode="r")
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"unable to read existing matrix: {matrix_path}") from exc
+        if tuple(matrix.shape) != (len(expected_rows), dimension):
+            raise RuntimeError(
+                f"existing {attribute} matrix has shape {tuple(matrix.shape)}; "
+                f"expected ({len(expected_rows)}, {dimension})"
+            )
+        preserved[attribute] = dict(spec)
+    return preserved
 
 
 def _normalise_matrix(matrix: Any) -> Any:
@@ -245,6 +383,12 @@ def build_v5_attribute_embeddings(
     dictionary = Path(dictionary_dir)
     output = Path(output_dir)
     rows_by_attribute = _load_dictionary_rows(dictionary)
+    if "style" in selected_attributes and not rows_by_attribute["style"]:
+        raise RuntimeError(
+            "style embedding requested but the V5 dictionary has no style values; "
+            "rebuild it from data/derived/annotations/v5/annotations.jsonl "
+            "after style.jsonl has been aggregated"
+        )
     model_path = _resolve_model_path(model)
     _log(f"dictionary: {dictionary}")
     _log(f"model: {model_path} (local_files_only=True)")
@@ -277,6 +421,18 @@ def build_v5_attribute_embeddings(
     _log(f"model loaded: dimension={dimension}, normalization=l2")
 
     output.mkdir(parents=True, exist_ok=True)
+    preserved_attributes = _load_preserved_attributes(
+        output,
+        rows_by_attribute,
+        selected_attributes,
+        model_path=model_path,
+        dimension=dimension,
+    )
+    if preserved_attributes:
+        _log(
+            "preserving existing matrices: "
+            + ", ".join(preserved_attributes)
+        )
     stale_brand_matrix = output / "brand_embeddings.npy"
     if stale_brand_matrix.exists():
         stale_brand_matrix.unlink()
@@ -288,9 +444,8 @@ def build_v5_attribute_embeddings(
         "dimension": dimension,
         "normalization": "l2",
         "embedding_text": "normalized",
-        "attributes": {},
+        "attributes": dict(preserved_attributes),
     }
-    total_values = 0
     for attribute in selected_attributes:
         rows = rows_by_attribute[attribute]
         started_attribute = time.perf_counter()
@@ -320,12 +475,19 @@ def build_v5_attribute_embeddings(
             "count": len(rows),
             "rows": rows,
         }
-        total_values += len(rows)
         _log(
             f"{attribute}: complete {len(rows):,} values -> {filename} "
             f"elapsed={time.perf_counter() - started_attribute:.1f}s"
         )
 
+    available_attributes = tuple(
+        attribute
+        for attribute in ATTRIBUTE_EMBEDDING_FIELDS
+        if attribute in metadata["attributes"]
+    )
+    total_values = sum(
+        len(rows_by_attribute[attribute]) for attribute in available_attributes
+    )
     source_files = {
         "canonical_values": dictionary / "canonical_values.json",
         "normalized_lookup": dictionary / "normalized_lookup.json",
@@ -337,11 +499,13 @@ def build_v5_attribute_embeddings(
             name: _sha256(path) for name, path in source_files.items()
         },
         "attributes_selected": list(selected_attributes),
+        "attributes_preserved": list(preserved_attributes),
+        "attributes_available": list(available_attributes),
         "attributes_excluded": ["brand"],
         "canonical_value_count": total_values,
         "canonical_value_count_by_attribute": {
             attribute: len(rows_by_attribute[attribute])
-            for attribute in selected_attributes
+            for attribute in available_attributes
         },
         "complete": True,
     }
@@ -359,7 +523,9 @@ def build_v5_attribute_embeddings(
         "canonical_value_count_by_attribute": manifest[
             "canonical_value_count_by_attribute"
         ],
-        "attributes": list(selected_attributes),
+        "attributes": list(available_attributes),
+        "attributes_selected": list(selected_attributes),
+        "attributes_preserved": list(preserved_attributes),
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
 
