@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from dictionary.registry import ATTRIBUTE_FIELDS, AttributeDictionary, normalize_text
+from dictionary.registry import ATTRIBUTE_FIELDS, normalize_text
 from product_embeddings.pipeline import load_local_sentence_transformer
 
 
@@ -68,13 +68,46 @@ def _load_dictionary_rows(
 ) -> dict[str, list[dict[str, str]]]:
     """Load canonical values referenced by the V5 normalized lookup."""
 
+    registry_path = dictionary_dir / "canonical_values.json"
     try:
-        dictionary = AttributeDictionary.load(dictionary_dir)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        registry_payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            f"unable to load V5 dictionary from {dictionary_dir}: {exc}"
+            f"unable to read V5 canonical dictionary: {registry_path}"
         ) from exc
-    values_by_id = {value.canonical_id: value for value in dictionary.values}
+    if isinstance(registry_payload, list):
+        registry_records = registry_payload
+    elif (
+        isinstance(registry_payload, Mapping)
+        and isinstance(registry_payload.get("values"), Mapping)
+    ):
+        registry_records = [
+            {"canonical_id": str(value_id), **dict(record)}
+            for value_id, record in registry_payload["values"].items()
+        ]
+    else:
+        raise RuntimeError(
+            "canonical_values.json must contain a values object or record list"
+        )
+    values_by_id: dict[str, dict[str, Any]] = {}
+    for record in registry_records:
+        if not isinstance(record, Mapping):
+            raise RuntimeError("canonical_values.json contains an invalid record")
+        try:
+            canonical_id = str(record["canonical_id"])
+            attribute = str(record["attribute"])
+            value = str(record["value"])
+            normalized = str(record["normalized"])
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                "canonical_values.json contains an incomplete record"
+            ) from exc
+        values_by_id[canonical_id] = {
+            "canonical_id": canonical_id,
+            "attribute": attribute,
+            "value": value,
+            "normalized": normalized,
+        }
 
     lookup_path = dictionary_dir / "normalized_lookup.json"
     try:
@@ -116,7 +149,7 @@ def _load_dictionary_rows(
                         f"normalized lookup references unknown canonical ID: {value_id!r}"
                     )
                 value = values_by_id[value_id]
-                if value.attribute != attribute or value.normalized != surface:
+                if value["attribute"] != attribute or value["normalized"] != surface:
                     raise ValueError(
                         f"normalized lookup disagrees with canonical value: {value_id}"
                     )
@@ -126,10 +159,10 @@ def _load_dictionary_rows(
         rows_by_attribute[attribute] = [
             {
                 "canonical_id": value_id,
-                "attribute": values_by_id[value_id].attribute,
-                "value": values_by_id[value_id].value,
-                "normalized": values_by_id[value_id].normalized,
-                "embedding_text": values_by_id[value_id].normalized,
+                "attribute": values_by_id[value_id]["attribute"],
+                "value": values_by_id[value_id]["value"],
+                "normalized": values_by_id[value_id]["normalized"],
+                "embedding_text": values_by_id[value_id]["normalized"],
             }
             for value_id in sorted(attribute_ids)
         ]
