@@ -158,6 +158,7 @@ class OverrideHandlingTests(unittest.TestCase):
         state = manager.reset("session", {})
         state.mode = "BROWSING"
         state.messages[:] = ["old goal"]
+        state.llm_summary_messages[:] = ["old summarized preference"]
         state.asked_attributes.update({"color", "material"})
         state.no_preference_attributes.add("color")
         state.attribute_call_count["material"] = 1
@@ -183,6 +184,7 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertEqual(state.constraints.color, ())
         self.assertEqual(state.constraints.material, ("nylon",))
         self.assertEqual(state.messages, ["old goal"])
+        self.assertEqual(state.llm_summary_messages, ["old summarized preference"])
         self.assertEqual(state.asked_attributes, set())
         self.assertEqual(state.no_preference_attributes, {"color"})
         self.assertEqual(state.attribute_call_count["material"], 0)

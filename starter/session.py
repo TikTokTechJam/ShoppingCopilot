@@ -464,10 +464,10 @@ class SessionManager:
             return state
 
         # Keep the human-readable transcript, but discard raw lexical text
-        # from the replaced preference segment. Active constraints are still
-        # supplied to the BM25 compiler as structured/semantic slot values.
+        # from the replaced preference segment. The accumulated LLM summary is
+        # intentionally preserved across intent/preference overrides, so it
+        # remains part of the Buying BM25 context.
         state.retrieval_messages.clear()
-        state.llm_summary_messages.clear()
 
         structured_values = {
             field_name: _field_values(state.constraints, field_name)
