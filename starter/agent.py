@@ -136,8 +136,9 @@ class Agent:
         self.clarification = ClarificationPolicy()
         self.use_user_profile = bool(use_user_profile)
         self._profile_affinity: dict[str, ProfileAffinity] = {}
-        # Optional local model, loaded once per Agent.  If it is absent or
-        # fails to load, the existing deterministic extraction remains active.
+        # The configured interpreter is loaded once per Agent. Meaningful
+        # turns require an LLM interpretation; deterministic parsing remains
+        # limited to typed numeric fields and no-preference metadata.
         self.turn_interpreter = (
             turn_interpreter
             if turn_interpreter is not None
@@ -148,12 +149,14 @@ class Agent:
     def _extract(
         message: str,
         asked_attribute: str | None = None,
+        semantic_source: str | None = None,
     ) -> ShoppingConstraints:
         """Extract constraints from the required generated dictionary."""
 
         return constraint_module.extract_constraints(
             message,
             asked_attribute=asked_attribute,
+            semantic_source=semantic_source,
         )
 
     @staticmethod
@@ -166,7 +169,6 @@ class Agent:
         return constraint_module.extract_constraints(
             message,
             asked_attribute=asked_attribute,
-            semantic_matcher=lambda _phrase: (),
         )
 
     @staticmethod
@@ -199,24 +201,28 @@ class Agent:
             semantic_constraints=semantic,
         )
 
-    def _interpret(self, message: str, state: object) -> TurnInterpretation | None:
+    def _interpret(self, message: str, state: object) -> TurnInterpretation:
         interpreter = self.turn_interpreter
         if interpreter is None:
-            return None
+            raise RuntimeError(
+                "LLM turn interpreter is unavailable; configure "
+                "SHOPPING_TURN_INTERPRETER_ENDPOINT/ANNOTATION_BASE_URL plus a model, "
+                "or SHOPPING_TURN_INTERPRETER_MODEL"
+            )
         try:
             result = interpreter.interpret(message, state)
         except Exception as exc:
-            print(
-                "[turn_interpreter] turn failed: "
-                f"{type(exc).__name__}: {exc}; using deterministic fallback",
-                flush=True,
-            )
-            return None
+            raise RuntimeError(
+                "LLM turn interpretation failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         if isinstance(result, TurnInterpretation):
             return result
         if isinstance(result, (Mapping, str)):
-            return parse_turn_interpretation(result)
-        return None
+            parsed = parse_turn_interpretation(result)
+            if parsed is not None:
+                return parsed
+        raise RuntimeError("LLM turn interpreter returned an invalid or empty response")
 
     def _constraints_from_interpretation(
         self,
@@ -239,6 +245,7 @@ class Agent:
                     value_delta = self._extract(
                         value,
                         asked_attribute=field_name,
+                        semantic_source="llm_state",
                     )
                 except Exception:
                     continue
@@ -328,15 +335,14 @@ class Agent:
         # No-preference answers and evaluator clarification filler are
         # conversation metadata, not product constraints. Skip the extractor
         # so words such as "you" and "one" cannot become accidental facts.
-        delta = (
-            ShoppingConstraints()
-            if skip_constraint_extraction
-            else (
-                self._extract_interpreted_turn(message, interpretation)
-                if interpretation is not None
-                else self._extract(message)
+        if skip_constraint_extraction:
+            delta = ShoppingConstraints()
+        elif interpretation is None:
+            raise RuntimeError(
+                "LLM turn interpretation is required for meaningful user turns"
             )
-        )
+        else:
+            delta = self._extract_interpreted_turn(message, interpretation)
         had_messages = bool(state.messages)
         override_kind = OverrideKind.NONE
 
@@ -371,11 +377,12 @@ class Agent:
             # no-preference reply produced no delta at all, so there is nothing
             # to narrow.
             if interpretation is None:
-                delta = self._extract(message, asked_attribute=pending_attribute)
-            else:
-                # The schema-guided interpreter is intentionally allowed to
-                # preserve several volunteered fields in one answer.
-                delta = self._extract_interpreted_turn(message, interpretation)
+                raise RuntimeError(
+                    "LLM turn interpretation is required for clarification answers"
+                )
+            # The schema-guided interpreter is intentionally allowed to
+            # preserve several volunteered fields in one answer.
+            delta = self._extract_interpreted_turn(message, interpretation)
 
         semantic_delta = getattr(delta, "semantic_constraints", None)
         structured_delta = (

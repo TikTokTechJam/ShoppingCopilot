@@ -372,7 +372,7 @@ class HostedTurnInterpreter:
 
 
 def build_turn_interpreter() -> TurnInterpreter | None:
-    """Build the optional local or OpenAI-compatible backend once."""
+    """Build the configured local or OpenAI-compatible backend once."""
 
     endpoint = (
         os.environ.get("SHOPPING_TURN_INTERPRETER_ENDPOINT", "").strip()
@@ -409,7 +409,7 @@ def build_turn_interpreter() -> TurnInterpreter | None:
         except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
             print(
                 "[turn_interpreter] hosted backend unavailable: "
-                f"{type(exc).__name__}: {exc}; using deterministic extraction",
+                f"{type(exc).__name__}: {exc}; Agent turns will report an LLM extraction error",
                 flush=True,
             )
             return None
@@ -426,7 +426,7 @@ def build_turn_interpreter() -> TurnInterpreter | None:
     if not model_path.is_dir():
         print(
             "[turn_interpreter] unavailable: local model directory does not exist "
-            f"({model_path}); using deterministic extraction",
+            f"({model_path}); Agent turns will report an LLM extraction error",
             flush=True,
         )
         return None
@@ -435,7 +435,7 @@ def build_turn_interpreter() -> TurnInterpreter | None:
     except Exception as exc:
         print(
             "[turn_interpreter] unavailable: "
-            f"{type(exc).__name__}: {exc}; using deterministic extraction",
+            f"{type(exc).__name__}: {exc}; Agent turns will report an LLM extraction error",
             flush=True,
         )
         return None
