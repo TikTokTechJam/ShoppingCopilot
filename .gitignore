@@ -24,6 +24,7 @@ models/
 
 # Generated datasets, artifacts, and reports.
 data/derived/
+test_reports/
 
 # Local embedding model weights. Download into this path; never commit them.
 model/*
