@@ -168,7 +168,8 @@ under `data/derived/product_embeddings_v5/`.
 The standalone `style.jsonl` annotations are included in the aggregated V5
 facts before canonical dictionary generation. The per-attribute BGE build then
 writes the style vectors to `attribute_embeddings/style_embeddings.npy`.
-Rebuild the dictionary first, then build the six semantic attribute matrices:
+Rebuild the dictionary first, then build only the style matrix (existing
+compatible attribute matrices are preserved):
 
 ```bash
 python -m scripts.build_attribute_dictionary \
@@ -179,7 +180,8 @@ python -m scripts.build_attribute_dictionary \
 python -m scripts.build_v5_attribute_embeddings \
   --dictionary-dir data/derived/annotations/v5/dictionary \
   --output-dir data/derived/annotations/v5/dictionary/attribute_embeddings \
-  --model models/bge-small-en-v1.5
+  --model models/bge-small-en-v1.5 \
+  --attributes style
 ```
 
 Build the V5 product-card artifact after placing a compatible local Qwen model
