@@ -37,7 +37,7 @@ from starter.bm25 import (
     BM25Index,
     BM25QueryCompiler,
 )
-from starter.browsing import build_browsing_query, format_qwen_query
+from starter.browsing import BROWSING_QWEN_INSTRUCTION, build_browsing_query, format_qwen_query
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 

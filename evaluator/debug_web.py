@@ -46,6 +46,7 @@ from evaluator.local_evaluator import (
     materialize_hidden_fields as local_materialize_hidden_fields,
 )
 from starter import clarification
+from starter.browsing import BROWSING_QWEN_INSTRUCTION, build_browsing_query
 from starter.agent import CLARIFICATION_CANDIDATE_LIMIT
 from starter.retrieval import MODE_SCORE_WEIGHTS
 from starter.routing import constraints as constraint_module
