@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from product_embeddings.pipeline import load_local_sentence_transformer
 from product_embeddings.v5 import V5_PRODUCT_MODEL
+from starter.browsing import BROWSING_QWEN_INSTRUCTION
 
 
 DEFAULT_MODEL_DIR = Path("models") / "qwen3-embedding-0.6b"
@@ -74,8 +75,16 @@ def setup_model(
 
     if not destination.is_dir():
         raise RuntimeError(f"model download did not create {destination}")
-    load = encoder_loader or load_local_sentence_transformer
-    encoder = load(str(destination), trust_remote_code=True)
+    if encoder_loader is None:
+        encoder = load_local_sentence_transformer(
+            str(destination),
+            trust_remote_code=True,
+            query_instruction=BROWSING_QWEN_INSTRUCTION,
+        )
+    else:
+        # Keep the injectable test/setup boundary compatible with older
+        # loaders while the real loader receives the query-only instruction.
+        encoder = encoder_loader(str(destination), trust_remote_code=True)
     query, norm = _validate_query_embedding(encoder)
     return {
         "model_id": V5_PRODUCT_MODEL,
