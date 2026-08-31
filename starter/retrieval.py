@@ -1517,7 +1517,10 @@ class ProductRetriever:
             # deliberately separate from ``retrieval_query_text`` used by
             # the lexical route so old conversational wording cannot leak
             # into the product-card dense query.
-            browsing_query_text = build_browsing_query(constraints)
+            browsing_query_text = build_browsing_query(
+                constraints,
+                semantic_constraints,
+            )
             dense_scores = self._dense_scores(
                 query_text,
                 browsing_query_text=browsing_query_text,

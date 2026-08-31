@@ -12,8 +12,10 @@ from dictionary.registry import (
 from starter.routing.constraints import (
     AMBIGUITY_MIN_COUNT_RATIO,
     AMBIGUITY_MIN_TOP_SHARE,
+    ShoppingConstraints,
     extract_constraints,
 )
+from starter.browsing.query_compiler import build_browsing_query
 
 
 def _dictionary(*entries: tuple[str, str, int]) -> AttributeDictionary:
@@ -358,6 +360,62 @@ class AmbiguityResolutionTests(unittest.TestCase):
         self.assertEqual(structured.brand, ())
         self.assertEqual(structured.category, ())
         self.assertEqual(structured.feature, ())
+
+    def test_structured_view_contains_only_brand_and_price(self) -> None:
+        constraints = ShoppingConstraints(
+            category=("rain boots",),
+            brand=("nike",),
+            price_max=100.0,
+            color=("black",),
+            size=("10",),
+            feature=("waterproof",),
+        )
+
+        structured = constraints.structured_only()
+
+        self.assertEqual(structured.brand, ("nike",))
+        self.assertEqual(structured.price_max, 100.0)
+        self.assertEqual(structured.category, ())
+        self.assertEqual(structured.color, ())
+        self.assertEqual(structured.size, ())
+        self.assertEqual(structured.feature, ())
+
+    def test_exact_non_brand_values_are_retained_in_semantic_state(self) -> None:
+        dictionary = _dictionary(
+            ("brand", "nike", 10),
+            ("category", "rain boots", 10),
+            ("feature", "waterproof", 10),
+        )
+
+        constraints = extract_constraints(
+            "Nike rain boots waterproof",
+            dictionary=dictionary,
+            semantic_matcher=lambda _phrase: (),
+        )
+
+        self.assertEqual(constraints.brand, ("nike",))
+        self.assertEqual(constraints.semantic_constraints.category, ("rain boots",))
+        self.assertEqual(constraints.semantic_constraints.feature, ("waterproof",))
+        self.assertEqual(constraints.structured_only().brand, ("nike",))
+        self.assertEqual(constraints.structured_only().category, ())
+
+    def test_browsing_query_includes_semantic_state_and_exact_brand(self) -> None:
+        query = build_browsing_query(
+            ShoppingConstraints(brand=("nike",), price_max=100.0),
+            {
+                "category": ("rain boots",),
+                "feature": ("waterproof",),
+            },
+        )
+
+        self.assertEqual(
+            query.splitlines(),
+            [
+                "category: rain boots",
+                "brand: nike",
+                "feature: waterproof",
+            ],
+        )
 
 
 if __name__ == "__main__":

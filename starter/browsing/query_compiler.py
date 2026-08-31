@@ -1,8 +1,9 @@
 """Active-slot query serialization for the Browsing Qwen dense route.
 
-Only the current structured session state is serialized. Conversation history,
+Only the current active constraint state is serialized. Conversation history,
 stale messages, prices, and sizes are intentionally excluded from the dense
-semantic query; numeric/structured eligibility remains a separate concern.
+semantic query; numeric price eligibility remains a separate concern. Exact
+brand and semantic product attributes are both included when active.
 """
 
 from __future__ import annotations
@@ -49,7 +50,10 @@ def _constraints_from_state(state_or_constraints: object) -> object:
     return state_or_constraints
 
 
-def build_browsing_query(state_or_constraints: object) -> str:
+def build_browsing_query(
+    state_or_constraints: object,
+    semantic_constraints: object | None = None,
+) -> str:
     """Serialize active slot values with their field labels.
 
     The order is deterministic and follows the shared shopping schema. Values
@@ -58,9 +62,15 @@ def build_browsing_query(state_or_constraints: object) -> str:
     """
 
     constraints = _constraints_from_state(state_or_constraints)
+    if semantic_constraints is None:
+        semantic_constraints = getattr(state_or_constraints, "semantic_constraints", None)
     lines: list[str] = []
     for field_name in BROWSING_QUERY_FIELDS:
-        for value in _field_values(constraints, field_name):
+        values = list(_field_values(constraints, field_name))
+        for value in _field_values(semantic_constraints, field_name):
+            if value not in values:
+                values.append(value)
+        for value in values:
             lines.append(f"{field_name}: {value}")
     return "\n".join(lines)
 

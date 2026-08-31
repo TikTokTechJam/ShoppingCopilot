@@ -225,7 +225,7 @@ Allowed output shape:
   "updates": {
     "category": [], "brand": [], "color": [], "material": [],
     "feature": [], "use_case": [], "style": [],
-    "price_min": [], "price_max": [], "size": []
+   "price_min": [], "price_max": [], "size": []
   },
   "override": {"type": "none" | "preference_override" | "full_goal_override",
                "fields": []}
@@ -243,8 +243,12 @@ Schema:
 - brand: an explicitly named brand.
 - material: an explicitly requested product material.
 - style: an explicitly requested style or fit.
+- brand is an exact structured constraint; do not infer or paraphrase it.
+- category, color, material, feature, use_case, and style are semantic
+  constraints resolved by the downstream canonical matcher.
 - price_min/price_max and size are retained only when explicitly stated; a
-  deterministic parser validates them separately.
+  deterministic parser validates them separately. Price is the active numeric
+  structured constraint; size remains a compatibility field.
 
 Positive conversational wording is not a slot. "exploring sweatshirts" means
 category=sweatshirts and no use_case. "boots for exploring caves" means

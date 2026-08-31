@@ -163,14 +163,22 @@ def _answer_probability(
     odds = bounded / (1.0 - bounded) * ratio
     return odds / (1.0 + odds)
 
-def _known(constraints: ShoppingConstraints, attribute: str) -> bool:
+def _known(
+    constraints: ShoppingConstraints,
+    attribute: str,
+    semantic_constraints: object | None = None,
+) -> bool:
     if attribute == "budget":
         return (
             getattr(constraints, "price_min", None) is not None
             or getattr(constraints, "price_max", None) is not None
         )
     value = getattr(constraints, attribute, ())
-    return bool(value)
+    if value:
+        return True
+    if semantic_constraints is None:
+        return False
+    return bool(getattr(semantic_constraints, attribute, ()))
 
 
 def _utility(
@@ -237,6 +245,7 @@ class ClarificationPolicy:
         constraints: ShoppingConstraints,
         asked_attributes: Iterable[str] = (),
         *,
+        semantic_constraints: object | None = None,
         mode: str = "BROWSING",
         profile_factor: Callable[[str], float] | None = None,
         turn: int | None = None,
@@ -250,7 +259,8 @@ class ClarificationPolicy:
         available = [
             attribute
             for attribute in NORMAL_CLARIFICATION_ATTRIBUTES
-            if attribute not in asked and not _known(constraints, attribute)
+            if attribute not in asked
+            and not _known(constraints, attribute, semantic_constraints)
         ]
         if not available:
             return None
@@ -348,6 +358,7 @@ def choose_attribute(
     constraints: ShoppingConstraints,
     asked_attributes: Iterable[str] = (),
     *,
+    semantic_constraints: object | None = None,
     mode: str = "BROWSING",
     profile_factor: Callable[[str], float] | None = None,
     turn: int | None = None,
@@ -359,6 +370,7 @@ def choose_attribute(
         candidates,
         constraints,
         asked_attributes,
+        semantic_constraints=semantic_constraints,
         mode=mode,
         profile_factor=profile_factor,
         turn=turn,
