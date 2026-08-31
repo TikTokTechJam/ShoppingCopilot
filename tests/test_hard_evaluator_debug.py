@@ -208,7 +208,9 @@ class HardEvaluatorDebugTests(unittest.TestCase):
             rendered = output.getvalue()
             self.assertEqual(result["sample_count"], 1)
             self.assertEqual(len(prompts), 2)
-            self.assertIn("AGENT CONSTRAINTS SO FAR", rendered)
+            # The printer labels these separately (hard_evaluator.py:1193).
+            self.assertIn("STRUCTURED CONSTRAINTS SO FAR", rendered)
+            self.assertIn("BGE CANONICAL EXPANSIONS SO FAR", rendered)
             self.assertIn('"category": [', rendered)
             self.assertIn("TARGET FACTS", rendered)
             self.assertIn('"color": [', rendered)
