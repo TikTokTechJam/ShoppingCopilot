@@ -49,9 +49,9 @@ The architecture is intentionally split into explicit components so each stage c
                     ↓                               ↓
               OVER-GENERAL                        READY
                     ↓                               ↓
-          strategic clarification            LLM semantic rank
-                    │                               ↓
-                    │                             Top-K
+          strategic clarification                 Top-K
+                    │                               |
+                    │                               |
                     │                               │
                     └───────────────┬───────────────┘
                                     ↓
@@ -977,10 +977,6 @@ the Section 8 utility and must still clear the abstain floor.
 Recommendations are returned on every turn regardless, alongside any
 question, because the evaluator scores a list each turn.
 
-When the pool is ready rather than over-general, the retrieved candidates are
-passed through the conditional LLM semantic ranker before the final Top-K is
-returned.
-
 ### 9.2 Not implemented: breadth does not yet control computation
 
 The current order of work is:
@@ -1231,9 +1227,6 @@ Candidate Pool Analyzer
 → compute facet statistics
 → decide whether another question is worth a turn
 
-LLM Semantic Ranker
-→ rerank a ready candidate pool using the active shopping state
-→ run after the over-generality gate, not on clarification turns
 ```
 
 ---
@@ -1254,7 +1247,6 @@ These rules should be preserved during implementation unless this document is ex
 10. **Over-generality can stop expensive computation and trigger clarification.**
 11. **Qwen3-Embedding-0.6B uses 1024 dimensions as the reference dense-product configuration.**
 12. **Long-term/profile context is a soft prior and never overrides explicit current intent.**
-13. **Ready candidate pools pass through conditional LLM semantic ranking before the final Top-K; over-general turns can skip it and trigger clarification instead.**
 
 ---
 
@@ -1270,8 +1262,7 @@ Developers should implement toward this architecture in this order when gaps exi
 5. Browsing MMR diversity
 6. Adaptive BUYING ↔ BROWSING transitions
 7. Candidate-aware clarification / over-generality cutoff
-8. Conditional LLM semantic ranking for ready candidate pools
-9. Profile priors after core retrieval and semantic ranking are benchmarked
+8. Profile priors after core retrieval is benchmarked
 ```
 
 Do not revive legacy retrieval stages merely because old code or artifacts still exist. If implementation and this document disagree, update the implementation to this architecture or deliberately revise this file first.
