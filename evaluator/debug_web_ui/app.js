@@ -116,7 +116,7 @@ function clarificationPanel(clarification) {
   if (!clarification) return "";
   const asked = `<div class="kv"><span>Asked this turn</span><b>${esc(clarification.next_asked || "none")}</b></div>`;
   if (!clarification.attributes) {
-    return `<h3>Clarification</h3>${asked}<div class="muted">${esc(clarification.error || "No candidate pool was available for scoring.")}</div>`;
+    return `<h4>Ask analyzer</h4>${asked}<div class="muted">${esc(clarification.error || "No candidate pool was available for scoring.")}</div>`;
   }
   const rows = clarification.attributes.map(row => {
     const chosen = row.attribute === clarification.next_asked;
@@ -125,7 +125,7 @@ function clarificationPanel(clarification) {
       : `<td colspan=5 class="muted">${esc(row.reason || "not eligible")}</td>`;
     return `<tr class="${chosen ? "target-row" : row.eligible ? "" : "muted"}"><td>${chosen ? "→ " : ""}${esc(row.attribute)}</td>${cells}</tr>`;
   }).join("");
-  return `<h3>Clarification</h3>${asked}
+  return `<h4>Ask analyzer</h4>${asked}
     <div class="kv"><span>Pool</span><b>${Number(clarification.candidate_count || 0).toLocaleString()} candidates · ${clarification.pool_broad ? "broad" : `at or below ${clarification.broad_threshold}, no question`}</b></div>
     <div class="kv"><span>Abstain floor</span><b>${score(clarification.floor)}</b></div>
     <div class="table-wrap"><table class="ranking-table clarification-table">
@@ -334,6 +334,7 @@ function renderConversation(data) {
     const status = turn.hit ? `<span class="hit">HIT</span>` : turn.pre_override_hit ? '<span class="pre-hit">PRE-OVERRIDE HIT — NOT SCOREABLE</span>' : '<span class="miss">MISS</span>';
     const overrideBox = override.detected ? `<div class="override-box">INTENT OVERRIDE DETECTED · ${esc(override.kind)}<br><small>Old mode: ${esc(override.old_mode || "—")} → New mode: ${esc(override.new_mode || "—")}</small></div>` : "";
     return `<article class="turn-card"><div class="turn-heading"><h3>Turn ${turn.turn}</h3>${status}</div>
+      ${clarificationPanel(turn.clarification)}
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
       ${turn.error ? `<div class="llm-return"><div class="warning status-line">Agent turn error: ${esc(turn.error.type || "Error")}</div><div>${esc(turn.error.message || "")}</div></div>` : ""}
