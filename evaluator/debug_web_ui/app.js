@@ -102,7 +102,7 @@ function bm25Details(details) {
     return groupRow(field, item, extra);
   }).join("");
   return `<details class="bm25-details" open><summary>BM25 concept groups — ${details.group_count || 0} active, each worth ${score(details.group_share)} of the fused score</summary>
-    <div class="table-wrap"><table class="ranking-table">
+    <div class="table-wrap"><table class="ranking-table bm25-table">
       <thead><tr><th>Group</th><th>Query · routing · terms</th><th>Matches</th><th>Target #</th><th>Raw</th><th>Share</th></tr></thead>
       <tbody>
         ${groupRow("raw goal query", raw, "")}
@@ -161,7 +161,7 @@ function clarificationPanel(clarification) {
   return `<h3>Clarification</h3>${asked}
     <div class="kv"><span>Pool</span><b>${Number(clarification.candidate_count || 0).toLocaleString()} candidates · ${clarification.pool_broad ? "broad" : `at or below ${clarification.broad_threshold}, no question`}</b></div>
     <div class="kv"><span>Abstain floor</span><b>${score(clarification.floor)}</b></div>
-    <div class="table-wrap"><table class="ranking-table">
+    <div class="table-wrap"><table class="ranking-table clarification-table">
       <thead><tr><th>Attribute</th><th>Utility</th><th>Coverage</th><th>Gini</th><th>Values</th><th>Top values</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
