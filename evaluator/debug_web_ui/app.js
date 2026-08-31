@@ -78,7 +78,6 @@ function similarityRows(similarities) {
 
 function bm25Details(details) {
   if (!details || !details.available) return "";
-  const raw = details.raw || {};
   const shareCell = (item) => item.target_contribution == null
     ? '<span class="muted">—</span>'
     : `<strong title="peak-normalised score / ${details.group_count} groups">${score(item.target_contribution)}</strong>`;
@@ -101,15 +100,15 @@ function bm25Details(details) {
       <div><span class="constraint-label">terms</span>${terms || '<span class="muted">none</span>'}</div></div>`;
     return groupRow(field, item, extra);
   }).join("");
+  const emptyMessage = "No slot groups were active; raw-goal BM25 is disabled.";
   return `<details class="bm25-details" open><summary>BM25 concept groups — ${details.group_count || 0} active, each worth ${score(details.group_share)} of the fused score</summary>
     <div class="table-wrap"><table class="ranking-table bm25-table">
       <thead><tr><th>Group</th><th>Query · routing · terms</th><th>Matches</th><th>Target #</th><th>Raw</th><th>Share</th></tr></thead>
       <tbody>
-        ${groupRow("raw goal query", raw, "")}
-        ${groups || '<tr><td colspan=6 class="muted">No slot groups were active; only the raw query ran.</td></tr>'}
+        ${groups || `<tr><td colspan=6 class="muted">${emptyMessage}</td></tr>`}
       </tbody>
     </table></div>
-    <div class="muted">Each group is peak-normalised independently, then averaged. A slot cannot dominate by having more synonym text — but a product matching one slot perfectly can lose to one matching every slot weakly.</div>
+    <div class="muted">Each active group is peak-normalised independently, then averaged. A slot cannot dominate by having more synonym text — but a product matching one slot perfectly can lose to one matching every slot weakly.</div>
   </details>`;
 }
 
