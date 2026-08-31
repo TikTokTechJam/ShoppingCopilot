@@ -201,28 +201,77 @@ class Agent:
             semantic_constraints=semantic,
         )
 
+    @staticmethod
+    def _record_llm_return(state: object, payload: Mapping[str, object]) -> None:
+        setattr(state, "last_llm_return", dict(payload))
+
+    @staticmethod
+    def _llm_raw_response(interpreter: object, result: object = None) -> object:
+        raw = getattr(interpreter, "last_raw_response", None)
+        return result if raw is None else raw
+
     def _interpret(self, message: str, state: object) -> TurnInterpretation:
         interpreter = self.turn_interpreter
         if interpreter is None:
-            raise RuntimeError(
+            error = (
                 "LLM turn interpreter is unavailable; configure "
                 "SHOPPING_TURN_INTERPRETER_ENDPOINT/ANNOTATION_BASE_URL plus a model, "
                 "or SHOPPING_TURN_INTERPRETER_MODEL"
             )
+            self._record_llm_return(
+                state,
+                {"status": "unavailable", "error": error},
+            )
+            raise RuntimeError(error)
         try:
             result = interpreter.interpret(message, state)
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            payload: dict[str, object] = {
+                "status": "error",
+                "error": f"LLM turn interpretation failed: {error}",
+            }
+            raw = getattr(interpreter, "last_raw_response", None)
+            if raw is not None:
+                payload["raw"] = raw
+            self._record_llm_return(state, payload)
             raise RuntimeError(
-                "LLM turn interpretation failed: "
-                f"{type(exc).__name__}: {exc}"
+                "LLM turn interpretation failed: " + error
             ) from exc
+
         if isinstance(result, TurnInterpretation):
+            payload = {
+                "status": "success",
+                "parsed": result.as_dict(),
+            }
+            raw = getattr(interpreter, "last_raw_response", None)
+            if raw is not None:
+                payload["raw"] = raw
+            self._record_llm_return(state, payload)
             return result
+
         if isinstance(result, (Mapping, str)):
             parsed = parse_turn_interpretation(result)
             if parsed is not None:
+                self._record_llm_return(
+                    state,
+                    {
+                        "status": "success",
+                        "raw": result,
+                        "parsed": parsed.as_dict(),
+                    },
+                )
                 return parsed
-        raise RuntimeError("LLM turn interpreter returned an invalid or empty response")
+
+        payload = {
+            "status": "error",
+            "error": "LLM turn interpreter returned an invalid or empty response",
+        }
+        raw = self._llm_raw_response(interpreter, result)
+        if raw is not None:
+            payload["raw"] = raw
+        self._record_llm_return(state, payload)
+        raise RuntimeError(str(payload["error"]))
 
     def _constraints_from_interpretation(
         self,
@@ -332,6 +381,14 @@ class Agent:
             if skip_constraint_extraction
             else self._interpret(message, state)
         )
+        if skip_constraint_extraction:
+            state.last_llm_return = {
+                "status": "skipped",
+                "reason": (
+                    "no-preference or generic clarification reply; "
+                    "no LLM extraction was needed"
+                ),
+            }
         # No-preference answers and evaluator clarification filler are
         # conversation metadata, not product constraints. Skip the extractor
         # so words such as "you" and "one" cannot become accidental facts.

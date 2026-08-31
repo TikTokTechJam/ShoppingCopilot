@@ -164,6 +164,9 @@ class SessionState:
     )
     last_override_kind: str | None = None
     last_override_delta: ShoppingConstraints | None = None
+    # Per-turn LLM diagnostic payload for the local debug UI. This is not part
+    # of retrieval state or the Agent response contract.
+    last_llm_return: dict[str, Any] | None = None
 
     @property
     def query_text(self) -> str:
