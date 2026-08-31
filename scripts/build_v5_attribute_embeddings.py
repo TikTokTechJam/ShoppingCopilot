@@ -475,7 +475,6 @@ def build_v5_attribute_embeddings(
             "count": len(rows),
             "rows": rows,
         }
-        total_values += len(rows)
         _log(
             f"{attribute}: complete {len(rows):,} values -> {filename} "
             f"elapsed={time.perf_counter() - started_attribute:.1f}s"
