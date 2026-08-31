@@ -32,7 +32,11 @@ from product_embeddings.v5 import (
     load_v5_product_embedding_index,
 )
 from starter.bm25 import BM25Index, BM25QueryCompiler
-from starter.browsing import build_browsing_query, format_qwen_query
+from starter.browsing import (
+    BROWSING_QWEN_INSTRUCTION,
+    build_browsing_query,
+    format_qwen_query,
+)
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -604,6 +608,7 @@ class ProductRetriever:
                         self.product_query_encoder = load_local_sentence_transformer(
                             model_path,
                             trust_remote_code=True,
+                            query_instruction=BROWSING_QWEN_INSTRUCTION,
                         )
                     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
                         self.product_embedding_compatibility_error = (
@@ -1006,8 +1011,13 @@ class ProductRetriever:
             if not self.product_dense_available or not product_query_text.strip():
                 return {}
             try:
+                query_input = (
+                    product_query_text
+                    if getattr(self.product_query_encoder, "query_instruction", None)
+                    else format_qwen_query(product_query_text)
+                )
                 query = self._query_embedding(
-                    format_qwen_query(product_query_text),
+                    query_input,
                     self.product_embedding_index.dimension,
                     encoder=self.product_query_encoder,
                 )
@@ -1517,7 +1527,10 @@ class ProductRetriever:
             # deliberately separate from ``retrieval_query_text`` used by
             # the lexical route so old conversational wording cannot leak
             # into the product-card dense query.
-            browsing_query_text = build_browsing_query(constraints)
+            browsing_query_text = build_browsing_query(
+                constraints,
+                semantic_constraints,
+            )
             dense_scores = self._dense_scores(
                 query_text,
                 browsing_query_text=browsing_query_text,

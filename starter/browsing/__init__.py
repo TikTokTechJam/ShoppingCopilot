@@ -14,12 +14,16 @@ from .product_cards import (
 )
 from .query_compiler import (
     BROWSING_QUERY_FIELDS,
+    BROWSING_SEMANTIC_QUERY_FIELDS,
+    BROWSING_STRUCTURED_QUERY_FIELDS,
     build_browsing_query,
 )
 
 __all__ = [
     "BROWSING_CARD_FIELDS",
     "BROWSING_QUERY_FIELDS",
+    "BROWSING_SEMANTIC_QUERY_FIELDS",
+    "BROWSING_STRUCTURED_QUERY_FIELDS",
     "BROWSING_QWEN_INSTRUCTION",
     "BrowsingDenseIndex",
     "BrowsingDenseMatch",

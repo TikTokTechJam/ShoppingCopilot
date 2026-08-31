@@ -57,6 +57,21 @@ with `SHOPPING_PRODUCT_EMBEDDING_MODEL`. Runtime loading is local-only; a
 missing or incompatible model disables product-vector search without falling
 back to a hash encoder.
 
+The query compiler serializes only the active slots: `brand` from the exact
+structured state, and `category`, `color`, `material`, `style`, `feature`, and
+`use_case` from semantic state. It excludes transcript history, stale goal
+segments, price, and size. The local Qwen adapter formats the query as:
+
+```text
+Instruct: Retrieve products that best match the shopper's product type, intended use, desired features, and preferences.
+Query: category: jumpsuit
+feature: lightweight
+use_case: cosplay
+```
+
+The instruction is query-side only. Product cards remain unprefixed documents;
+the document embedding build path does not use this instruction.
+
 ## Mode-specific ranking
 
 Buying applies budget eligibility first. It then ranks all eligible,

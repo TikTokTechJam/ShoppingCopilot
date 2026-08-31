@@ -45,6 +45,7 @@ from evaluator.local_evaluator import (
     initial_message as local_initial_message,
     materialize_hidden_fields as local_materialize_hidden_fields,
 )
+from starter.browsing import BROWSING_QWEN_INSTRUCTION, build_browsing_query
 from starter.retrieval import MODE_SCORE_WEIGHTS
 from starter.routing import constraints as constraint_module
 
@@ -255,6 +256,11 @@ def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
                 "retrieval_query_text",
                 getattr(state, "query_text", ""),
             ),
+            "dense_query_text": build_browsing_query(
+                getattr(state, "constraints", None),
+                getattr(state, "semantic_constraints", None),
+            ),
+            "dense_query_instruction": BROWSING_QWEN_INSTRUCTION,
         }
     )
     return snapshot
