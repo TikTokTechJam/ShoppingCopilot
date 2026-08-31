@@ -36,6 +36,7 @@ from starter.bm25 import (
     BM25_INDEX_FIELD_WEIGHTS,
     BM25Index,
     BM25QueryCompiler,
+    weighted_summary_ngrams,
 )
 from starter.browsing import BROWSING_QWEN_INSTRUCTION, build_browsing_query, format_qwen_query
 from starter.routing.constraints import CATEGORICAL_FIELDS
@@ -120,6 +121,7 @@ MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
 # product-level dense retrieval is Browsing-only.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["semantic"]
 BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
+BUYING_RAW_SUMMARY_BM25_WEIGHT = 1.0
 
 RRF_K = 60
 BROWSING_DENSE_TOP_K = 100
@@ -1200,6 +1202,36 @@ class ProductRetriever:
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             return {}
 
+    def _raw_summary_bm25_scores(
+        self,
+        summary_text: str,
+        eligible_asins: Collection[str],
+    ) -> dict[str, float]:
+        """Accumulate weighted BM25 evidence from the LLM summary n-grams."""
+
+        if self.bm25_index is None or not str(summary_text).strip():
+            return {}
+        try:
+            totals: dict[str, float] = {}
+            for phrase, point_weight in weighted_summary_ngrams(summary_text):
+                # Pass the phrase as an iterable so a multi-word n-gram remains
+                # one FTS phrase instead of being split into unigrams.
+                scores = self.bm25_index.search(
+                    (phrase,),
+                    allowed_asins=eligible_asins,
+                )
+                for asin, score in scores.items():
+                    value = float(score)
+                    if not math.isfinite(value) or value <= 0.0:
+                        continue
+                    key = str(asin)
+                    totals[key] = totals.get(key, 0.0) + (
+                        float(point_weight) * value
+                    )
+            return totals
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return {}
+
     def debug_bm25(
         self,
         query_text: str,
@@ -1541,6 +1573,7 @@ class ProductRetriever:
         constraints: object,
         *,
         semantic_constraints: object | None = None,
+        raw_summary_text: str | None = None,
         limit: int = 100,
         minimum_candidates: int = 50,
         excluded_asins: Collection[str] | None = None,
@@ -1629,6 +1662,10 @@ class ProductRetriever:
                 semantic_constraints,
                 include_raw=False,
             )
+        )
+        raw_summary_scores = self._raw_summary_bm25_scores(
+            raw_summary_text if mode == "BUYING" else "",
+            eligible_set,
         )
 
         matched_weight: dict[str, float] = {}
@@ -1721,9 +1758,14 @@ class ProductRetriever:
             # ``canonical_scores`` are still computed, but purely as retained
             # diagnostics on the Candidate, never as ranking terms.
             base_scores = {
-                asin: _final_score(mode, 0.0, bm25_scores.get(asin, 0.0))
+                asin: (
+                    _final_score(mode, 0.0, bm25_scores.get(asin, 0.0))
+                    + BUYING_RAW_SUMMARY_BM25_WEIGHT
+                    * raw_summary_scores.get(asin, 0.0)
+                )
                 for asin in eligible_asins
             }
+            ranking_overrides = dict(base_scores)
             ranked_asins = _select(eligible_asins, base_scores.__getitem__)
         else:
             if browsing_dense_only:
@@ -1876,7 +1918,7 @@ class ProductRetriever:
                 ranking_override=(
                     ranking_overrides.get(asin)
                     if mode == "BROWSING"
-                    else None
+                    else base_scores.get(asin)
                 ),
             )
             for asin in ranked_asins
@@ -1889,6 +1931,7 @@ class ProductRetriever:
         constraints: object,
         *,
         semantic_constraints: object | None = None,
+        raw_summary_text: str | None = None,
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
         user_prior_rating: float | None = None,
@@ -1905,6 +1948,7 @@ class ProductRetriever:
             query_text,
             constraints,
             semantic_constraints=semantic_constraints,
+            raw_summary_text=raw_summary_text,
             limit=len(self.product_by_asin),
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,
@@ -1920,6 +1964,7 @@ __all__ = [
     "CRITICAL_USER_RATING_THRESHOLD",
     "Candidate",
     "BM25_SCORE_WEIGHT",
+    "BUYING_RAW_SUMMARY_BM25_WEIGHT",
     "BROWSING_BM25_TOP_K",
     "BROWSING_DENSE_TOP_K",
     "BROWSING_FUSED_POOL_K",

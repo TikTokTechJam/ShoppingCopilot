@@ -1265,6 +1265,7 @@ class DebugWebController:
                 getattr(state, "retrieval_query_text", ""),
                 getattr(state, "constraints", None),
                 semantic_constraints=getattr(state, "semantic_constraints", None),
+                raw_summary_text=getattr(state, "llm_summary_text", ""),
                 limit=CLARIFICATION_CANDIDATE_LIMIT,
                 minimum_candidates=50,
                 excluded_asins=getattr(state, "excluded_recommendations", None),
@@ -1351,7 +1352,7 @@ class DebugWebController:
             "target_facts": _debug_target_facts(self.agent, target),
             "ranking": ranking,
             "override": {
-                "detected": override_kind in {"FULL_GOAL", "PREFERENCE"},
+                "detected": override_kind == "PREFERENCE",
                 "kind": override_kind,
                 "old_mode": before_state.get("mode"),
                 "new_mode": after_state.get("mode"),

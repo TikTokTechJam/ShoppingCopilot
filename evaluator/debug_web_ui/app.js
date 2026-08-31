@@ -112,38 +112,6 @@ function bm25Details(details) {
   </details>`;
 }
 
-function intentPanel(intent) {
-  if (!intent || !Object.keys(intent).length) return "";
-  if (intent.error) return `<div class="warning">Intent diagnostics unavailable: ${esc(intent.error)}</div>`;
-  const tierClass = intent.tier === "default" ? "warning" : intent.tier === "tags" ? "notice" : "ok";
-  const signals = (intent.signal_detail || []).map(item =>
-    `<span class="chip" title="${esc(item.evidence || "")} · weight ${item.weight}">${item.polarity > 0 ? "+" : "−"}${esc(item.name)}</span>`
-  ).join("");
-  return `<h3>Intent routing</h3>
-    <div class="kv"><span>Decision</span><b>${esc(intent.intent || "—")} @ ${score(intent.confidence)}${intent.weak ? " · weak" : ""}</b></div>
-    <div class="kv"><span>Tier</span><b class="${tierClass}">${esc(intent.tier || "—")}</b></div>
-    <div class="muted">${esc(intent.tier_meaning || "")}</div>
-    <div class="kv"><span>Margin</span><b>${score(intent.margin)}</b></div>
-    <div><span class="constraint-label">tags</span>${(intent.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("") || '<span class="muted">none</span>'}</div>
-    <div><span class="constraint-label">signals</span>${signals || '<span class="muted">none</span>'}</div>`;
-}
-
-function profilePanel(profile) {
-  if (!profile) return "";
-  if (!profile.enabled) return `<h3>User profile</h3><div class="muted">${esc(profile.reason || "disabled")}</div>`;
-  const tags = (profile.preference_tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join("");
-  const rows = Object.entries(profile.factors || {}).map(([name, value]) => `
-    <div class="similarity-row"><code class="similarity-id">${esc(name)}</code><strong>${score(value)}</strong></div>`).join("");
-  const backendClass = profile.similarity_backend === "lexical" ? "warning" : "ok";
-  return `<h3>User profile</h3>
-    <div><span class="constraint-label">tags</span>${tags || '<span class="muted">none</span>'}</div>
-    <div class="kv"><span>Similarity backend</span><b class="${backendClass}">${esc(profile.similarity_backend || "—")}</b></div>
-    ${profile.backend_note ? `<div class="muted">${esc(profile.backend_note)}</div>` : ""}
-    ${profile.refused && profile.refused.length ? `<div class="kv"><span>Declined</span><b>${esc(profile.refused.join(", "))}</b></div>` : ""}
-    <h4>Answerability factors</h4>
-    <div class="similarity-list">${rows || '<span class="muted">none</span>'}</div>`;
-}
-
 function clarificationPanel(clarification) {
   if (!clarification) return "";
   const asked = `<div class="kv"><span>Asked this turn</span><b>${esc(clarification.next_asked || "none")}</b></div>`;
@@ -221,8 +189,6 @@ function renderState(data) {
   $("state").innerHTML = `
     ${interactiveHint}
     <div class="kv"><span>Mode</span><b>${esc(state.mode || "—")}</b></div>
-    ${intentPanel(lastTurn.intent)}
-    ${profilePanel(lastTurn.profile)}
     ${clarificationPanel(lastTurn.clarification)}
     <h3>Session</h3>
     <div class="kv"><span>Last asked</span><b>${esc(state.last_asked || "—")}</b></div>
@@ -312,8 +278,6 @@ function renderDiagnostics(data) {
   const turn = turns[turns.length - 1];
   if (!turn) { $("diagnostics").innerHTML = "—"; return; }
   const r = turn.ranking || {};
-  const override = turn.override || {};
-  const targetStatus = r.target_status || (r.eligible ? "ELIGIBLE" : "NOT_FOUND");
   const status = turn.hit ? `<span class="hit">HIT @ #${r.top10?.find(x => x.target)?.rank || "?"}</span>`
     : turn.pre_override_hit ? '<span class="pre-hit">PRE-OVERRIDE HIT — NOT SCOREABLE</span>'
     : '<span class="miss">MISS</span>';
@@ -321,24 +285,13 @@ function renderDiagnostics(data) {
     <tr class="${item.target ? "target-row" : ""}">
       <td>${item.rank}</td><td><code>${esc(item.parent_asin)}</code></td>
       <td><span class="table-title" title="${esc(item.title || "")}">${esc(item.title || "")}</span></td>
-      <td>${score(item.dense_score)}</td>
-      <td>${score(item.bm25_score)}</td><td>${score(item.fusion_score)}</td><td>${score(item.mmr_score)}</td><td>${score(item.final_score)}</td>
     </tr>`).join("");
   $("diagnostics").innerHTML = `
     <div class="status">${status}</div>
-    <div class="muted">Target status: <strong>${esc(targetStatus)}</strong> · eligible pool ${Number(r.eligible_count || 0).toLocaleString()} · diagnostic pool ${Number(r.global_count || 0).toLocaleString()}</div>
-    ${signalLegend(r)}
-    <h3>Target position in eligible diagnostic ranking</h3>
-    ${rankGrid(r, "")}
-    <h3>Target position in unfiltered diagnostic ranking</h3>
-    ${rankGrid(r, "global_")}
-    <h3>Target scores</h3>
-    ${scoreGrid(r)}
+    <h3>Final rank</h3>
+    <div class="final-rank"><span>Target final rank</span><b>${r.hybrid_rank ?? "N/A"}</b></div>
     <h3>Top 10 (final ranking)</h3>
-    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Dense</th><th>BM25</th><th>RRF</th><th>MMR</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=8>none</td></tr>"}</tbody></table></div>
-    ${bm25Details(r.bm25_debug)}
-    <h3>Override</h3>
-    <div class="${override.detected ? "override" : "muted"}">${override.detected ? `INTENT OVERRIDE: ${esc(override.kind)}` : "No override"}</div>`;
+    <div class="table-wrap"><table class="ranking-table final-ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th></tr></thead><tbody>${top10 || "<tr><td colspan=3>none</td></tr>"}</tbody></table></div>`;
 }
 
 function renderTarget(data) {
@@ -371,27 +324,11 @@ function deltaRows(delta) {
   }).join("")}</div>`;
 }
 
-function llmReturnPanel(value) {
-  if (!value) return '<span class="muted">not recorded</span>';
-  const status = String(value.status || "unknown");
-  const statusClass = status === "success" ? "ok" : status === "skipped" ? "muted" : "warning";
-  const formatValue = (item) => typeof item === "string"
-    ? item
-    : JSON.stringify(item ?? {}, null, 2);
-  const parsed = value.parsed === undefined ? "" : `
-    <details open><summary>parsed return</summary><pre>${esc(formatValue(value.parsed))}</pre></details>`;
-  const raw = value.raw === undefined ? "" : `
-    <details><summary>raw model response</summary><pre>${esc(formatValue(value.raw))}</pre></details>`;
-  const error = value.error ? `<div class="warning">${esc(value.error)}</div>` : "";
-  const details = parsed || raw || '<div class="muted">No structured updates returned.</div>';
-  return `<div class="llm-return"><div class="${statusClass} status-line">Status: ${esc(status)}</div>${error}${details}</div>`;
-}
-
 function renderConversation(data) {
   const turns = data.turns || [];
   if (!turns.length) { $("conversation").className = "conversation empty"; $("conversation").textContent = "No turns executed."; return; }
   $("conversation").className = "conversation";
-  $("conversation").innerHTML = turns.map(turn => {
+  $("conversation").innerHTML = turns.slice().reverse().map(turn => {
     const state = turn.state || {};
     const override = turn.override || {};
     const status = turn.hit ? `<span class="hit">HIT</span>` : turn.pre_override_hit ? '<span class="pre-hit">PRE-OVERRIDE HIT — NOT SCOREABLE</span>' : '<span class="miss">MISS</span>';
@@ -400,14 +337,11 @@ function renderConversation(data) {
       ${overrideBox}<div class="message user"><b>User</b><p>${esc(turn.user_message)}</p></div>
       <div class="message agent"><b>Agent</b><p>${esc(turn.agent?.message || "")}</p><small>Asked: ${esc(turn.agent?.ask_attribute || "—")}</small></div>
       ${turn.error ? `<div class="llm-return"><div class="warning status-line">Agent turn error: ${esc(turn.error.type || "Error")}</div><div>${esc(turn.error.message || "")}</div></div>` : ""}
-      <h4>LLM return</h4><div>${llmReturnPanel(state.llm_return)}</div>
       <h4>Structured extracted this turn</h4><div>${deltaRows(state.extracted_this_turn?.structured || {})}</div>
       <h4>BGE canonical expansions this turn</h4><div>${deltaRows(state.extracted_this_turn?.semantic || {})}</div>
       <h4>Accumulated structured constraints</h4><div>${chips(state.constraints)}</div>
       <h4>Accumulated BGE canonical expansions</h4><div>${chips(state.semantic_constraints || {}, state.semantic_constraints?.similarities)}</div>
-      <h4>Retrieval query text</h4><details><summary>show query</summary><p class="query">${esc(state.retrieval_query_text || state.query_text || "")}</p></details>
-      <h4>Qwen product query</h4><details><summary>show compiled query</summary><p class="query"><b>Instruct:</b> ${esc(state.dense_query_instruction || "")}<br><b>Query:</b><br>${esc(state.dense_query_text || "—")}</p></details>
-      <div class="turn-meta">Cycle: ${esc(state.clarification_cycle ?? 1)} · Exclusions: ${(state.exclusions || []).length} · Next asked: ${esc(turn.clarification?.next_asked || "—")}</div></article>`;
+      </article>`;
   }).join("");
 }
 
@@ -478,7 +412,7 @@ function render(data) {
     : evaluator === "interactive"
       ? "One real Agent turn at a time — replies entered in the console."
       : "One real Agent turn at a time — Manual400 benchmark mode.";
-  renderBanner(data); renderMissSearch(data); renderState(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
+  renderBanner(data); renderMissSearch(data); renderDiagnostics(data); renderTarget(data); renderConversation(data);
   syncActionButtons();
   updateInteractivePolling(data);
 }

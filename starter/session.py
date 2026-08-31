@@ -27,7 +27,6 @@ class OverrideKind(str, Enum):
     """Scope of an explicit change to the active shopping request."""
 
     NONE = "NONE"
-    FULL_GOAL = "FULL_GOAL"
     PREFERENCE = "PREFERENCE"
 
 
@@ -150,6 +149,10 @@ class SessionState:
     # starts a fresh lexical query context so obsolete goal wording cannot
     # pollute BM25.
     retrieval_messages: list[str] = field(default_factory=list)
+    # Extractive summaries returned by the turn interpreter form a separate
+    # current-goal BM25 stream.  They are intentionally not exposed as a new
+    # debug/UI state field.
+    llm_summary_messages: list[str] = field(default_factory=list)
     last_asked: str | None = None
     # Value-level provenance distinguishes explicit user facts from inferred
     # semantic facts and records the optional dependency that produced an
@@ -180,6 +183,14 @@ class SessionState:
 
         return " ".join(
             message for message in self.retrieval_messages if message
+        ).strip()
+
+    @property
+    def llm_summary_text(self) -> str:
+        """Return accumulated interpreter summaries for the active goal."""
+
+        return " ".join(
+            summary for summary in self.llm_summary_messages if summary
         ).strip()
 
 
@@ -403,9 +414,8 @@ def detect_override_kind(
     if not lexicon.OVERRIDE_MARKER.search(text):
         return OverrideKind.NONE
 
-    if lexicon.FULL_GOAL_OVERRIDE_MARKER.search(text):
-        return OverrideKind.FULL_GOAL
-
+    # Lexical markers only identify a possible preference change. Override
+    # scope is not inferred by this helper from a second hardcoded vocabulary.
     # Marker-only messages are not enough to mutate state. A preference
     # override must carry at least one extracted current-turn fact.
     if delta.populated_fields():
@@ -440,31 +450,6 @@ class SessionManager:
         except KeyError as exc:
             raise RuntimeError("reset must be called before respond") from exc
 
-    def reset_goal(self, session_id: str) -> SessionState:
-        """Clear stale shopping state while retaining the session profile."""
-
-        state = self.get(session_id)
-        state.mode = None
-        state.constraints = ShoppingConstraints()
-        state.asked_attributes.clear()
-        state.no_preference_attributes.clear()
-        state.attribute_call_count = _fresh_attribute_call_count()
-        state.clarification_cycle = 1
-        state.clarification_stopped = False
-        state.last_recommendations = ()
-        state.excluded_recommendations.clear()
-        state.last_user_message = None
-        state.turn = 0
-        state.messages.clear()
-        state.retrieval_messages.clear()
-        state.last_asked = None
-        state.constraint_provenance.clear()
-        state.semantic_constraints = SemanticShoppingConstraints()
-        state.semantic_constraint_provenance.clear()
-        state.last_override_kind = None
-        state.last_override_delta = None
-        return state
-
     def reset_preference(
         self,
         session_id: str,
@@ -479,8 +464,9 @@ class SessionManager:
             return state
 
         # Keep the human-readable transcript, but discard raw lexical text
-        # from the replaced preference segment. Active constraints are still
-        # supplied to the BM25 compiler as structured/semantic slot values.
+        # from the replaced preference segment. The accumulated LLM summary is
+        # intentionally preserved across intent/preference overrides, so it
+        # remains part of the Buying BM25 context.
         state.retrieval_messages.clear()
 
         structured_values = {
@@ -634,9 +620,16 @@ class SessionManager:
             state.semantic_constraint_provenance
         )
 
-        # The goal and its recommendation exclusions remain active.  Only the
-        # clarification cursor is restarted so the new preference can be
-        # collected without erasing independent state.
+        # An override starts a new ranking context.  Re-open products that were
+        # excluded under the previous preference context so a product shown
+        # before the override can re-enter the leaderboard after the new
+        # preference is applied.  This does not clear constraints, transcript
+        # history, or the accumulated LLM summary above.
+        state.excluded_recommendations.clear()
+        state.last_recommendations = ()
+
+        # Only the clarification cursor is restarted so the new preference can
+        # be collected without erasing independent constraint state.
         state.asked_attributes.clear()
         state.attribute_call_count = _fresh_attribute_call_count()
         state.clarification_cycle = 1
@@ -674,6 +667,14 @@ class SessionManager:
         if text and include_in_query:
             state.messages.append(text)
             state.retrieval_messages.append(text)
+
+    def record_llm_summary(self, session_id: str, summary: str | None) -> None:
+        """Record one non-empty current-turn interpreter summary."""
+
+        state = self.get(session_id)
+        text = str(summary or "").strip()
+        if text:
+            state.llm_summary_messages.append(text)
 
     def update_constraints(
         self,

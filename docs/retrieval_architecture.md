@@ -136,13 +136,16 @@ current-goal BM25 is not part of the runtime flow.
 
 `SessionState.retrieval_query_text` contains only the active goal segment.
 Preference overrides preserve independent constraints but clear the replaced
-lexical segment, so obsolete wording is not sent to BM25. The visible
-transcript remains available for debugging.
+lexical segment, so obsolete wording is not sent to BM25. They also restart
+recommendation history, allowing products shown under the previous preference
+to re-enter the new ranking context. The visible transcript remains available
+for debugging.
 
 Known prices outside an active budget are ineligible, and unknown prices are
 also ineligible when a budget is active. Previously shown/rejected
-recommendations remain excluded before ranking. No semantic or lexical signal
-can bypass either rule.
+recommendations remain excluded before ranking within the active preference
+context. An override starts a fresh recommendation context; no semantic or
+lexical signal can bypass either rule within that context.
 
 ## Artifacts and commands
 

@@ -22,6 +22,8 @@ from dictionary.registry import normalize_text
 # stable for callers that use the raw BM25 compatibility path.
 BM25_FIELD_WEIGHTS = (0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0)
 MAX_QUERY_TERMS = 40
+MAX_SUMMARY_NGRAM = 3
+RAW_SUMMARY_NGRAM_WEIGHTS = {1: 1.0, 2: 2.0, 3: 3.0}
 
 # The compiler supplies each active slot with a deliberately small number of
 # semantic surface forms.  The retriever searches those slot groups separately
@@ -115,6 +117,35 @@ def _normalized_phrases(phrases: Iterable[str]) -> tuple[str, ...]:
         if normalized and normalized not in seen:
             seen.add(normalized)
             result.append(normalized)
+    return tuple(result)
+
+
+def weighted_summary_ngrams(
+    text: str,
+    *,
+    max_ngram: int = MAX_SUMMARY_NGRAM,
+) -> tuple[tuple[str, float], ...]:
+    """Return unique current-summary phrases with length-based weights.
+
+    The normal slot-group compiler intentionally does not expand n-grams. This
+    helper is a separate Buying-only signal for the accumulated LLM summary:
+    unigrams are worth one point, bigrams two, and trigrams three.
+    """
+
+    terms = _query_terms(text)
+    if not terms:
+        return ()
+    width_limit = max(1, min(int(max_ngram), MAX_SUMMARY_NGRAM))
+    result: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for width in range(1, width_limit + 1):
+        point_weight = RAW_SUMMARY_NGRAM_WEIGHTS[width]
+        for start in range(0, len(terms) - width + 1):
+            phrase = " ".join(terms[start : start + width])
+            if phrase in seen:
+                continue
+            seen.add(phrase)
+            result.append((phrase, point_weight))
     return tuple(result)
 
 
@@ -533,8 +564,11 @@ __all__ = [
     "BM25_EXPANSION_MIN_SIMILARITY",
     "BM25_EXPANSION_MAX_SCORE_GAP",
     "BM25_FIELD_WEIGHTS",
+    "MAX_SUMMARY_NGRAM",
+    "RAW_SUMMARY_NGRAM_WEIGHTS",
     "BM25_SLOT_FIELD_PATHS",
     "BM25QueryGroup",
     "BM25Index",
     "BM25QueryCompiler",
+    "weighted_summary_ngrams",
 ]

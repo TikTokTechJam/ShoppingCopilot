@@ -79,10 +79,10 @@ class OverrideHandlingTests(unittest.TestCase):
             router=FixedRouter(),
         )
 
-    def test_override_markers_are_shared_and_scope_is_separate(self) -> None:
+    def test_lexical_markers_do_not_classify_override_scope(self) -> None:
         current = ShoppingConstraints(category=("shoes",), color=("red",))
         preference_delta = ShoppingConstraints(feature=("pockets",))
-        full_delta = ShoppingConstraints(category=("earrings",))
+        replacement_delta = ShoppingConstraints(category=("earrings",))
 
         for message in (
             "actually pockets",
@@ -100,9 +100,9 @@ class OverrideHandlingTests(unittest.TestCase):
             detect_override_kind(
                 "forget that, I want earrings instead",
                 current,
-                full_delta,
+                replacement_delta,
             ),
-            OverrideKind.FULL_GOAL,
+            OverrideKind.PREFERENCE,
         )
 
     def test_preference_override_preserves_independent_constraints_and_goal(self) -> None:
@@ -128,9 +128,6 @@ class OverrideHandlingTests(unittest.TestCase):
             ):
                 agent.respond("session", "shoes in red, casual", 1, 3)
                 agent.respond("session", "nylon", 2, 3)
-                excluded_before_override = set(
-                    agent.sessions.get("session").excluded_recommendations
-                )
                 agent.respond(
                     "session",
                     "Actually, my priority changed. Pockets matter.",
@@ -150,7 +147,7 @@ class OverrideHandlingTests(unittest.TestCase):
                 state.query_text,
                 "shoes in red, casual nylon Actually, my priority changed. Pockets matter.",
             )
-            self.assertEqual(state.excluded_recommendations, excluded_before_override)
+            self.assertEqual(state.excluded_recommendations, set())
             self.assertEqual(state.last_override_kind, "PREFERENCE")
 
     def test_preference_transition_restarts_clarification_without_clearing_goal_state(self) -> None:
@@ -158,6 +155,7 @@ class OverrideHandlingTests(unittest.TestCase):
         state = manager.reset("session", {})
         state.mode = "BROWSING"
         state.messages[:] = ["old goal"]
+        state.llm_summary_messages[:] = ["old summarized preference"]
         state.asked_attributes.update({"color", "material"})
         state.no_preference_attributes.add("color")
         state.attribute_call_count["material"] = 1
@@ -183,45 +181,16 @@ class OverrideHandlingTests(unittest.TestCase):
         self.assertEqual(state.constraints.color, ())
         self.assertEqual(state.constraints.material, ("nylon",))
         self.assertEqual(state.messages, ["old goal"])
+        self.assertEqual(state.llm_summary_messages, ["old summarized preference"])
         self.assertEqual(state.asked_attributes, set())
         self.assertEqual(state.no_preference_attributes, {"color"})
         self.assertEqual(state.attribute_call_count["material"], 0)
         self.assertEqual(state.clarification_cycle, 1)
         self.assertIsNone(state.last_asked)
-        self.assertEqual(state.last_recommendations, ("A", "B"))
-        self.assertEqual(state.excluded_recommendations, {"A", "B"})
+        self.assertEqual(state.last_recommendations, ())
+        self.assertEqual(state.excluded_recommendations, set())
 
-    def test_full_goal_override_still_resets_category_and_transcript(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            agent = self.make_agent(root)
-            agent.reset("session", {})
-            deltas = iter(
-                (
-                    ShoppingConstraints(category=("shoes",)),
-                    ShoppingConstraints(category=("shoes",)),
-                    ShoppingConstraints(category=("earrings",)),
-                )
-            )
-            with patch(
-                "starter.agent.constraint_module.extract_constraints",
-                side_effect=sequenced_extract(deltas),
-            ):
-                agent.respond("session", "shoes", 1, 2)
-                agent.respond("session", "show more", 2, 2)
-                agent.respond(
-                    "session",
-                    "forget that, I want earrings instead",
-                    3,
-                    2,
-                )
-
-            state = agent.sessions.get("session")
-            self.assertEqual(state.constraints.category, ("earrings",))
-            self.assertEqual(state.query_text, "forget that, I want earrings instead")
-            self.assertEqual(state.last_override_kind, "FULL_GOAL")
-
-    def test_actually_field_correction_is_not_full_goal_reset(self) -> None:
+    def test_actually_field_correction_is_not_a_full_reset(self) -> None:
         current = ShoppingConstraints(category=("shoes",), color=("red",))
         delta = ShoppingConstraints(color=("black",))
         self.assertEqual(

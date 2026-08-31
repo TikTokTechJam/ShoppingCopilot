@@ -958,6 +958,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
     )
     constraints = getattr(state, "constraints", None)
     semantic_constraints = getattr(state, "semantic_constraints", None)
+    raw_summary_text = getattr(state, "llm_summary_text", "")
     exclusions = getattr(state, "excluded_recommendations", set())
 
     eligible = rank_all(
@@ -965,6 +966,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         query_text,
         constraints,
         semantic_constraints=semantic_constraints,
+        raw_summary_text=raw_summary_text,
         excluded_asins=exclusions,
         apply_budget=True,
     )
@@ -973,6 +975,7 @@ def _debug_ranking_snapshot(agent: Any, session_id: str, target: str) -> dict[st
         query_text,
         constraints,
         semantic_constraints=semantic_constraints,
+        raw_summary_text=raw_summary_text,
         excluded_asins=None,
         apply_budget=False,
     )
@@ -1173,7 +1176,7 @@ class InteractiveDebugPrinter:
         scenario = str(session["scenario_type"])
         override_turn = session.get("override_turn")
         override_kind = getattr(state, "last_override_kind", None)
-        override_detected = override_kind in {"FULL_GOAL", "PREFERENCE"}
+        override_detected = override_kind == "PREFERENCE"
 
         print()
         print("=" * 60)

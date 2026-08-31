@@ -412,8 +412,7 @@ class Agent:
                 and delta.populated_fields()
             ):
                 # Natural preference-override wording may not yet be covered
-                # by the lexical marker set.  Full-goal resets stay guarded by
-                # the existing explicit reset markers.
+                # by the lexical marker set.
                 override_kind = OverrideKind.PREFERENCE
 
         if (
@@ -471,10 +470,7 @@ class Agent:
                         replacement_values.append(field_name)
             replacements = tuple(replacement_values)
 
-        if override_kind is OverrideKind.FULL_GOAL:
-            state = self.sessions.reset_goal(session_id)
-            self.intent_tracker.reset(session_id)
-        elif override_kind is OverrideKind.PREFERENCE:
+        if override_kind is OverrideKind.PREFERENCE:
             state = self.sessions.reset_preference(
                 session_id,
                 overridden_fields=replacements,
@@ -514,9 +510,7 @@ class Agent:
             if intent in {"BUYING", "BROWSING"}:
                 state.mode = intent
 
-        if override_kind is OverrideKind.FULL_GOAL:
-            source = "initial"
-        elif override_kind is OverrideKind.PREFERENCE:
+        if override_kind is OverrideKind.PREFERENCE:
             source = "override"
         else:
             source = "initial" if not had_messages else "clarification"
@@ -532,6 +526,8 @@ class Agent:
             message,
             include_in_query=not skip_constraint_extraction,
         )
+        if interpretation is not None:
+            self.sessions.record_llm_summary(session_id, interpretation.summary)
         state.turn = int(turn)
 
         try:
@@ -544,7 +540,7 @@ class Agent:
         # slot.  A useful answer starts a new cycle after the current delta has
         # been applied; a non-answer stops clarification instead of reopening
         # the same questions indefinitely.
-        if other_cycle_has_information and override_kind is not OverrideKind.FULL_GOAL:
+        if other_cycle_has_information:
             state = self.sessions.reset_clarification_cycle(session_id)
         other_cycle_stopped = (
             pending_other
@@ -565,6 +561,7 @@ class Agent:
             state.retrieval_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
+            raw_summary_text=getattr(state, "llm_summary_text", ""),
             limit=requested_k,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
@@ -579,6 +576,7 @@ class Agent:
             state.retrieval_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
+            raw_summary_text=getattr(state, "llm_summary_text", ""),
             limit=CLARIFICATION_CANDIDATE_LIMIT,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
@@ -673,6 +671,7 @@ class Agent:
                 state.mode or "BROWSING",
                 state.retrieval_query_text,
                 state.constraints,
+                raw_summary_text=getattr(state, "llm_summary_text", ""),
                 limit=max(int(limit) * 4, 50),
                 apply_budget=True,
                 excluded_asins=state.excluded_recommendations,
