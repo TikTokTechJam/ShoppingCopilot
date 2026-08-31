@@ -278,8 +278,6 @@ function renderDiagnostics(data) {
   const turn = turns[turns.length - 1];
   if (!turn) { $("diagnostics").innerHTML = "—"; return; }
   const r = turn.ranking || {};
-  const override = turn.override || {};
-  const targetStatus = r.target_status || (r.eligible ? "ELIGIBLE" : "NOT_FOUND");
   const status = turn.hit ? `<span class="hit">HIT @ #${r.top10?.find(x => x.target)?.rank || "?"}</span>`
     : turn.pre_override_hit ? '<span class="pre-hit">PRE-OVERRIDE HIT — NOT SCOREABLE</span>'
     : '<span class="miss">MISS</span>';
@@ -287,24 +285,13 @@ function renderDiagnostics(data) {
     <tr class="${item.target ? "target-row" : ""}">
       <td>${item.rank}</td><td><code>${esc(item.parent_asin)}</code></td>
       <td><span class="table-title" title="${esc(item.title || "")}">${esc(item.title || "")}</span></td>
-      <td>${score(item.dense_score)}</td>
-      <td>${score(item.bm25_score)}</td><td>${score(item.fusion_score)}</td><td>${score(item.mmr_score)}</td><td>${score(item.final_score)}</td>
     </tr>`).join("");
   $("diagnostics").innerHTML = `
     <div class="status">${status}</div>
-    <div class="muted">Target status: <strong>${esc(targetStatus)}</strong> · eligible pool ${Number(r.eligible_count || 0).toLocaleString()} · diagnostic pool ${Number(r.global_count || 0).toLocaleString()}</div>
-    ${signalLegend(r)}
-    <h3>Target position in eligible diagnostic ranking</h3>
-    ${rankGrid(r, "")}
-    <h3>Target position in unfiltered diagnostic ranking</h3>
-    ${rankGrid(r, "global_")}
-    <h3>Target scores</h3>
-    ${scoreGrid(r)}
+    <h3>Final rank</h3>
+    <div class="final-rank"><span>Target final rank</span><b>${r.hybrid_rank ?? "N/A"}</b></div>
     <h3>Top 10 (final ranking)</h3>
-    <div class="table-wrap"><table class="ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th><th>Dense</th><th>BM25</th><th>RRF</th><th>MMR</th><th>Final</th></tr></thead><tbody>${top10 || "<tr><td colspan=8>none</td></tr>"}</tbody></table></div>
-    ${bm25Details(r.bm25_debug)}
-    <h3>Override</h3>
-    <div class="${override.detected ? "override" : "muted"}">${override.detected ? `INTENT OVERRIDE: ${esc(override.kind)}` : "No override"}</div>`;
+    <div class="table-wrap"><table class="ranking-table final-ranking-table"><thead><tr><th>#</th><th>ASIN</th><th>Title</th></tr></thead><tbody>${top10 || "<tr><td colspan=3>none</td></tr>"}</tbody></table></div>`;
 }
 
 function renderTarget(data) {
