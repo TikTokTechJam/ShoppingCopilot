@@ -313,7 +313,7 @@ WEAK_CONFIDENCE = 0.70
 # Phase 1: how many distinct canonical constraint fields a message must fill
 # before it is routed BUYING without consulting the signal ledger. Two is the
 # measured optimum on the labelled sets; see the ADR for the sweep.
-BUYING_TAG_THRESHOLD = 2
+BUYING_TAG_THRESHOLD = 3
 
 # Category is excluded from the Phase 1 count on purpose. Naming a product
 # says which shelf the customer is at, not that they have decided -- the same
