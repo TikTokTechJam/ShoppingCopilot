@@ -532,6 +532,8 @@ class Agent:
             message,
             include_in_query=not skip_constraint_extraction,
         )
+        if interpretation is not None:
+            self.sessions.record_llm_summary(session_id, interpretation.summary)
         state.turn = int(turn)
 
         try:
@@ -565,6 +567,7 @@ class Agent:
             state.retrieval_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
+            raw_summary_text=getattr(state, "llm_summary_text", ""),
             limit=requested_k,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
@@ -579,6 +582,7 @@ class Agent:
             state.retrieval_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
+            raw_summary_text=getattr(state, "llm_summary_text", ""),
             limit=CLARIFICATION_CANDIDATE_LIMIT,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
@@ -673,6 +677,7 @@ class Agent:
                 state.mode or "BROWSING",
                 state.retrieval_query_text,
                 state.constraints,
+                raw_summary_text=getattr(state, "llm_summary_text", ""),
                 limit=max(int(limit) * 4, 50),
                 apply_budget=True,
                 excluded_asins=state.excluded_recommendations,

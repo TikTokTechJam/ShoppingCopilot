@@ -150,6 +150,10 @@ class SessionState:
     # starts a fresh lexical query context so obsolete goal wording cannot
     # pollute BM25.
     retrieval_messages: list[str] = field(default_factory=list)
+    # Extractive summaries returned by the turn interpreter form a separate
+    # current-goal BM25 stream.  They are intentionally not exposed as a new
+    # debug/UI state field.
+    llm_summary_messages: list[str] = field(default_factory=list)
     last_asked: str | None = None
     # Value-level provenance distinguishes explicit user facts from inferred
     # semantic facts and records the optional dependency that produced an
@@ -180,6 +184,14 @@ class SessionState:
 
         return " ".join(
             message for message in self.retrieval_messages if message
+        ).strip()
+
+    @property
+    def llm_summary_text(self) -> str:
+        """Return accumulated interpreter summaries for the active goal."""
+
+        return " ".join(
+            summary for summary in self.llm_summary_messages if summary
         ).strip()
 
 
@@ -457,6 +469,7 @@ class SessionManager:
         state.turn = 0
         state.messages.clear()
         state.retrieval_messages.clear()
+        state.llm_summary_messages.clear()
         state.last_asked = None
         state.constraint_provenance.clear()
         state.semantic_constraints = SemanticShoppingConstraints()
@@ -482,6 +495,7 @@ class SessionManager:
         # from the replaced preference segment. Active constraints are still
         # supplied to the BM25 compiler as structured/semantic slot values.
         state.retrieval_messages.clear()
+        state.llm_summary_messages.clear()
 
         structured_values = {
             field_name: _field_values(state.constraints, field_name)
@@ -674,6 +688,14 @@ class SessionManager:
         if text and include_in_query:
             state.messages.append(text)
             state.retrieval_messages.append(text)
+
+    def record_llm_summary(self, session_id: str, summary: str | None) -> None:
+        """Record one non-empty current-turn interpreter summary."""
+
+        state = self.get(session_id)
+        text = str(summary or "").strip()
+        if text:
+            state.llm_summary_messages.append(text)
 
     def update_constraints(
         self,
