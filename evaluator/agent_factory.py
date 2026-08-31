@@ -29,6 +29,7 @@ def build_evaluator_agent(
     catalog_path: str | Path,
     *,
     disable_user_profile: bool = False,
+    browsing_retrieval_mode: str | None = None,
 ) -> Agent:
     """Build the evaluator Agent with local-only optional model loading.
 
@@ -44,7 +45,11 @@ def build_evaluator_agent(
     """
 
     _load_project_env()
-    return Agent(catalog_path, use_user_profile=not disable_user_profile)
+    return Agent(
+        catalog_path,
+        use_user_profile=not disable_user_profile,
+        browsing_retrieval_mode=browsing_retrieval_mode,
+    )
 
 
 __all__ = ["build_evaluator_agent"]

@@ -109,6 +109,7 @@ class Agent:
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
         product_embedding_artifact_dir: str | Path | None = None,
+        browsing_retrieval_mode: str | None = None,
         retriever: ProductRetriever | None = None,
         router: object | None = None,
         turn_interpreter: object | None = None,
@@ -123,6 +124,7 @@ class Agent:
             layer2_artifact_dir=layer2_artifact_dir,
             layer2_weights=layer2_weights,
             product_embedding_artifact_dir=product_embedding_artifact_dir,
+            browsing_retrieval_mode=browsing_retrieval_mode,
         )
         self.sessions = SessionManager()
         # Keep the old private attribute available to lightweight integrations
@@ -465,6 +467,11 @@ class Agent:
         )
         state.turn = int(turn)
 
+        try:
+            requested_k = max(0, int(top_k))
+        except (TypeError, ValueError):
+            requested_k = 0
+
         # ``other`` is a boundary between clarification cycles.  It is not a
         # field answer and therefore does not consume an ordinary attribute
         # slot.  A useful answer starts a new cycle after the current delta has
@@ -491,20 +498,28 @@ class Agent:
             state.retrieval_query_text,
             state.constraints,
             semantic_constraints=getattr(state, "semantic_constraints", None),
-            limit=CLARIFICATION_CANDIDATE_LIMIT,
+            limit=requested_k,
             minimum_candidates=50,
             excluded_asins=state.excluded_recommendations,
             user_prior_rating=user_prior_rating,
         )
-        # Analyze the already-ranked pool once.  The policy uses these facet
-        # distributions for utility, and the selected question can reuse them
-        # to show the most common values from the same pool.
-        candidate_stats = self.clarification.analyze(candidates)
+        # Recommendation ranking and clarification evidence intentionally use
+        # different pool sizes. The former stays on the existing production
+        # path; the latter must not be truncated by Browsing's 50-item fused
+        # recommendation pool.
+        clarification_candidates = self.retriever.retrieve(
+            state.mode or "BROWSING",
+            state.retrieval_query_text,
+            state.constraints,
+            semantic_constraints=getattr(state, "semantic_constraints", None),
+            limit=CLARIFICATION_CANDIDATE_LIMIT,
+            minimum_candidates=50,
+            excluded_asins=state.excluded_recommendations,
+            user_prior_rating=user_prior_rating,
+            candidate_pool_only=True,
+        )
+        candidate_stats = self.clarification.analyze(clarification_candidates)
 
-        try:
-            requested_k = max(0, int(top_k))
-        except (TypeError, ValueError):
-            requested_k = 0
         valid_asins = self.retriever.valid_asins
         ranked = fill_to_top_k(
             (candidate.parent_asin for candidate in candidates),

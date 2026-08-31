@@ -167,7 +167,7 @@ function renderState(data) {
     <h3>BGE canonical expansion</h3>
     <div class="${canonical.available ? "ok" : "warning"}">${canonical.available ? `Available · ${esc(canonical.model || "BGE")}${canonical.dimension ? ` · ${esc(canonical.dimension)}d` : ""}` : `Unavailable: ${esc(canonical.reason)}`}</div>
     <h3>Browsing product vectors</h3>
-    <div class="${productDense.available ? "ok" : "warning"}">${productDense.available ? `Available · ${esc(productDense.model || "Qwen")}${productDense.dimension ? ` · ${esc(productDense.dimension)}d` : ""}${productDense.products ? ` · ${Number(productDense.products).toLocaleString()} products` : ""}` : `Unavailable: ${esc(productDense.reason || "V5 product-card index is unavailable")}`}</div>
+    <div class="${productDense.available ? "ok" : "warning"}">${productDense.available ? `Available · ${esc(productDense.model || "Qwen")}${productDense.dimension ? ` · ${esc(productDense.dimension)}d` : ""}${productDense.products ? ` · ${Number(productDense.products).toLocaleString()} products` : ""} · arm=${esc(productDense.retrieval_mode || "hybrid")}` : `Unavailable · arm=${esc(productDense.retrieval_mode || "hybrid")}: ${esc(productDense.reason || "V5 product-card index is unavailable")}`}</div>
     <h3>BM25 lexical search</h3>
     <div class="${data.bm25?.available ? "ok" : "warning"}">${data.bm25?.available ? `Available · ${Number(data.bm25.indexed_products || 0).toLocaleString()} products${data.bm25.build_seconds == null ? "" : ` · ${Number(data.bm25.build_seconds).toFixed(1)}s`}` : `Unavailable: ${esc(data.bm25?.reason || "Initialization failed")}`}</div>
     <h3>${evaluatorLabel}</h3>
@@ -185,7 +185,7 @@ function renderDiagnostics(data) {
   if (!turn) { $("diagnostics").innerHTML = "—"; return; }
   const r = turn.ranking || {};
   const override = turn.override || {};
-  const rankFallback = r.eligible ? "MISS" : "INELIGIBLE";
+  const targetStatus = r.target_status || (r.eligible ? "ELIGIBLE" : "NOT_FOUND");
   const status = turn.hit ? `<span class="hit">HIT @ #${r.top10?.find(x => x.target)?.rank || "?"}</span>`
     : turn.pre_override_hit ? '<span class="pre-hit">PRE-OVERRIDE HIT — NOT SCOREABLE</span>'
     : '<span class="miss">MISS</span>';
@@ -198,12 +198,22 @@ function renderDiagnostics(data) {
     </tr>`).join("");
   $("diagnostics").innerHTML = `
     <div class="status">${status}</div>
+    <div class="muted">Target status: <strong>${esc(targetStatus)}</strong> · eligible pool ${Number(r.eligible_count || 0).toLocaleString()} · diagnostic pool ${Number(r.global_count || 0).toLocaleString()}</div>
+    <h3>Target position in eligible diagnostic ranking</h3>
     <div class="rank-grid">
-      <div><span>Structured</span><b>${r.structured_rank ?? rankFallback}</b></div>
+      <div><span>Structured</span><b>${r.structured_rank ?? "N/A"}</b></div>
       <div><span>Canonical</span><b>${r.canonical_rank ?? "N/A"}</b></div>
       <div><span>Product dense</span><b>${r.dense_rank ?? "N/A"}</b></div>
       <div><span>BM25</span><b>${r.bm25_rank ?? "N/A"}</b></div>
-      <div><span>Hybrid</span><b>${r.hybrid_rank ?? rankFallback}</b></div>
+      <div><span>Hybrid</span><b>${r.hybrid_rank ?? "N/A"}</b></div>
+    </div>
+    <h3>Target position in unfiltered diagnostic ranking</h3>
+    <div class="rank-grid">
+      <div><span>Structured</span><b>${r.global_structured_rank ?? "N/A"}</b></div>
+      <div><span>Canonical</span><b>${r.global_canonical_rank ?? "N/A"}</b></div>
+      <div><span>Product dense</span><b>${r.global_dense_rank ?? "N/A"}</b></div>
+      <div><span>BM25</span><b>${r.global_bm25_rank ?? "N/A"}</b></div>
+      <div><span>Hybrid</span><b>${r.global_hybrid_rank ?? "N/A"}</b></div>
     </div>
     <div class="score-grid">
       <div><span>Structured</span><strong title="${esc(r.structured_score ?? "N/A")}">${score(r.structured_score)}</strong></div>

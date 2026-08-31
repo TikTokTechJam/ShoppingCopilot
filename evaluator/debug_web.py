@@ -171,6 +171,7 @@ def _product_dense_status(agent: Any) -> dict[str, Any]:
     encoder = getattr(retriever, "product_query_encoder", None)
     available = bool(getattr(retriever, "product_dense_available", False))
     manifest = getattr(index, "manifest", {}) if index is not None else {}
+    retrieval_mode = getattr(retriever, "browsing_retrieval_mode", "hybrid")
     if not isinstance(manifest, Mapping):
         manifest = {}
     artifact_model = manifest.get("embedding_model", manifest.get("model"))
@@ -179,6 +180,7 @@ def _product_dense_status(agent: Any) -> dict[str, Any]:
         return {
             "available": True,
             "artifact": "data/derived/product_embeddings_v5",
+            "retrieval_mode": retrieval_mode,
             "model": artifact_model,
             "query_model": getattr(encoder, "model_id", None),
             "dimension": dimension,
@@ -201,6 +203,7 @@ def _product_dense_status(agent: Any) -> dict[str, Any]:
         "available": False,
         "artifact_loaded": index is not None,
         "artifact": "data/derived/product_embeddings_v5",
+        "retrieval_mode": retrieval_mode,
         "model": artifact_model,
         "query_model": getattr(encoder, "model_id", None),
         "dimension": dimension,
@@ -372,6 +375,38 @@ def _ranking_payload(
     score_candidate = target_eligible or target_global
 
     target_in_eligible = target_eligible is not None
+    retriever = getattr(agent, "retriever", None)
+    product_by_asin = getattr(retriever, "product_by_asin", {})
+    target_in_catalog = target in product_by_asin
+    state = agent.sessions.get(session_id)
+    excluded = {
+        str(asin)
+        for asin in getattr(state, "excluded_recommendations", set())
+    }
+    price_min = getattr(getattr(state, "constraints", None), "price_min", None)
+    price_max = getattr(getattr(state, "constraints", None), "price_max", None)
+    target_price = getattr(product_by_asin.get(target), "price", None)
+    budget_active = price_min is not None or price_max is not None
+    target_fails_budget = (
+        budget_active
+        and (
+            target_price is None
+            or (price_min is not None and target_price < price_min)
+            or (price_max is not None and target_price > price_max)
+        )
+    )
+    if target_in_eligible:
+        target_status = "ELIGIBLE"
+    elif target in excluded:
+        target_status = "EXCLUDED_FROM_RECOMMENDATIONS"
+    elif target_fails_budget:
+        target_status = "BUDGET_INELIGIBLE"
+    elif not target_in_catalog:
+        target_status = "NOT_IN_CATALOG"
+    elif target_global is not None:
+        target_status = "OUTSIDE_ELIGIBLE_FILTER"
+    else:
+        target_status = "NOT_IN_RETRIEVAL_CANDIDATES"
     return {
         "structured_rank": _debug_rank(snapshot["structured"], target),
         "dense_rank": (
@@ -386,11 +421,34 @@ def _ranking_payload(
             _debug_rank(snapshot["bm25"], target) if bm25_available else None
         ),
         "hybrid_rank": _debug_rank(snapshot["hybrid"], target),
+        "global_structured_rank": _debug_rank(
+            snapshot["global_structured"], target
+        ),
+        "global_canonical_rank": (
+            _debug_rank(snapshot["global_canonical"], target)
+            if canonical_available
+            else None
+        ),
+        "global_dense_rank": (
+            _debug_rank(snapshot["global_dense"], target)
+            if dense_available
+            else None
+        ),
+        "global_bm25_rank": (
+            _debug_rank(snapshot["global_bm25"], target)
+            if bm25_available
+            else None
+        ),
+        "global_hybrid_rank": _debug_rank(snapshot["global_hybrid"], target),
         "eligible": target_in_eligible,
+        "target_status": target_status,
+        "target_in_catalog": target_in_catalog,
         "eligible_count": len(eligible),
         "global_count": len(global_ranking),
         "global_rank": _debug_rank(global_ranking, target),
-        "global_rank_status": "AVAILABLE" if target_in_eligible else "INELIGIBLE",
+        "global_rank_status": (
+            "AVAILABLE" if target_global is not None else "NOT_FOUND"
+        ),
         "structured_score": (
             float(score_candidate.constraint_score)
             if score_candidate is not None
@@ -1461,6 +1519,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="select a catalog target and enter shopper replies in the console",
     )
+    parser.add_argument(
+        "--browsing-retrieval",
+        choices=("hybrid", "qwen_dense"),
+        default=None,
+        help=(
+            "Browsing retrieval arm: hybrid (default) or qwen_dense for the "
+            "raw Qwen product-embedding experiment"
+        ),
+    )
     return parser
 
 
@@ -1483,7 +1550,10 @@ def create_application(args: argparse.Namespace) -> DebugWebController:
             sessions = validate_local_sessions(sessions, catalog_ids)
         else:
             sessions = validate_sessions(sessions, catalog_ids)
-    agent = build_evaluator_agent(args.catalog)
+    agent = build_evaluator_agent(
+        args.catalog,
+        browsing_retrieval_mode=args.browsing_retrieval,
+    )
     return DebugWebController(
         agent,
         sessions,

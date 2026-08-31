@@ -68,6 +68,8 @@ DEFAULT_PRODUCT_EMBEDDING_MODEL_PATHS = (
     Path("model/qwen3-embedding-0.6b"),
 )
 PRODUCT_EMBEDDING_MODEL_ENV = "SHOPPING_PRODUCT_EMBEDDING_MODEL"
+BROWSING_RETRIEVAL_MODE_ENV = "SHOPPING_BROWSING_RETRIEVAL_MODE"
+BROWSING_RETRIEVAL_MODES = ("hybrid", "qwen_dense")
 
 
 # One shared structured score is used by Buying and Browsing. Values are
@@ -125,6 +127,28 @@ def _env_flag(name: str, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _normalise_browsing_retrieval_mode(value: object | None) -> str:
+    """Resolve the Browsing retrieval arm without changing the default path."""
+
+    configured = str(
+        value
+        if value is not None
+        else os.environ.get(BROWSING_RETRIEVAL_MODE_ENV, "hybrid")
+    ).strip().casefold().replace("-", "_")
+    aliases = {
+        "dense": "qwen_dense",
+        "qwen": "qwen_dense",
+        "qwen_dense_only": "qwen_dense",
+    }
+    mode = aliases.get(configured, configured)
+    if mode not in BROWSING_RETRIEVAL_MODES:
+        raise ValueError(
+            f"unsupported Browsing retrieval mode {value!r}; "
+            f"expected one of {', '.join(BROWSING_RETRIEVAL_MODES)}"
+        )
+    return mode
 
 
 def normalized_rating(rating: float | None) -> float:
@@ -394,10 +418,14 @@ class ProductRetriever:
         layer2_artifact_dir: str | Path | None = None,
         layer2_weights: Mapping[str, float] | None = None,
         product_embedding_artifact_dir: str | Path | None = None,
+        browsing_retrieval_mode: str | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.query_encoder = query_encoder
         self.product_query_encoder = product_query_encoder
+        self.browsing_retrieval_mode = _normalise_browsing_retrieval_mode(
+            browsing_retrieval_mode
+        )
         self.layer2_weights = dict(layer2_weights) if layer2_weights is not None else None
         self.product_by_asin: dict[str, ProductRecord] = {}
         self._catalog_order: list[str] = []
@@ -1396,12 +1424,24 @@ class ProductRetriever:
         excluded_asins: Collection[str] | None = None,
         apply_budget: bool = True,
         user_prior_rating: float | None = None,
+        candidate_pool_only: bool = False,
+        debug_full_ranking: bool = False,
     ) -> list[Candidate]:
         """Return one deterministic candidate ranking for either mode.
 
         The shared ranker accumulates exact structured matches from the
         inverted indexes. Non-budget fields are scored softly; an active
         budget is the only eligibility filter.
+
+        ``candidate_pool_only`` is used by clarification analysis. It returns
+        a broad ranked pool without applying Browsing's small recommendation
+        fusion/MMR pool cap. The normal recommendation path remains unchanged.
+
+        ``debug_full_ranking`` is used only by evaluator diagnostics. It keeps
+        the production hybrid/MMR ordering for the normal recommendation pool
+        and appends the remaining RRF-ranked tail so a target's diagnostic
+        position can be inspected even when it is outside the recommendation
+        pool. It must not be enabled by the normal Agent path.
         """
 
         del minimum_candidates
@@ -1438,6 +1478,9 @@ class ProductRetriever:
             semantic_constraints,
         )
         dense_scores: dict[str, float] = {}
+        browsing_dense_only = (
+            mode == "BROWSING" and self.browsing_retrieval_mode == "qwen_dense"
+        )
         if mode == "BROWSING" and self.dense_available:
             # Qwen Browsing uses only the current active slot values.  This is
             # deliberately separate from ``retrieval_query_text`` used by
@@ -1448,13 +1491,18 @@ class ProductRetriever:
                 query_text,
                 browsing_query_text=browsing_query_text,
             )
-        # Both modes use the same expanded lexical route. Browsing still keeps
-        # BM25 separate from product dense retrieval and fuses the two by rank.
-        bm25_scores = self._bm25_scores(
-            query_text,
-            eligible_set,
-            constraints,
-            semantic_constraints,
+        # The default hybrid Browsing arm keeps BM25 separate from product
+        # dense retrieval and fuses the two by rank. The dense-only experiment
+        # deliberately bypasses this lexical route below.
+        bm25_scores = (
+            {}
+            if browsing_dense_only
+            else self._bm25_scores(
+                query_text,
+                eligible_set,
+                constraints,
+                semantic_constraints,
+            )
         )
 
         constraint_similarities = self._constraint_similarities(constraints)
@@ -1518,6 +1566,7 @@ class ProductRetriever:
             return tuple(labels)
 
         w_rating = rating_weight(user_prior_rating)
+        ranking_rating_weight = 0.0 if browsing_dense_only else w_rating
 
         def _rank_key(
             base: Callable[[str], float]
@@ -1525,7 +1574,9 @@ class ProductRetriever:
             """The spec's S(x), descending, with catalog order as last resort."""
 
             def key(asin: str) -> tuple[float, int]:
-                bonus = w_rating * normalized_rating(self.rating_lookup.get(asin))
+                bonus = ranking_rating_weight * normalized_rating(
+                    self.rating_lookup.get(asin)
+                )
                 return (
                     -(base(asin) + bonus),
                     self.product_by_asin[asin].catalog_order,
@@ -1564,49 +1615,135 @@ class ProductRetriever:
             }
             ranked_asins = _select(eligible_asins, base_scores.__getitem__)
         else:
-            dense_ranks = self._rank_map(
-                dense_scores,
-                eligible_asins,
-                top_k=BROWSING_DENSE_TOP_K,
-            )
-            bm25_ranks = self._rank_map(
-                bm25_scores,
-                eligible_asins,
-                top_k=BROWSING_BM25_TOP_K,
-                positive_only=True,
-            )
-            fusion_scores = self._rrf_scores(dense_ranks, bm25_ranks)
-            if fusion_scores:
-                pool = [asin for asin in self._catalog_order if asin in fusion_scores]
-                pool.sort(
-                    key=lambda asin: (
-                        -float(fusion_scores.get(asin, 0.0)),
-                        self.product_by_asin[asin].catalog_order,
-                    )
-                )
-                pool = pool[:BROWSING_FUSED_POOL_K]
-                if self.product_dense_available and dense_ranks:
-                    ranked_asins, mmr_scores = self._mmr_rank(
-                        pool,
-                        fusion_scores,
-                        limit=limit,
-                        w_rating=w_rating,
-                    )
-                    ranking_overrides.update(mmr_scores)
-                else:
-                    ranking_overrides.update(fusion_scores)
-                    ranked_asins = _select(pool, fusion_scores.__getitem__)
-            else:
-                # Safe fallback when the product artifact and BM25 are both
-                # unavailable: retain the old structured/canonical evidence,
-                # but do not pretend that it is product dense retrieval.
+            if browsing_dense_only:
+                # Experiment arm: expose the raw Qwen product-card ranking.
+                # BM25, RRF, MMR, and rating tie-breaking are intentionally
+                # excluded so this arm measures the embedding artifact itself.
                 ranking_overrides = {
-                    asin: structured_score(asin)
-                    + MODE_SCORE_WEIGHTS["BUYING"].get("semantic", 0.0)
-                    * canonical_scores.get(asin, 0.0)
+                    asin: float(dense_scores.get(asin, 0.0))
                     for asin in eligible_asins
                 }
                 ranked_asins = _select(eligible_asins, ranking_overrides.__getitem__)
+            elif candidate_pool_only:
+                # Clarification needs a broad distribution of product facts,
+                # not the small final recommendation pool. Retrieve the same
+                # dense/BM25 RRF union with enough ranks to fill ``limit`` and
+                # leave MMR to the normal recommendation path.
+                dense_ranks = self._rank_map(
+                    dense_scores,
+                    eligible_asins,
+                    top_k=limit,
+                )
+                bm25_ranks = self._rank_map(
+                    bm25_scores,
+                    eligible_asins,
+                    top_k=limit,
+                    positive_only=True,
+                )
+                fusion_scores = self._rrf_scores(dense_ranks, bm25_ranks)
+                if fusion_scores:
+                    pool = [asin for asin in self._catalog_order if asin in fusion_scores]
+                    pool.sort(
+                        key=lambda asin: (
+                            -float(fusion_scores.get(asin, 0.0)),
+                            self.product_by_asin[asin].catalog_order,
+                        )
+                    )
+                    ranked_asins = pool[:limit]
+                    ranking_overrides.update(fusion_scores)
+                else:
+                    ranking_overrides = {
+                        asin: structured_score(asin)
+                        + MODE_SCORE_WEIGHTS["BUYING"].get("semantic", 0.0)
+                        * canonical_scores.get(asin, 0.0)
+                        for asin in eligible_asins
+                    }
+                    ranked_asins = _select(eligible_asins, ranking_overrides.__getitem__)
+            else:
+                dense_top_k = (
+                    len(eligible_asins)
+                    if debug_full_ranking
+                    else BROWSING_DENSE_TOP_K
+                )
+                bm25_top_k = (
+                    len(eligible_asins)
+                    if debug_full_ranking
+                    else BROWSING_BM25_TOP_K
+                )
+                dense_ranks = self._rank_map(
+                    dense_scores,
+                    eligible_asins,
+                    top_k=dense_top_k,
+                )
+                bm25_ranks = self._rank_map(
+                    bm25_scores,
+                    eligible_asins,
+                    top_k=bm25_top_k,
+                    positive_only=True,
+                )
+                fusion_scores = self._rrf_scores(dense_ranks, bm25_ranks)
+                if fusion_scores:
+                    pool = [asin for asin in self._catalog_order if asin in fusion_scores]
+                    pool.sort(
+                        key=lambda asin: (
+                            -float(fusion_scores.get(asin, 0.0)),
+                            self.product_by_asin[asin].catalog_order,
+                        )
+                    )
+                    if debug_full_ranking:
+                        # The first production-sized slice is ranked exactly
+                        # as it is for normal recommendations. The diagnostic
+                        # tail uses the complete RRF order because production
+                        # intentionally does not run MMR over the full catalog.
+                        production_pool = pool[:BROWSING_FUSED_POOL_K]
+                        if self.product_dense_available and dense_ranks:
+                            production_ranked, mmr_scores = self._mmr_rank(
+                                production_pool,
+                                fusion_scores,
+                                limit=len(production_pool),
+                                w_rating=w_rating,
+                            )
+                            ranking_overrides.update(mmr_scores)
+                        else:
+                            production_ranked = self._select(
+                                production_pool,
+                                fusion_scores.__getitem__,
+                            )
+                            ranking_overrides.update(
+                                {
+                                    asin: fusion_scores[asin]
+                                    for asin in production_pool
+                                }
+                            )
+                        production_ids = set(production_ranked)
+                        ranked_asins = production_ranked + [
+                            asin for asin in pool if asin not in production_ids
+                        ]
+                    else:
+                        pool = pool[:BROWSING_FUSED_POOL_K]
+                        if self.product_dense_available and dense_ranks:
+                            ranked_asins, mmr_scores = self._mmr_rank(
+                                pool,
+                                fusion_scores,
+                                limit=limit,
+                                w_rating=w_rating,
+                            )
+                            ranking_overrides.update(mmr_scores)
+                        else:
+                            ranking_overrides.update(fusion_scores)
+                            ranked_asins = _select(pool, fusion_scores.__getitem__)
+                else:
+                    # Safe fallback when the product artifact and BM25 are
+                    # both unavailable: retain the old structured/canonical
+                    # evidence, but do not pretend that it is product dense
+                    # retrieval.
+                    ranking_overrides = {
+                        asin: structured_score(asin)
+                        + MODE_SCORE_WEIGHTS["BUYING"].get("semantic", 0.0)
+                        * canonical_scores.get(asin, 0.0)
+                        for asin in eligible_asins
+                    }
+                    ranked_asins = _select(eligible_asins, ranking_overrides.__getitem__)
         if not ranked_asins:
             ranked_asins = _select(eligible_asins, _zero)
         return [
@@ -1620,7 +1757,7 @@ class ProductRetriever:
                 constraint_fields,
                 semantic_labels.get(asin, ()),
                 bm25_scores.get(asin, 0.0),
-                w_rating=w_rating,
+                w_rating=ranking_rating_weight,
                 semantic_score=canonical_scores.get(asin, 0.0),
                 fusion_score=fusion_scores.get(asin, 0.0),
                 mmr_score=mmr_scores.get(asin),
@@ -1644,7 +1781,12 @@ class ProductRetriever:
         apply_budget: bool = True,
         user_prior_rating: float | None = None,
     ) -> list[Candidate]:
-        """Return the complete ranking using the production scorer."""
+        """Return a diagnostic full ranking using the production scorer.
+
+        The explicit debug flag lets normal retrieval retain its bounded
+        Browsing recommendation pool while diagnostics can locate targets in
+        the unfiltered retrieval ranking.
+        """
 
         return self.retrieve(
             mode,
@@ -1655,6 +1797,7 @@ class ProductRetriever:
             excluded_asins=excluded_asins,
             apply_budget=apply_budget,
             user_prior_rating=user_prior_rating,
+            debug_full_ranking=True,
         )
 
 
@@ -1669,6 +1812,8 @@ __all__ = [
     "BROWSING_DENSE_TOP_K",
     "BROWSING_FUSED_POOL_K",
     "BROWSING_MMR_LAMBDA",
+    "BROWSING_RETRIEVAL_MODE_ENV",
+    "BROWSING_RETRIEVAL_MODES",
     "InMemoryRetriever",
     "RRF_K",
     "MODE_SCORE_WEIGHTS",
