@@ -217,6 +217,48 @@ class ProfileFlagTest(unittest.TestCase):
             self.assertGreaterEqual(affinity.factor(attribute), 1.0 - PROFILE_WEIGHT)
             self.assertLessEqual(affinity.factor(attribute), 1.0 + PROFILE_WEIGHT)
 
+    def test_attribute_name_tag_scores_only_that_attribute(self) -> None:
+        """Naming an attribute outright is the strongest statement available."""
+        from starter.profile_affinity import ProfileAffinity
+
+        affinity = ProfileAffinity({"preference_tags": ["color"]})
+        self.assertEqual(affinity.links["color"], {"color": {"score": 1.0, "via": "attribute_name"}})
+        self.assertEqual(affinity.affinity["color"], 1.0)
+
+    def test_fit_reaches_size_which_has_no_semantic_view(self) -> None:
+        """``size`` has no value matrix, so only a stated alias can reach it."""
+        from starter.profile_affinity import ProfileAffinity
+
+        affinity = ProfileAffinity({"preference_tags": ["fit"]})
+        link = affinity.links["fit"].get("size")
+        self.assertIsNotNone(link)
+        self.assertEqual(link["via"], "alias")
+        self.assertEqual(affinity.affinity["size"], 1.0)
+
+    def test_unmatched_attributes_stay_neutral(self) -> None:
+        """Silence about an attribute is not evidence against it."""
+        from starter.profile_affinity import ProfileAffinity
+
+        affinity = ProfileAffinity({"preference_tags": ["color"]})
+        for attribute in ("brand", "budget"):
+            self.assertEqual(affinity.affinity[attribute], 0.5)
+            self.assertEqual(affinity.factor(attribute), 1.0)
+
+    def test_open_vocabulary_tag_links_through_canonical_values(self) -> None:
+        """``comfort`` is nowhere in the schema; the value matrices place it."""
+        from starter.profile_affinity import ProfileAffinity
+
+        affinity = ProfileAffinity({"preference_tags": ["comfort"]})
+        if not affinity.semantic_available:
+            self.skipTest("canonical attribute value matrices are unavailable")
+        links = affinity.links["comfort"]
+        self.assertTrue(links, "comfort linked to no attribute")
+        self.assertTrue(
+            all(link["via"] == "value_embedding" for link in links.values()),
+            links,
+        )
+        self.assertTrue(all(affinity.factor(a) > 1.0 for a in links))
+
     def test_reset_honours_the_switch(self) -> None:
         from starter.agent import Agent
 
