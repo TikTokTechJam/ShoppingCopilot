@@ -209,6 +209,29 @@ For ~50k products, 1024-dimensional float32 embeddings are small enough to keep 
 
 This representation follows the intent-aware retrieval direction in recent e-commerce work, where semantic query/product intent attributes are embedded instead of relying only on raw product text. Price remains a separate numeric eligibility field, while brand remains an exact structured field.
 
+The Browsing query side uses the same Qwen model with this query-only
+instruction:
+
+```text
+Instruct: Retrieve products that best match the shopper's product type, intended use, desired features, and preferences.
+```
+
+The query body is compiled from the active session slots rather than the raw
+conversation transcript. Brand is taken from the exact structured state;
+category, color, material, style, feature, and use_case are taken from the
+active semantic state. Price and size remain outside the embedding query.
+For example:
+
+```text
+Instruct: Retrieve products that best match the shopper's product type, intended use, desired features, and preferences.
+Query: category: jumpsuit
+feature: lightweight
+use_case: cosplay
+```
+
+The instruction is applied only to Qwen queries. Product-card documents remain
+unprefixed before their offline embedding is generated.
+
 References:
 - Qwen3 Embedding, 2025 — https://arxiv.org/abs/2506.05176
 - INSPIRE: Intent-aware Neural Sponsored Product Retrieval for E-commerce, 2026 — https://arxiv.org/abs/2606.23889
