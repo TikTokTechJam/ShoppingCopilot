@@ -66,3 +66,36 @@ pre { max-width: 100%; overflow: auto; overflow-wrap: anywhere; }
 .bm25-query-row code { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .bm25-query-row strong { font-variant-numeric: tabular-nums; }
 @media (max-width: 640px) { .bm25-query-row { grid-template-columns: 1fr auto; } .bm25-query-row code { grid-column: 1 / -1; } }
+
+/* Signal roles: a score that carries zero weight must not read like one that ranks. */
+.rank-grid > div, .score-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.signal-active > b { color: var(--text); }
+.signal-inactive > b, .signal-diagnostic > b { color: var(--muted); font-weight: 500; }
+.signal-inactive, .signal-diagnostic { opacity: .72; }
+.signal-inactive > small, .signal-diagnostic > small { color: var(--muted); font-size: 10px; line-height: 1.25; }
+.signal-legend { border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; margin: 8px 0; background: #1d2431; }
+.signal-legend small { display: block; margin-top: 3px; }
+.notice { color: var(--warn); }
+.bm25-group-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.bm25-group-meta .constraint-label { margin-right: 5px; }
+.delta-arrow { color: var(--muted); margin: 0 5px; }
+
+/* The .ranking-table column widths are positional and tuned for the Top 10
+   table (rank / ASIN / title / scores). These tables reuse its base styling
+   but hold different columns, so they set their own geometry. */
+.ranking-table.clarification-table th:nth-child(1), .ranking-table.clarification-table td:nth-child(1) { width: 22%; }
+.ranking-table.clarification-table th:nth-child(2), .ranking-table.clarification-table td:nth-child(2) { width: 11%; }
+.ranking-table.clarification-table th:nth-child(3), .ranking-table.clarification-table td:nth-child(3) { width: 11%; }
+.ranking-table.clarification-table th:nth-child(4), .ranking-table.clarification-table td:nth-child(4) { width: 10%; }
+.ranking-table.clarification-table th:nth-child(5), .ranking-table.clarification-table td:nth-child(5) { width: 9%; }
+.ranking-table.clarification-table th:nth-child(6), .ranking-table.clarification-table td:nth-child(6) { width: 37%; }
+.ranking-table.clarification-table td:nth-child(6) { white-space: normal; word-break: break-word; }
+
+.ranking-table.bm25-table th:nth-child(1), .ranking-table.bm25-table td:nth-child(1) { width: 13%; }
+.ranking-table.bm25-table th:nth-child(2), .ranking-table.bm25-table td:nth-child(2) { width: 47%; }
+.ranking-table.bm25-table th:nth-child(3), .ranking-table.bm25-table td:nth-child(3) { width: 10%; }
+.ranking-table.bm25-table th:nth-child(4), .ranking-table.bm25-table td:nth-child(4) { width: 10%; }
+.ranking-table.bm25-table th:nth-child(5), .ranking-table.bm25-table td:nth-child(5) { width: 10%; }
+.ranking-table.bm25-table th:nth-child(6), .ranking-table.bm25-table td:nth-child(6) { width: 10%; }
+.ranking-table.bm25-table td:nth-child(2) { white-space: normal; word-break: break-word; overflow: visible; }
+.ranking-table.bm25-table code { white-space: normal; word-break: break-all; }

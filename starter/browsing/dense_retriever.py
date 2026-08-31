@@ -30,7 +30,7 @@ def format_qwen_query(query_text: str, *, instruction: str = BROWSING_QWEN_INSTR
     cleaned = "\n".join(line.strip() for line in str(query_text).splitlines() if line.strip())
     if not cleaned:
         return ""
-    return f"Instruct: {instruction}\nQuery:{cleaned}"
+    return f"Instruct: {instruction}\nQuery: {cleaned}"
 
 
 def load_qwen_browsing_encoder(
@@ -41,11 +41,10 @@ def load_qwen_browsing_encoder(
     half_precision: bool = False,
     show_progress_bar: bool = False,
 ) -> Any:
-    """Load Qwen locally with plain document encoding and manual query format.
+    """Load Qwen locally with plain document encoding and query-only instruction.
 
-    The model's generic built-in query prompt is intentionally not selected:
-    Browsing uses the shopping-specific instruction in ``format_qwen_query``.
-    Documents therefore receive no instruction or query prefix.
+    Documents receive no instruction or query prefix. The shared adapter adds
+    the instruction only in ``embed_query``.
     """
 
     return load_local_sentence_transformer(
@@ -57,6 +56,7 @@ def load_qwen_browsing_encoder(
         trust_remote_code=True,
         document_prompt_name=None,
         query_prompt_name=None,
+        query_instruction=BROWSING_QWEN_INSTRUCTION,
     )
 
 
@@ -169,10 +169,20 @@ class BrowsingDenseIndex:
     ) -> list[BrowsingDenseMatch]:
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
             raise ValueError("top_k must be a positive integer")
-        formatted = format_qwen_query(query_text)
-        if not formatted:
+        cleaned = "\n".join(
+            line.strip() for line in str(query_text).splitlines() if line.strip()
+        )
+        if not cleaned:
             return []
-        query = _encode_query(encoder, formatted)
+        # The shared local adapter applies the instruction in its query
+        # method. Raw/fake encoders do not, so retain the compatible manual
+        # formatting fallback for those injected encoders.
+        query_input = (
+            cleaned
+            if getattr(encoder, "query_instruction", None)
+            else format_qwen_query(cleaned)
+        )
+        query = _encode_query(encoder, query_input)
         if query.size != self.dimension:
             raise ValueError(
                 f"query dimension {query.size} does not match index dimension {self.dimension}"

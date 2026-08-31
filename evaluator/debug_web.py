@@ -45,6 +45,9 @@ from evaluator.local_evaluator import (
     initial_message as local_initial_message,
     materialize_hidden_fields as local_materialize_hidden_fields,
 )
+from starter import clarification
+from starter.browsing import BROWSING_QWEN_INSTRUCTION, build_browsing_query
+from starter.agent import CLARIFICATION_CANDIDATE_LIMIT
 from starter.retrieval import MODE_SCORE_WEIGHTS
 from starter.routing import constraints as constraint_module
 
@@ -96,14 +99,192 @@ def _constraint_payload(constraints: Any) -> dict[str, Any]:
 def _changed_constraint_payload(
     before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Show only state changes produced by the real Agent turn."""
+    """Show only state changes produced by the real Agent turn.
+
+    Both sides are reported. Showing the after-value alone hid two cases that
+    matter: an override replacing ``red`` with ``blue`` looked like a plain
+    addition, and a removal looked like a no-op empty list.
+    """
 
     field_order = (*DEBUG_FACT_FIELDS, "size", "budget")
     return {
-        field_name: after.get(field_name, [])
+        field_name: {
+            "before": before.get(field_name, []),
+            "after": after.get(field_name, []),
+        }
         for field_name in field_order
         if before.get(field_name) != after.get(field_name)
     }
+
+
+def _intent_payload(agent: Any, session_id: str, message: str) -> dict[str, Any]:
+    """Re-run the router on this turn's message for its audit trail.
+
+    ``SessionState`` keeps only the decided mode, so the tier/confidence/signal
+    detail is recomputed here.  It is read-only and uses the Agent's own
+    router, so it cannot change what the Agent decided.
+    """
+
+    router = getattr(agent, "router", None)
+    classify = getattr(router, "classify", None)
+    if not callable(classify):
+        return {}
+    try:
+        result = classify(message or "")
+    except Exception as exc:  # diagnostics must never break a turn
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    as_dict = getattr(result, "as_dict", None)
+    payload = dict(as_dict()) if callable(as_dict) else {}
+    payload["signal_detail"] = [
+        {
+            "name": signal.name,
+            "polarity": signal.polarity,
+            "weight": signal.weight,
+            "evidence": signal.evidence,
+        }
+        for signal in getattr(result, "signals", ())
+    ]
+    tier = str(payload.get("tier", ""))
+    payload["tier_meaning"] = {
+        "tags": "decided on constraint count alone; the ledger was not consulted",
+        "rules": "decided by the signal ledger",
+        "default": "undecided; the terminal rule routed BROWSING",
+    }.get(tier, tier)
+    return payload
+
+
+def _profile_payload(agent: Any, session_id: str) -> dict[str, Any]:
+    """Preference tags, their affinity factors, and which backend produced them."""
+
+    affinity = getattr(agent, "_profile_affinity", {}).get(session_id)
+    if affinity is None:
+        return {"enabled": False, "reason": "user profile is disabled"}
+    tags = list(getattr(affinity, "tags", ()) or ())
+    # ``_similarity`` is None when there are no tags at all; otherwise the
+    # backend is embedding only when an encoder was actually supplied.
+    encoder = getattr(getattr(agent, "retriever", None), "query_encoder", None)
+    backend = "embedding" if encoder is not None and tags else "lexical"
+    factors = {}
+    try:
+        factors = {
+            name: round(float(value), 4)
+            for name, value in affinity.as_dict().items()
+        }
+    except Exception:
+        factors = {}
+    return {
+        "enabled": True,
+        "preference_tags": tags,
+        "similarity_backend": backend if tags else "none",
+        "backend_note": (
+            "no encoder is configured, so tag/attribute similarity is Jaccard "
+            "token overlap, not embeddings"
+            if backend == "lexical" and tags
+            else ""
+        ),
+        "affinity": {
+            name: round(float(value), 4)
+            for name, value in getattr(affinity, "affinity", {}).items()
+        },
+        "factors": factors,
+        "refused": list(getattr(affinity, "_refused", ()) or ()),
+    }
+
+
+def _clarification_payload(
+    agent: Any,
+    session_id: str,
+    before_state: Mapping[str, Any],
+    after_state: Mapping[str, Any],
+    candidates: Any,
+) -> dict[str, Any]:
+    """Per-attribute clarification utilities, plus why each was rejected."""
+
+    base = {
+        "previous_asked": before_state.get("last_asked"),
+        "next_asked": after_state.get("last_asked"),
+    }
+    policy = getattr(agent, "clarification", None)
+    if policy is None or candidates is None:
+        return base
+
+    try:
+        stats = policy.analyze(candidates)
+    except Exception as exc:
+        base["error"] = f"{type(exc).__name__}: {exc}"
+        return base
+
+    constraints_known = set(after_state.get("constraints_populated", ()))
+    asked = set(after_state.get("asked_attributes", ()) or ())
+    asked.update(after_state.get("no_preference_attributes", ()) or ())
+    affinity = getattr(agent, "_profile_affinity", {}).get(session_id)
+    profile_factor = affinity.factor if affinity is not None else None
+    turn = after_state.get("turn")
+    mode = after_state.get("mode") or "BROWSING"
+
+    rows: list[dict[str, Any]] = []
+    for attribute in clarification.NORMAL_CLARIFICATION_ATTRIBUTES:
+        facet = stats.facets.get(attribute)
+        row: dict[str, Any] = {"attribute": attribute}
+        if attribute in asked:
+            row["eligible"] = False
+            row["reason"] = "already asked or declined"
+        elif attribute in constraints_known:
+            row["eligible"] = False
+            row["reason"] = "already known from constraints"
+        elif facet is None:
+            row["eligible"] = False
+            row["reason"] = "no facet in the candidate pool"
+        else:
+            row["coverage"] = round(facet.coverage, 4)
+            row["values"] = len(facet.counts)
+            row["gini"] = round(facet.expected_reduction, 4)
+            row["entropy"] = round(facet.entropy, 4)
+            row["top_values"] = list(facet.top_values(3))
+            if facet.coverage < 0.20:
+                row["eligible"] = False
+                row["reason"] = f"coverage {facet.coverage:.2f} < 0.20"
+            elif len(facet.counts) < 2:
+                row["eligible"] = False
+                row["reason"] = "fewer than 2 distinct values"
+            elif facet.expected_reduction < 0.10:
+                row["eligible"] = False
+                row["reason"] = f"gini {facet.expected_reduction:.2f} < 0.10"
+            else:
+                row["eligible"] = True
+                row["reason"] = None
+        if row.get("eligible"):
+            try:
+                row["utility"] = round(
+                    float(
+                        policy._score(
+                            attribute,
+                            tuple(candidates),
+                            mode,
+                            profile_factor,
+                            turn,
+                            candidate_stats=stats,
+                        )
+                    ),
+                    6,
+                )
+            except Exception:
+                row["utility"] = None
+        else:
+            row["utility"] = None
+        rows.append(row)
+
+    rows.sort(key=lambda item: (item["utility"] is None, -(item["utility"] or 0.0)))
+    base.update(
+        {
+            "candidate_count": stats.candidate_count,
+            "pool_broad": bool(policy.is_broad_pool(stats)),
+            "broad_threshold": clarification.BROAD_CANDIDATE_THRESHOLD,
+            "floor": round(clarification.ASK_UTILITY_FLOOR, 6),
+            "attributes": rows,
+        }
+    )
+    return base
 
 
 def _first_text(value: Any) -> str:
@@ -255,6 +436,11 @@ def _state_payload(agent: Any, session_id: str) -> dict[str, Any]:
                 "retrieval_query_text",
                 getattr(state, "query_text", ""),
             ),
+            "dense_query_text": build_browsing_query(
+                getattr(state, "constraints", None),
+                getattr(state, "semantic_constraints", None),
+            ),
+            "dense_query_instruction": BROWSING_QWEN_INSTRUCTION,
         }
     )
     return snapshot
@@ -276,19 +462,8 @@ def _candidate_payload(
         "parent_asin": asin,
         "title": product.get("title", ""),
         "price": product.get("price"),
-        "structured_score": float(candidate.constraint_score),
         "dense_score": (
             float(candidate.dense_score) if dense_available else None
-        ),
-        "semantic_score": (
-            float(getattr(candidate, "semantic_score", candidate.dense_score))
-            if canonical_available
-            else None
-        ),
-        "canonical_score": (
-            float(getattr(candidate, "semantic_score", 0.0))
-            if canonical_available
-            else None
         ),
         "bm25_score": (
             float(getattr(candidate, "bm25_score", 0.0))
@@ -356,10 +531,7 @@ def _ranking_payload(
                     "parent_asin": asin,
                     "title": _product_payload(agent, asin).get("title", ""),
                     "price": _product_payload(agent, asin).get("price"),
-                    "structured_score": None,
                     "dense_score": None,
-                    "semantic_score": None,
-                    "canonical_score": None,
                     "bm25_score": None,
                     "fusion_score": None,
                     "mmr_score": None,
@@ -407,33 +579,26 @@ def _ranking_payload(
         target_status = "OUTSIDE_ELIGIBLE_FILTER"
     else:
         target_status = "NOT_IN_RETRIEVAL_CANDIDATES"
+    mode = str(snapshot.get("mode") or "BROWSING")
+    weights = MODE_SCORE_WEIGHTS.get(mode, MODE_SCORE_WEIGHTS["BROWSING"])
     return {
-        "structured_rank": _debug_rank(snapshot["structured"], target),
+        # Which signals actually rank this turn. The UI reads these so a score
+        # that carries zero weight is not shown as though it decided anything.
+        "mode": mode,
+        "signal_roles": {
+            "dense": "active" if weights["dense"] else "inactive",
+            "bm25": "active" if weights.get("bm25", 0.0) else "inactive",
+            "fusion": "active" if mode == "BROWSING" else "inactive",
+            "mmr": "active" if mode == "BROWSING" else "inactive",
+        },
+        "mode_weights": dict(weights),
         "dense_rank": (
             _debug_rank(snapshot["dense"], target) if dense_available else None
-        ),
-        "canonical_rank": (
-            _debug_rank(snapshot["canonical"], target)
-            if canonical_available
-            else None
         ),
         "bm25_rank": (
             _debug_rank(snapshot["bm25"], target) if bm25_available else None
         ),
         "hybrid_rank": _debug_rank(snapshot["hybrid"], target),
-        "global_structured_rank": _debug_rank(
-            snapshot["global_structured"], target
-        ),
-        "global_canonical_rank": (
-            _debug_rank(snapshot["global_canonical"], target)
-            if canonical_available
-            else None
-        ),
-        "global_dense_rank": (
-            _debug_rank(snapshot["global_dense"], target)
-            if dense_available
-            else None
-        ),
         "global_bm25_rank": (
             _debug_rank(snapshot["global_bm25"], target)
             if bm25_available
@@ -449,24 +614,9 @@ def _ranking_payload(
         "global_rank_status": (
             "AVAILABLE" if target_global is not None else "NOT_FOUND"
         ),
-        "structured_score": (
-            float(score_candidate.constraint_score)
-            if score_candidate is not None
-            else None
-        ),
         "dense_score": (
             float(score_candidate.dense_score)
             if score_candidate is not None and dense_available
-            else None
-        ),
-        "semantic_score": (
-            float(getattr(score_candidate, "semantic_score", score_candidate.dense_score))
-            if score_candidate is not None and canonical_available
-            else None
-        ),
-        "canonical_score": (
-            float(getattr(score_candidate, "semantic_score", 0.0))
-            if score_candidate is not None and canonical_available
             else None
         ),
         "bm25_score": (
@@ -1094,6 +1244,29 @@ class DebugWebController:
             "turns": self.turn_records,
         }
 
+    def _clarification_candidates(self, session_id: str) -> Any:
+        """Rebuild the pool the clarification policy scored this turn.
+
+        Mirrors ``Agent.respond``'s ``candidate_pool_only`` retrieval, which is
+        deliberately broader than the recommendation pool. Diagnostics only:
+        it never feeds the Agent.
+        """
+
+        try:
+            state = self.agent.sessions.get(session_id)
+            return self.agent.retriever.retrieve(
+                getattr(state, "mode", None) or "BROWSING",
+                getattr(state, "retrieval_query_text", ""),
+                getattr(state, "constraints", None),
+                semantic_constraints=getattr(state, "semantic_constraints", None),
+                limit=CLARIFICATION_CANDIDATE_LIMIT,
+                minimum_candidates=50,
+                excluded_asins=getattr(state, "excluded_recommendations", None),
+                candidate_pool_only=True,
+            )
+        except Exception:
+            return None
+
     def _benchmark_payload(self) -> dict[str, Any] | None:
         if self.runner is None:
             return None
@@ -1157,10 +1330,17 @@ class DebugWebController:
                 "last_asked": after_state.get("last_asked"),
                 "exclusions": after_state.get("excluded", []),
             },
-            "clarification": {
-                "previous_asked": before_state.get("last_asked"),
-                "next_asked": after_state.get("last_asked"),
-            },
+            "intent": _intent_payload(
+                self.agent, session_id, event["user_message"]
+            ),
+            "profile": _profile_payload(self.agent, session_id),
+            "clarification": _clarification_payload(
+                self.agent,
+                session_id,
+                before_state,
+                after_state,
+                self._clarification_candidates(session_id),
+            ),
             "target": _product_payload(self.agent, target),
             "target_facts": _debug_target_facts(self.agent, target),
             "ranking": ranking,
@@ -1333,10 +1513,9 @@ def _print_interactive_turn(record: Mapping[str, Any]) -> None:
     print(f"Asked: {agent.get('ask_attribute') or 'none'}")
     print(
         "Target ranks: "
-        f"structured={ranking.get('structured_rank', 'N/A')} "
         f"dense={ranking.get('dense_rank', 'N/A')} "
         f"bm25={ranking.get('bm25_rank', 'N/A')} "
-        f"hybrid={ranking.get('hybrid_rank', 'N/A')}"
+        f"final={ranking.get('hybrid_rank', 'N/A')}"
     )
     print("Top 10:")
     for item in ranking.get("top10", ()):

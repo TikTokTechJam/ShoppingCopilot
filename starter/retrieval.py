@@ -31,8 +31,13 @@ from product_embeddings.v5 import (
     V5ProductEmbeddingIndex,
     load_v5_product_embedding_index,
 )
-from starter.bm25 import BM25Index, BM25QueryCompiler
-from starter.browsing import build_browsing_query, format_qwen_query
+from starter.bm25 import (
+    BM25_INDEX_COLUMNS,
+    BM25_INDEX_FIELD_WEIGHTS,
+    BM25Index,
+    BM25QueryCompiler,
+)
+from starter.browsing import BROWSING_QWEN_INSTRUCTION, build_browsing_query, format_qwen_query
 from starter.routing.constraints import CATEGORICAL_FIELDS
 
 
@@ -604,6 +609,7 @@ class ProductRetriever:
                         self.product_query_encoder = load_local_sentence_transformer(
                             model_path,
                             trust_remote_code=True,
+                            query_instruction=BROWSING_QWEN_INSTRUCTION,
                         )
                     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
                         self.product_embedding_compatibility_error = (
@@ -1006,8 +1012,13 @@ class ProductRetriever:
             if not self.product_dense_available or not product_query_text.strip():
                 return {}
             try:
+                query_input = (
+                    product_query_text
+                    if getattr(self.product_query_encoder, "query_instruction", None)
+                    else format_qwen_query(product_query_text)
+                )
                 query = self._query_embedding(
-                    format_qwen_query(product_query_text),
+                    query_input,
                     self.product_embedding_index.dimension,
                     encoder=self.product_query_encoder,
                 )
@@ -1205,6 +1216,14 @@ class ProductRetriever:
                 raw_score = scores.get(target)
                 if raw_score is not None and math.isfinite(float(raw_score)):
                     target_score = float(raw_score)
+            peak = max(
+                (
+                    float(value)
+                    for value in scores.values()
+                    if math.isfinite(float(value))
+                ),
+                default=0.0,
+            )
             return {
                 "label": label,
                 "query": display_query if display_query is not None else search_text,
@@ -1214,6 +1233,7 @@ class ProductRetriever:
                 ),
                 "fields": list(fields) if fields is not None else None,
                 "match_count": len(scores),
+                "peak_score": peak,
                 "target_rank": rank_map.get(target) if target else None,
                 "target_score": target_score,
             }
@@ -1223,20 +1243,46 @@ class ProductRetriever:
             "raw": describe("raw", str(query_text or "")),
             "constraints": {},
         }
-        if expanded:
-            group_specs = self.bm25_query_compiler.compile_group_specs(
-                constraints,
-                semantic_constraints,
+        if not expanded:
+            return result
+
+        group_specs = self.bm25_query_compiler.compile_group_specs(
+            constraints,
+            semantic_constraints,
+        )
+        for field_name, group in group_specs.items():
+            entry = describe(
+                field_name,
+                group.phrases,
+                display_query=group.query_text,
+                fields=group.fields,
             )
-            result["constraints"] = {
-                field_name: describe(
-                    field_name,
-                    group.phrases,
-                    display_query=group.query_text,
-                    fields=group.fields,
-                )
-                for field_name, group in group_specs.items()
+            # ``describe`` already records the routed columns. Add the accepted
+            # terms and each column's BM25 weight: they decide what a group can
+            # match at all, and neither is visible from the expression alone.
+            entry["terms"] = list(group.phrases)
+            entry["field_weights"] = {
+                column: BM25_INDEX_FIELD_WEIGHTS[BM25_INDEX_COLUMNS.index(column) + 1]
+                for column in group.fields
+                if column in BM25_INDEX_COLUMNS
             }
+            result["constraints"][field_name] = entry
+
+        # Buying ranks on the fused BM25 score alone, so the share each group
+        # contributes is the whole explanation of a Buying rank. Mirror the
+        # peak-normalize-then-average in ``_bm25_scores``.
+        active = [result["raw"], *result["constraints"].values()]
+        contributing = [item for item in active if item["match_count"]]
+        group_count = len(contributing)
+        result["group_count"] = group_count
+        result["group_share"] = 1.0 / group_count if group_count else 0.0
+        for item in active:
+            share = None
+            if group_count and item["target_score"] is not None:
+                peak = item.get("peak_score") or 0.0
+                if peak > 0.0:
+                    share = min(1.0, max(0.0, item["target_score"] / peak)) / group_count
+            item["target_contribution"] = share
         return result
 
     def _query_embedding(
@@ -1724,9 +1770,14 @@ class ProductRetriever:
                             )
                             ranking_overrides.update(mmr_scores)
                         else:
-                            production_ranked = self._select(
+                            # Rank the whole production slice, matching the
+                            # ``limit=len(production_pool)`` the MMR branch
+                            # above uses. ``_select`` is a closure over the
+                            # caller's ``limit``, not a method, so calling it
+                            # here raised AttributeError.
+                            production_ranked = sorted(
                                 production_pool,
-                                fusion_scores.__getitem__,
+                                key=_rank_key(fusion_scores.__getitem__),
                             )
                             ranking_overrides.update(
                                 {
