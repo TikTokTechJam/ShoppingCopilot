@@ -300,7 +300,9 @@ class ProductRetrieverTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(ranked), 3)
-            self.assertEqual(DENSE_SCORE_WEIGHT, 0.20)
+            # BGE is expansion-only: it reaches the score through the
+            # BM25 concept groups, never as a separate canonical term.
+            self.assertEqual(DENSE_SCORE_WEIGHT, 0.0)
 
     def test_structured_browsing_and_empty_browsing_are_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -73,7 +73,9 @@ BROWSING_RETRIEVAL_MODES = ("hybrid", "qwen_dense")
 
 
 # One shared structured score is used by Buying and Browsing. Values are
-# configured weighted points, and the final score is the accumulated weighted sum.
+# configured weighted points, and the final score is the accumulated weighted
+# sum. A matched field contributes its full weight: the score is an exact
+# posting-list match, not a similarity-scaled one.
 STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "category": 0.70,
     "price": 1.50,
@@ -86,15 +88,18 @@ STRUCTURED_FIELD_WEIGHTS: dict[str, float] = {
     "use_case": 0.50,
 }
 MODE_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
-    # Buying uses structured evidence and BM25 as its primary signals.  The
-    # canonical BGE posting-list score is a small supporting signal; it is not
-    # product-level dense retrieval.
-    "BUYING": {"structured": 1.00, "semantic": 0.20, "dense": 0.00, "bm25": 1.00},
+    # Buying uses structured evidence and BM25.  BGE contributes no score of
+    # its own: it earns its place in the pipeline by expanding each active
+    # slot into lexical alternatives inside the BM25 concept groups, so its
+    # effect is already counted once, in ``bm25``.  Scoring the same canonical
+    # postings a second time under ``semantic`` counted it twice.
+    "BUYING": {"structured": 1.00, "semantic": 0.00, "dense": 0.00, "bm25": 1.00},
     # Browsing is fused by rank below, not by adding cosine and BM25 values.
     "BROWSING": {"structured": 0.00, "semantic": 0.00, "dense": 1.00, "bm25": 1.00},
 }
-# Retain the public name for integrations that used it for the former small
-# semantic contribution.  Product-level dense retrieval is Browsing-only.
+# Retained as a public name for integrations that read the former canonical
+# contribution.  It is now zero in both modes: BGE is expansion-only, and
+# product-level dense retrieval is Browsing-only.
 DENSE_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["semantic"]
 BM25_SCORE_WEIGHT = MODE_SCORE_WEIGHTS["BUYING"]["bm25"]
 
@@ -236,17 +241,21 @@ def _final_score(
     structured_score: float,
     dense_score: float,
     bm25_score: float = 0.0,
-    semantic_score: float | None = None,
     browsing_fusion_score: float | None = None,
 ) -> float:
+    """Combine the scoring signals for one candidate.
+
+    There is no canonical/BGE term.  BGE expands active slots into lexical
+    alternatives inside the BM25 concept groups, so whatever it contributes
+    is already in ``bm25_score``; adding a separate canonical term scored the
+    same evidence twice.
+    """
     if mode == "BROWSING" and browsing_fusion_score is not None:
         return float(browsing_fusion_score)
     weights = MODE_SCORE_WEIGHTS[mode]
-    canonical_score = dense_score if semantic_score is None else semantic_score
     return float(
         weights["structured"] * structured_score
         + weights["dense"] * dense_score
-        + weights.get("semantic", 0.0) * canonical_score
         + weights.get("bm25", 0.0) * bm25_score
     )
 
@@ -861,10 +870,13 @@ class ProductRetriever:
     ) -> tuple[dict[str, float], dict[str, tuple[str, ...]]]:
         """Score product facts against BGE canonical expansion state.
 
-        Each accepted semantic value contributes its retained cosine
-        similarity only when the product contains that canonical value. The
-        accumulated points are sparse canonical evidence, not product-vector
-        dense retrieval. Exact structured matching is calculated separately.
+        Diagnostics only. Each accepted semantic value contributes its
+        retained cosine similarity when the product carries that canonical
+        value, and the result is surfaced as ``Candidate.semantic_score`` so
+        the debug UI can show which expansions matched. It is **not** a
+        ranking term: BGE earns its keep by expanding slots into the BM25
+        concept groups, and scoring the same postings again here would count
+        that evidence twice.
         """
 
         if constraints is None:
@@ -1280,7 +1292,6 @@ class ProductRetriever:
                 structured_score,
                 dense_score,
                 bm25_score,
-                semantic_score,
                 browsing_fusion_score=fusion_score if mode == "BROWSING" else None,
             )
         )
@@ -1505,30 +1516,26 @@ class ProductRetriever:
             )
         )
 
-        constraint_similarities = self._constraint_similarities(constraints)
         matched_weight: dict[str, float] = {}
         matched_fields: dict[str, set[str]] = {}
         matched_labels: dict[str, list[str]] = {}
 
+        # The structured score is an exact posting-list match and carries no
+        # BGE term. A value reaches ``inverted_index`` only after canonical
+        # extraction has already accepted it, so whether that acceptance came
+        # from an exact dictionary hit or from a semantic match is a question
+        # about extraction, not about how well this product matches. BGE's
+        # contribution to ranking is the expanded BM25 concept groups.
         for field_name in constraint_fields:
             if field_name == "price":
                 field_matches = price_match_asins & eligible_set
-                field_match_similarities: dict[str, float] = {}
             else:
                 field_matches: set[str] = set()
-                field_match_similarities = {}
                 for value in requested_by_field[field_name]:
                     indexed = self.inverted_index.get(field_name, {}).get(value, set())
-                    canonical_key = (
-                        f"{field_name}:{normalize_text(value).replace(' ', '_')}"
-                    )
-                    similarity = constraint_similarities.get(canonical_key, 1.0)
                     if eligible_set is None:
                         field_matches.update(indexed)
                         for asin in indexed:
-                            field_match_similarities[asin] = max(
-                                field_match_similarities.get(asin, 0.0), similarity
-                            )
                             matched_labels.setdefault(asin, []).append(
                                 f"{field_name}:{value}"
                             )
@@ -1536,17 +1543,12 @@ class ProductRetriever:
                         field_matches.update(indexed & eligible_set)
                         for asin in indexed:
                             if asin in eligible_set:
-                                field_match_similarities[asin] = max(
-                                    field_match_similarities.get(asin, 0.0), similarity
-                                )
                                 matched_labels.setdefault(asin, []).append(
                                     f"{field_name}:{value}"
                                 )
             field_weight = STRUCTURED_FIELD_WEIGHTS.get(field_name, 0.0)
             for asin in field_matches:
-                matched_weight[asin] = matched_weight.get(asin, 0.0) + (
-                    field_weight * field_match_similarities.get(asin, 1.0)
-                )
+                matched_weight[asin] = matched_weight.get(asin, 0.0) + field_weight
                 matched_fields.setdefault(asin, set()).add(field_name)
 
         def structured_score(asin: str) -> float:
@@ -1600,16 +1602,16 @@ class ProductRetriever:
         ranking_overrides: dict[str, float] = {}
         mmr_scores: dict[str, float] = {}
         if mode == "BUYING":
-            # BM25 is part of the Buying score even when no product-vector
-            # signal is available.  Canonical BGE posting points are a small
-            # supporting signal; they are deliberately not called dense here.
+            # Structured evidence plus BM25.  BGE reaches the score only
+            # through the expanded BM25 concept groups; ``canonical_scores``
+            # is still computed, but purely as retained diagnostics on the
+            # Candidate, never as a ranking term.
             base_scores = {
                 asin: _final_score(
                     mode,
                     structured_score(asin),
                     0.0,
                     bm25_scores.get(asin, 0.0),
-                    canonical_scores.get(asin, 0.0),
                 )
                 for asin in eligible_asins
             }
@@ -1652,11 +1654,11 @@ class ProductRetriever:
                     ranked_asins = pool[:limit]
                     ranking_overrides.update(fusion_scores)
                 else:
+                    # No fusion evidence at all: fall back to structured
+                    # matching alone. BGE is expansion-only, so there is no
+                    # canonical term to add here.
                     ranking_overrides = {
-                        asin: structured_score(asin)
-                        + MODE_SCORE_WEIGHTS["BUYING"].get("semantic", 0.0)
-                        * canonical_scores.get(asin, 0.0)
-                        for asin in eligible_asins
+                        asin: structured_score(asin) for asin in eligible_asins
                     }
                     ranked_asins = _select(eligible_asins, ranking_overrides.__getitem__)
             else:
@@ -1734,14 +1736,10 @@ class ProductRetriever:
                             ranked_asins = _select(pool, fusion_scores.__getitem__)
                 else:
                     # Safe fallback when the product artifact and BM25 are
-                    # both unavailable: retain the old structured/canonical
-                    # evidence, but do not pretend that it is product dense
-                    # retrieval.
+                    # both unavailable: structured evidence only. It is not
+                    # product dense retrieval, and BGE contributes no score.
                     ranking_overrides = {
-                        asin: structured_score(asin)
-                        + MODE_SCORE_WEIGHTS["BUYING"].get("semantic", 0.0)
-                        * canonical_scores.get(asin, 0.0)
-                        for asin in eligible_asins
+                        asin: structured_score(asin) for asin in eligible_asins
                     }
                     ranked_asins = _select(eligible_asins, ranking_overrides.__getitem__)
         if not ranked_asins:
