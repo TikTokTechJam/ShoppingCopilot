@@ -20,12 +20,9 @@ tests/test_organizer_pipeline.py
 *.log
 
 # Local Hugging Face model weights; never commit downloaded encoders.
-models/
+models/*
+!models/.gitkeep
 
 # Generated datasets, artifacts, and reports.
 data/derived/
 test_reports/
-
-# Local embedding model weights. Download into this path; never commit them.
-model/*
-!model/.gitkeep
