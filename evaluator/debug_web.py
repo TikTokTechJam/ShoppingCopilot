@@ -160,10 +160,10 @@ def _profile_payload(agent: Any, session_id: str) -> dict[str, Any]:
     if affinity is None:
         return {"enabled": False, "reason": "user profile is disabled"}
     tags = list(getattr(affinity, "tags", ()) or ())
-    # ``_similarity`` is None when there are no tags at all; otherwise the
-    # backend is embedding only when an encoder was actually supplied.
-    encoder = getattr(getattr(agent, "retriever", None), "query_encoder", None)
-    backend = "embedding" if encoder is not None and tags else "lexical"
+    # The prior now rides on the dictionary's own BGE value matrices, so the
+    # backend reflects whether those loaded, not whether the retriever
+    # happened to be given an encoder.
+    backend = "value_embedding" if getattr(affinity, "semantic_available", False) else "lexical"
     factors = {}
     try:
         factors = {
@@ -177,11 +177,25 @@ def _profile_payload(agent: Any, session_id: str) -> dict[str, Any]:
         "preference_tags": tags,
         "similarity_backend": backend if tags else "none",
         "backend_note": (
-            "no encoder is configured, so tag/attribute similarity is Jaccard "
-            "token overlap, not embeddings"
+            "the canonical attribute value matrices are unavailable, so tags "
+            "fall back to Jaccard overlap against the attribute questions"
             if backend == "lexical" and tags
             else ""
         ),
+        # Which attributes each tag reached, and by which route: the tag being
+        # an attribute name, a stated alias for an attribute with no semantic
+        # view, or a match against that attribute's canonical values.
+        "links": {
+            tag: {
+                attribute: {
+                    "score": round(float(link.get("score", 0.0)), 4),
+                    "via": link.get("via"),
+                    "value": link.get("value"),
+                }
+                for attribute, link in links.items()
+            }
+            for tag, links in (getattr(affinity, "links", {}) or {}).items()
+        },
         "affinity": {
             name: round(float(value), 4)
             for name, value in getattr(affinity, "affinity", {}).items()
