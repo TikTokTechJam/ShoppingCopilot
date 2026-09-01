@@ -1,9 +1,7 @@
 # ShoppingCopilot
 
-## **[→ READ THE FULL ARCHITECTURE](Architecture.md)**
 
 **For the complete system design, Buying/Browsing retrieval flows, dialogue-state handling, preference overrides, and clarification strategy, see [Architecture.md](Architecture.md).**
-
 
 ShoppingCopilot is a conversational product-search agent designed to help users move from broad product exploration to more precise purchase decisions through multi-turn conversation.
 
